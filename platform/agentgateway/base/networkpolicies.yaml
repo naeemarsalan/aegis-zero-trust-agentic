@@ -1,27 +1,9 @@
 # NetworkPolicies for mcp-gateway namespace
-# Implements default-deny + explicit allow per security invariants.
+# Component-specific allow rules only. The default-deny-all baseline for this
+# namespace is owned by platform/networkpolicies (np-mcp-gateway.yaml) — do
+# not duplicate it here or the two ArgoCD apps fight over the same object.
 # All policies are additive (OR'd by Kubernetes NetworkPolicy semantics).
 
-# -----------------------------------------------------------------------
-# 1. Default deny — all ingress and egress blocked unless explicitly allowed
-# -----------------------------------------------------------------------
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-all
-  namespace: mcp-gateway
-  labels:
-    app.kubernetes.io/part-of: agentic-platform
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-    - Egress
-
-# -----------------------------------------------------------------------
-# 2. Allow ingress from OpenShift ingress router (Route -> Gateway)
-# -----------------------------------------------------------------------
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

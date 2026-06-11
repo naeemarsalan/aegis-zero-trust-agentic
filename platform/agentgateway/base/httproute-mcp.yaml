@@ -12,8 +12,13 @@ metadata:
     app.kubernetes.io/name: mcp-route
     app.kubernetes.io/part-of: agentic-platform
 spec:
+  # group/kind/weight are spelled out even though they are API defaults:
+  # the server defaults them on admission and ArgoCD otherwise shows a
+  # permanent OutOfSync diff against the live object.
   parentRefs:
-    - name: mcp-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mcp-gateway
       namespace: mcp-gateway
   hostnames:
     - "mcp-gateway.apps.anaeem.na-launch.com"
@@ -27,3 +32,4 @@ spec:
           kind: AgentgatewayBackend
           name: pfsense-mcp
           namespace: mcp-gateway
+          weight: 1
