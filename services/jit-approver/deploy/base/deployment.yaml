@@ -45,7 +45,10 @@ spec:
         # The approver reads SVID_JWT_PATH=/var/run/secrets/svid.jwt at login time
     spec:
       serviceAccountName: jit-approver
-      automountServiceAccountToken: false
+      # true: the Vault Agent injector webhook refuses pods without an SA token
+      # volume ("failed to find service account volume mount"), and the agent
+      # needs it for Kubernetes auth.
+      automountServiceAccountToken: true
       volumes:
         # SPIFFE CSI volume — injects SVID at /var/run/secrets/spiffe.io/
         - name: spiffe-csi

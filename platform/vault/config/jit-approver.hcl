@@ -77,6 +77,12 @@ path "secret/data/jit/*" {
   capabilities = ["create", "update", "read", "delete"]
 }
 
+# Static service credentials injected at pod start (gitea token, webhook
+# secret, signing key) — read-only.
+path "secret/data/jit-approver/*" {
+  capabilities = ["read"]
+}
+
 # Delete-only on the metadata path: used by the reaper for hard-deletes.
 # Granting create/update/read on the metadata path is NOT needed and would be
 # over-privileged (it would allow listing all KV versions — principle of least privilege).

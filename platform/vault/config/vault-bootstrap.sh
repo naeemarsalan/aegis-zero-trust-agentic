@@ -197,6 +197,23 @@ vault write auth/kubernetes/role/pfsense-mcp \
   token_ttl="15m" \
   token_max_ttl="1h"
 
+# The ext-proc and jit-approver Deployments use Vault Agent injector
+# annotations (Kubernetes auth) for their static start-up secrets; the JWT
+# roles above cover their runtime SPIFFE-identity logins.
+log "Writing Kubernetes auth roles for ext-proc-delegation and jit-approver..."
+vault write auth/kubernetes/role/ext-proc-delegation \
+  bound_service_account_names="ext-proc-delegation" \
+  bound_service_account_namespaces="mcp-gateway" \
+  token_policies="ext-proc" \
+  token_ttl="15m" \
+  token_max_ttl="1h"
+vault write auth/kubernetes/role/jit-approver \
+  bound_service_account_names="jit-approver" \
+  bound_service_account_namespaces="mcp-gateway" \
+  token_policies="jit-approver" \
+  token_ttl="15m" \
+  token_max_ttl="1h"
+
 # ── 6. KV secrets — MCP tool credentials ─────────────────────────────────────
 # Values come from environment/.env — NEVER committed to git.
 log "Writing pfsense MCP tool credentials to KV..."

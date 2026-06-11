@@ -11,6 +11,12 @@ path "secret/data/mcp-tools/*" {
   capabilities = ["read"]
 }
 
+# Keycloak client secret for the token-exchange call (injected by the Vault
+# Agent at pod start — see deploy/base/deployment.yaml annotations).
+path "secret/data/mcp-gateway/*" {
+  capabilities = ["read"]
+}
+
 # Deny all other paths explicitly to guard against policy inheritance surprises.
 path "*" {
   capabilities = ["deny"]
