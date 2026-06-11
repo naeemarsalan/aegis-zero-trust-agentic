@@ -15,7 +15,7 @@
 #   - processingOptions.requestBodyMode, responseBodyMode — verified enum values: Buffered/None
 #   - extAuth.forwardBody.maxSize — verified type ByteSize, field forwardBody
 #   - extAuth.grpc.requestMetadata — verified map[string]CELExpression
-#   - traffic.authorization.rules[].action/claims — CEL Authorization type
+#   - traffic.authorization {action, policy.matchExpressions[]} — verified from CRD
 #
 # The RemoteJWKS.backendRef points to a Service named "keycloak" in ns "keycloak".
 # The Service must be reachable from mcp-gateway; NetworkPolicy allows this (see networkpolicies.yaml).
@@ -111,29 +111,29 @@ spec:
     # After JWT validation, jwt.claims.groups is a list of group strings.
     # These rules deny requests to specific MCP tools based on group membership.
     #
-    # CEL Authorization field shapes: Authorization.rules[].action + condition
+    # CEL Authorization field shape: {action, policy.matchExpressions[]}
     # The "authorization" field maps to type Authorization (traffic-level).
     # INFERRED: CEL variable "jwt" contains validated claims post-jwtAuthentication.
     # -----------------------------------------------------------------------
+    # Schema (verified against the agentgateway-crds 1.3.0-alpha.1 CRD):
+    # authorization is a single object {action, policy.matchExpressions[]} —
+    # NOT a list of named rules. For `Deny`, ANY matching expression denies.
+    # Upstream caveat: a CEL expression that fails to evaluate is treated as
+    # NOT matched, so a malformed Deny expression fails open. Revisit with
+    # `Require` rules if that risk matters beyond the PoC.
     authorization:
-      rules:
-        # Allow mcp.tool.name "pfsense_*" only to users in group "network-ops"
-        - name: pfsense-tools-network-ops-only
-          action: Deny
-          condition: >-
+      action: Deny
+      policy:
+        matchExpressions:
+          # pfsense_* tools only for group "network-ops"
+          - >-
             request.headers["mcp-tool-name"].startsWith("pfsense_") &&
             !("network-ops" in jwt.claims.groups)
-
-        # Allow mcp.tool.name "pfsense_firewall_*" only to group "firewall-admins"
-        - name: pfsense-firewall-admins-only
-          action: Deny
-          condition: >-
+          # pfsense_firewall_* tools only for group "firewall-admins"
+          - >-
             request.headers["mcp-tool-name"].startsWith("pfsense_firewall_") &&
             !("firewall-admins" in jwt.claims.groups)
-
-        # Example: block read_file tool for all except "platform-engineers"
-        - name: read-file-platform-only
-          action: Deny
-          condition: >-
+          # read_file tool only for group "platform-engineers"
+          - >-
             request.headers["mcp-tool-name"] == "read_file" &&
             !("platform-engineers" in jwt.claims.groups)
