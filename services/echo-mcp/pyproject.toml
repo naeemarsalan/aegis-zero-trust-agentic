@@ -1,0 +1,17 @@
+[project]
+name = "echo-mcp"
+version = "0.1.0"
+description = "Minimal identity-echo MCP server for the UC1 credential-delegation golden test"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+    "starlette>=0.37.0",
+    "uvicorn>=0.30.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

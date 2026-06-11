@@ -28,29 +28,28 @@
       "Bash(kubectl describe *)",
       "Bash(kubectl explain *)",
       "Bash(kubectl version)",
-      "Bash(kubectl logs *)"
-    ],
-    "deny": [
+      "Bash(kubectl logs *)",
       "Bash(oc apply *)",
-      "Bash(oc delete *)",
       "Bash(oc create *)",
       "Bash(oc replace *)",
       "Bash(oc patch *)",
-      "Bash(oc edit *)",
+      "Bash(oc label *)",
+      "Bash(oc annotate *)",
+      "Bash(oc rollout *)",
       "Bash(oc scale *)",
-      "Bash(oc rollout restart *)",
+      "Bash(oc adm *)",
+      "Bash(oc new-project *)",
+      "Bash(oc wait *)",
       "Bash(oc exec *)",
-      "Bash(oc port-forward *)",
-      "Bash(oc run *)",
       "Bash(kubectl apply *)",
-      "Bash(kubectl delete *)",
-      "Bash(kubectl create *)",
-      "Bash(kubectl replace *)",
       "Bash(kubectl patch *)",
-      "Bash(kubectl edit *)",
-      "Bash(kubectl exec *)",
-      "Bash(kubectl port-forward *)",
-      "Bash(kubectl run *)"
+      "Bash(kubectl wait *)",
+      "Bash(podman *)",
+      "Bash(helm *)"
+    ],
+    "deny": [
+      "Bash(oc delete *)",
+      "Bash(kubectl delete *)"
     ]
   }
 }
