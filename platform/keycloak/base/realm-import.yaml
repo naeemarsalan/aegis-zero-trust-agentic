@@ -50,9 +50,28 @@ spec:
         publicClient: false          # confidential
         standardFlowEnabled: false   # no browser login for agent service accounts
         implicitFlowEnabled: false
-        directAccessGrantsEnabled: false
+        # true for the PoC: lets the demo user obtain a token with a simple
+        # password grant (UC1 smoke tests). Disable for production.
+        directAccessGrantsEnabled: true
         serviceAccountsEnabled: true  # enables client_credentials grant
         authorizationServicesEnabled: false
+        # Tokens issued via this client must carry aud=mcp-gateway (validated
+        # by the gateway JWT policy) and the groups claim (CEL RBAC rules).
+        protocolMappers:
+          - name: mcp-gateway-audience
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            config:
+              included.client.audience: mcp-gateway
+              access.token.claim: "true"
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            config:
+              claim.name: groups
+              full.path: "false"
+              access.token.claim: "true"
+              id.token.claim: "true"
         # client secret is auto-generated; retrieve with:
         #   oc -n keycloak exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh \
         #     get clients -r agentic --fields clientId,secret \
