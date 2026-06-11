@@ -188,3 +188,51 @@ spec:
           port: 53
         - protocol: TCP
           port: 6443
+
+---
+# Data plane -> controller xDS (gRPC 9978). The provisioned Gateway proxy
+# blocks on "self workload, state manager" until it can stream config.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dataplane-egress-xds
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: mcp-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway
+      ports:
+        - port: 9978
+          protocol: TCP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-controller-ingress-xds
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: mcp-gateway
+      ports:
+        - port: 9978
+          protocol: TCP
