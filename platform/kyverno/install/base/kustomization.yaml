@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kyverno is deployed via Helm chart rendered through kustomize's helmCharts
+# generator (same pattern as platform/vault). OLM is not an option: no kyverno
+# package exists in the default OpenShift catalogs.
+# Build offline: kustomize build --enable-helm platform/kyverno/install/base
+# Chart: kyverno/kyverno  version: 3.8.1  (app v1.18.1)
+#
+# The kyverno Namespace is owned by platform/kyverno/authz/base — do not add it
+# here or the aggregate overlay will fail with a duplicate resource.
+
+namespace: kyverno
+
+helmCharts:
+  - name: kyverno
+    repo: https://kyverno.github.io/kyverno
+    version: "3.8.1"
+    releaseName: kyverno
+    namespace: kyverno
+    valuesFile: values.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: kyverno-install

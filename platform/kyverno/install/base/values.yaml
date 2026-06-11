@@ -1,0 +1,17 @@
+# Kyverno Helm values — single-node (SNO) PoC sizing.
+# OpenShift: restricted-v2 SCC assigns the UID; the chart does not pin
+# runAsUser, so defaults are SCC-compatible.
+
+admissionController:
+  replicas: 1
+
+backgroundController:
+  replicas: 1
+
+# cleanupController is required: platform/kyverno/cleanup ships a
+# ClusterCleanupPolicy (JIT resource reaping).
+cleanupController:
+  replicas: 1
+
+reportsController:
+  replicas: 1

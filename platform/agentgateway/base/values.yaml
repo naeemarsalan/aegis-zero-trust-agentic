@@ -1,6 +1,6 @@
 # agentgateway controller Helm values
-# Chart: oci://cr.agentgateway.dev/charts/agentgateway  version: 0.0.2
-# App:   v1.3.0-alpha.1  (pinned — re-pin after upstream GA)
+# Chart: oci://cr.agentgateway.dev/charts/agentgateway  version: 1.3.0-alpha.1
+# (chart version == appVersion upstream; the old "0.0.2" pin never existed)
 # Target namespace: mcp-gateway
 
 image:

@@ -7,4 +7,6 @@ metadata:
   name: cluster
   namespace: zero-trust-workload-identity-manager
 spec:
+  # clusterName identifies this cluster within the trust domain (required, immutable).
+  clusterName: anaeem
   trustDomain: anaeem.na-launch.com

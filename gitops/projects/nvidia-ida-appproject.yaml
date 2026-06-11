@@ -37,6 +37,11 @@ spec:
       namespace: agentic-observability
     - server: https://api.anaeem.na-launch.com:6443
       namespace: openshift-sandboxed-containers-operator
+    # Cluster monitoring config (observability app writes both ConfigMaps)
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: openshift-monitoring
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: openshift-user-workload-monitoring
     # Allow cluster-scoped resources on anaeem (e.g. KataConfig, ClusterRole)
     - server: https://api.anaeem.na-launch.com:6443
       namespace: ""

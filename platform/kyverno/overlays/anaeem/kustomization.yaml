@@ -5,10 +5,12 @@ kind: Kustomization
 # Individual sub-components can also be applied independently via their own overlays.
 #
 # Apply order matters:
-#   1. authz/  — Namespace + Deployment + Service + ValidatingPolicies
-#   2. guardrails/  — ClusterPolicies (cluster-scoped, no namespace)
-#   3. cleanup/  — ClusterCleanupPolicy (cluster-scoped)
+#   1. install/ — Kyverno controllers + CRDs via Helm chart (OLM has no kyverno package)
+#   2. authz/  — Namespace + Deployment + Service + ValidatingPolicies
+#   3. guardrails/  — ClusterPolicies (cluster-scoped, no namespace)
+#   4. cleanup/  — ClusterCleanupPolicy (cluster-scoped)
 resources:
+  - ../../install/overlays/anaeem
   - ../../authz/overlays/anaeem
   - ../../guardrails/overlays/anaeem
   - ../../cleanup/overlays/anaeem

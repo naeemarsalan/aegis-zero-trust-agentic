@@ -25,3 +25,6 @@ vendor/
 *.swp
 __pycache__/
 *.pyc
+
+# kustomize --enable-helm chart pull cache (repo-server fetches charts itself)
+charts/

@@ -12,6 +12,23 @@ resources:
   - policy.yaml
   - networkpolicies.yaml
 
+# Controller + CRDs via Helm (requires --enable-helm; exercised in hack/validate.sh).
+# agentgateway-crds ships the agentgateway.dev/v1alpha1 CRDs
+# (AgentgatewayBackend, AgentgatewayPolicy, AgentgatewayParameters) that the
+# CRs in this base depend on. Gateway API CRDs are provided by OpenShift.
+helmCharts:
+  - name: agentgateway-crds
+    repo: oci://cr.agentgateway.dev/charts
+    version: "1.3.0-alpha.1"
+    releaseName: agentgateway-crds
+    namespace: mcp-gateway
+  - name: agentgateway
+    repo: oci://cr.agentgateway.dev/charts
+    version: "1.3.0-alpha.1"
+    releaseName: agentgateway
+    namespace: mcp-gateway
+    valuesFile: values.yaml
+
 labels:
   - pairs:
       app.kubernetes.io/managed-by: kustomize

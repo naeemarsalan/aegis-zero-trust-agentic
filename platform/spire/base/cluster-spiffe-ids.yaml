@@ -12,8 +12,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: ext-proc-delegation
   namespaceSelector:
-    matchNames:
-      - mcp-gateway
+    matchLabels:
+      kubernetes.io/metadata.name: mcp-gateway
   dnsNameTemplates:
     - "ext-proc-delegation.mcp-gateway.svc.cluster.local"
 ---
@@ -29,8 +29,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: jit-approver
   namespaceSelector:
-    matchNames:
-      - mcp-gateway
+    matchLabels:
+      kubernetes.io/metadata.name: mcp-gateway
   dnsNameTemplates:
     - "jit-approver.mcp-gateway.svc.cluster.local"
 ---
@@ -48,5 +48,5 @@ spec:
     matchLabels:
       spiffe.io/spire-managed-identity: "true"
   namespaceSelector:
-    matchNames:
-      - agent-sandbox
+    matchLabels:
+      kubernetes.io/metadata.name: agent-sandbox
