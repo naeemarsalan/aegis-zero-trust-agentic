@@ -20,8 +20,8 @@ helmCharts:
     namespace: kyverno
     valuesFile: values.yaml
 
-labels:
-  - pairs:
-      app.kubernetes.io/managed-by: kustomize
-      app.kubernetes.io/part-of: nvidia-ida
-      app.kubernetes.io/component: kyverno-install
+# NO labels transformer here: kustomize label pairs overwrite the chart's
+# app.kubernetes.io/part-of=kyverno and component labels, which the
+# aggregated ClusterRoles' aggregationRule selectors match on. Overwriting
+# them empties the aggregated roles and every controller fails RBAC sanity
+# checks ("cannot get customresourcedefinitions").
