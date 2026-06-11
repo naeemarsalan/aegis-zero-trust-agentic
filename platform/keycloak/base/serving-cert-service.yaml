@@ -1,0 +1,26 @@
+# Mints the keycloak-tls secret via the OpenShift service-ca operator
+# (Option A in tls-certificate.yaml). The RHBK operator owns the real
+# Services and strips foreign annotations, so a dedicated headless Service
+# carries the serving-cert annotation instead — service-ca creates the
+# secret regardless of whether the Service receives traffic.
+#
+# Note: the cert's SANs are for keycloak-serving-cert.keycloak.svc; clients
+# that verify the route hostname need the cluster service CA bundle or the
+# cert-manager path (Option B) instead. Acceptable for the PoC.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-serving-cert
+  namespace: keycloak
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: keycloak-tls
+spec:
+  clusterIP: None
+  selector:
+    app: keycloak
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8443
+      protocol: TCP

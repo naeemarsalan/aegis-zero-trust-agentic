@@ -9,6 +9,7 @@ namespace: keycloak
 
 resources:
   - cnpg-cluster.yaml
+  - serving-cert-service.yaml  # mints keycloak-tls via service-ca (Option A)
   - tls-certificate.yaml   # contains only comments + Option B cert-manager stub (no-op until uncommented)
   - keycloak-cr.yaml
   - realm-import.yaml
