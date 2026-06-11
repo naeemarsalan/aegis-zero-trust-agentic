@@ -25,7 +25,11 @@ spec:
         prometheus.io/port: "9081"
     spec:
       serviceAccountName: kyverno-authz-server
-      automountServiceAccountToken: false
+      # The authz server discovers ValidatingPolicy CRs via the in-cluster
+      # kube policy source, so it requires the SA token (it crashed with
+      # "no configuration has been provided" when this was false). The SA
+      # itself keeps automount false; only this pod spec opts in.
+      automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
         seccompProfile:
