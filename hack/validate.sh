@@ -97,6 +97,10 @@ else
     # kustomization file — conservative but avoids false negatives.
     HELM_FLAG=""
     component_root="$(dirname "$(dirname "${dir}")")"
+    # Never scan above the repo root (top-level components would resolve to $HOME)
+    if [[ "${component_root}" != "${REPO_ROOT}"/* ]]; then
+      component_root="${dir}"
+    fi
     if grep -rq "helmCharts:" "${component_root}" 2>/dev/null; then
       HELM_FLAG="--enable-helm"
     fi
