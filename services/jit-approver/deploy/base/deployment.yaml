@@ -56,9 +56,8 @@ spec:
             driver: csi.spiffe.io
             readOnly: true
         # tmpfs for Vault-injected secrets (mounted by Vault agent sidecar)
-        - name: vault-secrets
-          emptyDir:
-            medium: Memory
+        # vault-secrets volume/mount come from the Vault Agent injector —
+        # pre-declaring them makes the mutated pod invalid (duplicate name).
       containers:
         - name: jit-approver
           image: oci.arsalan.io/nvidia-ida/jit-approver:dev
@@ -100,8 +99,6 @@ spec:
             - name: spiffe-csi
               mountPath: /var/run/secrets/spiffe.io
               readOnly: true
-            - name: vault-secrets
-              mountPath: /vault/secrets
           livenessProbe:
             httpGet:
               path: /healthz

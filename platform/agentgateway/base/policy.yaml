@@ -55,7 +55,8 @@ spec:
                 # Service must exist in ns keycloak; NetworkPolicy allows egress (see networkpolicies.yaml)
                 group: ""
                 kind: Service
-                name: keycloak
+                # RHBK operator names it keycloak-service
+                name: keycloak-service
                 namespace: keycloak
                 port: 8443
       # MCP OAuth metadata endpoint integration (Keycloak provider)

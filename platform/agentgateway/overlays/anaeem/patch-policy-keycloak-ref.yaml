@@ -1,6 +1,7 @@
 # Patch: AgentgatewayPolicy — Keycloak JWKS backendRef for anaeem cluster.
-# Keycloak Service in ns "keycloak" exposes HTTPS on 8443 (CNPG-backed, RHBK).
-# Adjust port to 8080 if the internal Service is plain HTTP.
+# RHBK names its Service "keycloak-service" (HTTPS 8443). A backendRef to a
+# nonexistent Service makes the controller drop the whole JWT provider and
+# the proxy NACKs with "requires exactly one provider, found 0".
 #
 # NOTE: strategic merge patch on the first provider entry.
 apiVersion: agentgateway.dev/v1alpha1
@@ -22,6 +23,6 @@ spec:
               backendRef:
                 group: ""
                 kind: Service
-                name: keycloak
+                name: keycloak-service
                 namespace: keycloak
                 port: 8443
