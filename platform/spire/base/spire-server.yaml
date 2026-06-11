@@ -1,8 +1,9 @@
 ---
 # SpireServer singleton — ONE per cluster, named "cluster".
 # jwtIssuer must match the public OIDC discovery URL exposed by the Route/ingress.
-# storageClass is set explicitly (nfs-csi) because this cluster has two
-# default StorageClasses (nfs-csi and local-path) — omitting it is ambiguous.
+# storageClass MUST be local-path: the datastore is sqlite3, which hangs on
+# NFS file locking (server froze at "Opening SQL database" on nfs-csi).
+# The cluster has two default StorageClasses, so it must be set explicitly.
 apiVersion: operator.openshift.io/v1alpha1
 kind: SpireServer
 metadata:
@@ -22,6 +23,6 @@ spec:
     connectionString: /run/spire/data/datastore.sqlite3
   persistence:
     # dataDir is the SPIRE server data directory; volume is provisioned by the operator.
-    storageClass: nfs-csi
+    storageClass: local-path
     # 1Gi is sufficient for a single-node cluster with O(100) SVIDs.
     size: 1Gi

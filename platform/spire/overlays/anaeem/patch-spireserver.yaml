@@ -1,6 +1,6 @@
 ---
 # Strategic merge patch: set OIDC issuer and storageClass for anaeem.
-# nfs-csi is explicitly set because the cluster has two default StorageClasses.
+# local-path (not nfs-csi): sqlite3 datastore hangs on NFS file locking.
 apiVersion: operator.openshift.io/v1alpha1
 kind: SpireServer
 metadata:
@@ -9,5 +9,5 @@ metadata:
 spec:
   jwtIssuer: https://spire-oidc.apps.anaeem.na-launch.com
   persistence:
-    storageClass: nfs-csi
+    storageClass: local-path
     size: 1Gi
