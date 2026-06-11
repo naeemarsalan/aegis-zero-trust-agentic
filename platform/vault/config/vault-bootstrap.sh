@@ -116,12 +116,16 @@ log "Enabling Kubernetes secrets engine..."
 enable_or_skip secrets kubernetes -path=kubernetes
 
 # Configure against the anaeem cluster API.
-# The Vault server SA token is auto-mounted at the standard path in the pod.
+# When run inside the Vault pod the SA token/CA come from the standard mount;
+# when run from a workstation, export VAULT_K8S_SA_JWT and VAULT_K8S_CA_CERT
+# (fetch them from the vault-0 pod with oc exec).
 log "Configuring Kubernetes secrets engine..."
+SA_JWT="${VAULT_K8S_SA_JWT:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)}"
+SA_CA="${VAULT_K8S_CA_CERT:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)}"
 vault write kubernetes/config \
   kubernetes_host="https://api.anaeem.na-launch.com:6443" \
-  service_account_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-  kubernetes_ca_cert="$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)"
+  service_account_jwt="${SA_JWT}" \
+  kubernetes_ca_cert="${SA_CA}"
 
 # H3 fix: Per-session ephemeral Vault roles (jit-<session-id>) replace the
 # static jit-scoped role.
@@ -164,6 +168,25 @@ vault write kubernetes/config \
 
 log "Kubernetes secrets engine configured (per-session jit-* roles; no static jit-scoped role)"
 
+# ── 5b. Kubernetes AUTH method (Vault Agent Injector) ───────────────────────
+# The pfsense-mcp Deployment uses injector annotations with role "pfsense-mcp"
+# (default auth mount auth/kubernetes). Vault validates pod SA tokens via
+# TokenReview using its own in-cluster identity (auth-delegator binding is
+# created by the Helm chart).
+log "Enabling Kubernetes auth method..."
+enable_or_skip auth kubernetes
+vault write auth/kubernetes/config \
+  kubernetes_host="https://kubernetes.default.svc:443"
+
+log "Writing pfsense-mcp policy and Kubernetes auth role..."
+vault policy write pfsense-mcp "${SCRIPT_DIR}/pfsense-mcp.hcl"
+vault write auth/kubernetes/role/pfsense-mcp \
+  bound_service_account_names="pfsense-mcp" \
+  bound_service_account_namespaces="agentic-mcp" \
+  token_policies="pfsense-mcp" \
+  token_ttl="15m" \
+  token_max_ttl="1h"
+
 # ── 6. KV secrets — MCP tool credentials ─────────────────────────────────────
 # Values come from environment/.env — NEVER committed to git.
 log "Writing pfsense MCP tool credentials to KV..."
@@ -171,7 +194,18 @@ vault kv put secret/mcp-tools/pfsense \
   api_url="${PFSENSE_API_URL}" \
   api_key="${PFSENSE_API_KEY}"
 
-log "Secret written to secret/mcp-tools/pfsense"
+# Paths the pfsense-mcp injector templates actually read
+# (platform/rhoai/base/pfsense-mcp-deployment.yaml):
+: "${PFSENSE_USERNAME:?source environment/.env first — PFSENSE_USERNAME missing}"
+: "${PFSENSE_PASSWORD:?source environment/.env first — PFSENSE_PASSWORD missing}"
+: "${MCP_API_TOKENS:?source environment/.env first — MCP_API_TOKENS missing}"
+vault kv put secret/pfsense/credentials \
+  username="${PFSENSE_USERNAME}" \
+  password="${PFSENSE_PASSWORD}"
+vault kv put secret/mcp-tools/mcp-tokens \
+  tokens="${MCP_API_TOKENS}"
+
+log "Secrets written: secret/mcp-tools/pfsense, secret/pfsense/credentials, secret/mcp-tools/mcp-tokens"
 
 # ── 7. Completion ─────────────────────────────────────────────────────────────
 log ""

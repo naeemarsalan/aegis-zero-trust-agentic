@@ -70,15 +70,17 @@ server:
   dataStorage:
     enabled: true
     size: 10Gi
-    # Explicit storageClassName required — anaeem cluster has two default SCs
-    # (nfs-csi and local-path both marked default). Always be explicit.
-    storageClass: nfs-csi
+    # local-path, NOT nfs-csi: raft/boltdb hangs on NFS file locking — the
+    # server wedged during `operator init` until storage moved off NFS (same
+    # failure class as the SPIRE sqlite and CNPG initdb hangs).
+    # Explicit because the cluster has two default StorageClasses.
+    storageClass: local-path
     accessMode: ReadWriteOnce
 
   auditStorage:
     enabled: true
     size: 10Gi
-    storageClass: nfs-csi
+    storageClass: local-path
     accessMode: ReadWriteOnce
 
   resources:
