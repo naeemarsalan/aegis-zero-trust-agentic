@@ -18,7 +18,7 @@ metadata:
 spec:
   host: mcp-gateway.apps.anaeem.na-launch.com
   port:
-    targetPort: http  # Service port named "http" (8080) from the Gateway's provisioned Service
+    targetPort: listener-8080  # the controller names the provisioned Service port listener-<port>
   to:
     kind: Service
     name: mcp-gateway
