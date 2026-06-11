@@ -11,6 +11,7 @@ resources:
   - httproute-mcp.yaml
   - policy.yaml
   - networkpolicies.yaml
+  - scc-rolebinding.yaml
 
 # Controller + CRDs via Helm (requires --enable-helm; exercised in hack/validate.sh).
 # agentgateway-crds ships the agentgateway.dev/v1alpha1 CRDs

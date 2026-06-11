@@ -1,0 +1,21 @@
+# The agentgateway controller provisions the Gateway data-plane Deployment
+# with a hardcoded runAsUser: 10101, which restricted-v2 rejects (UID must
+# come from the namespace range). nonroot-v2 permits any explicit non-root
+# UID, which is exactly what the upstream image expects.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-dataplane-nonroot-v2-scc
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: agentic-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:nonroot-v2
+subjects:
+  # SA created by the controller for the provisioned Gateway data plane
+  - kind: ServiceAccount
+    name: mcp-gateway
+    namespace: mcp-gateway

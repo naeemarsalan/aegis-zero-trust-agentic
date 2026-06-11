@@ -5,6 +5,9 @@ namespace: mcp-gateway
 
 resources:
   - ../../base
+  # Custom services fronted by the gateway (images: oci.arsalan.io/nvidia-ida/*:dev)
+  - ../../../../services/ext-proc-delegation/deploy/overlays/anaeem
+  - ../../../../services/jit-approver/deploy/overlays/anaeem
 
 patches:
   # Patch Gateway hostname to the anaeem cluster apps domain
