@@ -85,8 +85,17 @@ log "Configuring JWT auth (SPIRE OIDC issuer)..."
 # SPIRE-SVID-bearing workload that omits the role parameter.  Force-explicit role
 # selection means a misconfigured caller fails closed rather than silently
 # inheriting a privileged policy.
-vault write auth/jwt/config \
-  oidc_discovery_url="https://spire-oidc.apps.anaeem.na-launch.com"
+# The route is served by the router's wildcard cert, which Vault's container
+# trust store does not include. Export OIDC_DISCOVERY_CA_PEM=<path to the
+# router CA chain PEM> (e.g. from `openssl s_client -showcerts`).
+if [ -n "${OIDC_DISCOVERY_CA_PEM:-}" ]; then
+  vault write auth/jwt/config \
+    oidc_discovery_url="https://spire-oidc.apps.anaeem.na-launch.com" \
+    oidc_discovery_ca_pem=@"${OIDC_DISCOVERY_CA_PEM}"
+else
+  vault write auth/jwt/config \
+    oidc_discovery_url="https://spire-oidc.apps.anaeem.na-launch.com"
+fi
 
 # Role: ext-proc-delegation
 log "Writing JWT role ext-proc-delegation..."
