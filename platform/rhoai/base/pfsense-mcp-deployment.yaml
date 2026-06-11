@@ -167,17 +167,17 @@ spec:
             capabilities:
               drop:
                 - ALL
-          # Health probe: upstream Dockerfile healthcheck hits http://127.0.0.1:3000/mcp
+          # /mcp is behind BearerAuthMiddleware — an unauthenticated httpGet
+          # probe gets 401 and kubelet kills a perfectly healthy pod. TCP
+          # probes until the server grows an unauthenticated health route.
           readinessProbe:
-            httpGet:
-              path: /mcp
+            tcpSocket:
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
-            httpGet:
-              path: /mcp
+            tcpSocket:
               port: 3000
             initialDelaySeconds: 20
             periodSeconds: 20
