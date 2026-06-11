@@ -45,6 +45,8 @@ spec:
                   - keycloak
                   - mcp-gateway
                   - agentic-observability
+                  # pfsense-mcp (Vault Agent injected) runs here
+                  - agentic-mcp
       ports:
         - port: 8200
           protocol: TCP
