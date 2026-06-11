@@ -195,6 +195,8 @@ spec:
 # Allow Vault to reach the OpenShift router: the JWT auth method fetches the
 # SPIRE OIDC discovery document via its public route URL (the issuer in the
 # discovery doc is the route host, so the internal Service URL cannot be used).
+# The SNO router is hostNetwork (pod IP == node IP), so a namespaceSelector
+# can never match it — an ipBlock on :443 is required.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -211,9 +213,8 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: openshift-ingress
+        - ipBlock:
+            cidr: 0.0.0.0/0
       ports:
         - port: 443
           protocol: TCP
