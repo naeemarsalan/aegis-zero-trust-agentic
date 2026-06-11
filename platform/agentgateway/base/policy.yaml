@@ -59,9 +59,12 @@ spec:
                 name: keycloak-service
                 namespace: keycloak
                 port: 8443
-      # MCP OAuth metadata endpoint integration (Keycloak provider)
-      mcp:
-        provider: Keycloak
+      # NOTE: the MCP OAuth metadata extension (mcp.provider: Keycloak) is
+      # intentionally NOT enabled. With it on, the gateway enforces the MCP
+      # authorization spec (resource-URI audience + /.well-known metadata),
+      # 401s plain JWTs, and the metadata endpoints aren't even reachable —
+      # the HTTPRoute only matches /mcp. Re-enable once the route exposes
+      # /.well-known/oauth-protected-resource and clients do MCP-spec OAuth.
 
     # -----------------------------------------------------------------------
     # (b) External Authorization — gRPC Kyverno (fail-closed)
