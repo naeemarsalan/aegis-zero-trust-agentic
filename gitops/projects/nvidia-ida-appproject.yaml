@@ -15,6 +15,10 @@ spec:
 
   destinations:
     # --- anaeem platform-target cluster ---
+    # Default destination of the 00-operators Application (Subscriptions land in
+    # their own namespaces below; this is only the app-level destination tuple).
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: openshift-operators
     - server: https://api.anaeem.na-launch.com:6443
       namespace: zero-trust-workload-identity-manager
     - server: https://api.anaeem.na-launch.com:6443

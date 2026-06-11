@@ -11,7 +11,7 @@ spec:
   source:
     repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
     targetRevision: main
-    path: platform/isolation/overlays/anaeem
+    path: platform/isolation/kata-runtimeclass
 
   destination:
     server: https://api.anaeem.na-launch.com:6443
