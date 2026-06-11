@@ -25,4 +25,4 @@ spec:
                 kind: Service
                 name: keycloak-service
                 namespace: keycloak
-                port: 8443
+                port: 8080  # plain-HTTP in-cluster listener (httpEnabled in keycloak CR)

@@ -50,6 +50,11 @@ spec:
 
   http:
     tlsSecret: keycloak-tls       # secret injected by service-ca or cert-manager
+    # Plain-HTTP listener for IN-CLUSTER consumers that cannot speak TLS to
+    # the service-ca cert (the agentgateway controller fetches the realm JWKS
+    # over http; it got EOF talking plain HTTP to the 8443 TLS port). JWKS is
+    # public key material; the external Route remains TLS-only.
+    httpEnabled: true
 
   proxy:
     headers: xforwarded           # trust X-Forwarded-* from OpenShift ingress
