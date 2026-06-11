@@ -1,0 +1,30 @@
+# Envoy CheckRequest: mcp-admins calling add_firewall_rule with a present-but-INVALID
+# X-JIT-Session-JWT.  The header value is a syntactically plausible JWT string but
+# it has a bad signature and is therefore not verifiable against the jit-approver JWKS.
+# This test covers the C3 fix: a non-empty session header that is NOT a valid signed
+# JWT from jit-approver MUST be denied 403.
+#
+# JWT payload groups: ["mcp-admins"]
+#
+# Expected outcomes:
+#   no-unauthenticated-calls       → pass (valid Keycloak JWT, mcp-admins group)
+#   tool-allowlist-mcp-users       → pass (mcp-admins not subject to mcp-users allowlist)
+#   dangerous-tools-admins-only    → fail/deny 403 (session JWT signature invalid →
+#                                    hasValidJitSession=false)
+#   deny-restricted-group          → pass (not restricted)
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers:
+          authorization: "Bearer eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaHR0cHM6Ly9rZXljbG9hay5hcHBzLmFuYWVlbS5uYS1sYXVuY2guY29tL3JlYWxtcy9hZ2VudGljIiwgInN1YiI6ICJ1c2VyLXRlc3QiLCAiYXVkIjogIm1jcC1nYXRld2F5IiwgImV4cCI6IDk5OTk5OTk5OTksICJpYXQiOiAxNzE4MDAwMDAwLCAiZ3JvdXBzIjogWyJtY3AtYWRtaW5zIl19.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          # X-JIT-Session-JWT present but carries an INVALID signature —
+          # jwt.Decode will return Valid=false when verified against jit-approver JWKS.
+          # Payload claims: iss=jit-approver, tool_scope=["add_firewall_rule"], exp=far future
+          # but the signature bytes are attacker-chosen garbage → fails JWKS verification.
+          x-jit-session-jwt: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJzZXNzLWludmFsaWQtc2lnIiwic3ViIjoidXNlci10ZXN0IiwidG9vbF9zY29wZSI6WyJhZGRfZmlyZXdhbGxfcnVsZSJdLCJpc3MiOiJodHRwczovL2ppdC1hcHByb3Zlci5tY3AtZ2F0ZXdheS5zdmMuY2x1c3Rlci5sb2NhbDo4MDgwIiwiYXVkIjoia3l2ZXJuby1hdXRoeiIsImlhdCI6MTcxODAwMDAwMCwiZXhwIjo5OTk5OTk5OTk5fQ.INVALIDSIGNATURE_NOT_FROM_REAL_JIT_APPROVER"
+          content-type: application/json
+        body: |
+          {"jsonrpc":"2.0","id":"10","method":"tools/call","params":{"name":"add_firewall_rule","arguments":{"action":"pass","protocol":"tcp","destination_port":"8443"}}}

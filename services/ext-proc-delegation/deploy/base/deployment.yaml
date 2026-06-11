@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ext-proc-delegation
+  namespace: mcp-gateway
+  labels:
+    app: ext-proc-delegation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ext-proc-delegation
+  template:
+    metadata:
+      labels:
+        app: ext-proc-delegation
+      annotations:
+        # Vault Agent Injector: inject client-secret onto tmpfs, never in etcd.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "ext-proc-delegation"
+        vault.hashicorp.com/agent-inject-secret-client-secret: "secret/data/mcp-gateway/keycloak-client-secret"
+        vault.hashicorp.com/agent-inject-template-client-secret: |
+          {{- with secret "secret/data/mcp-gateway/keycloak-client-secret" -}}
+          {{ .Data.data.secret }}
+          {{- end }}
+        vault.hashicorp.com/agent-inject-file-client-secret: "client-secret"
+        vault.hashicorp.com/secret-volume-path-client-secret: "/vault/secrets"
+    spec:
+      serviceAccountName: ext-proc-delegation
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # SPIFFE CSI driver injects the workload API socket.
+        - name: spiffe-workload-api
+          csi:
+            driver: "csi.spiffe.io"
+            readOnly: true
+        # Vault Agent injects secrets here (tmpfs, never persisted).
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: ext-proc-delegation
+          image: oci.arsalan.io/nvidia-ida/ext-proc-delegation:dev
+          imagePullPolicy: Always
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: grpc
+              containerPort: 9000
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: KEYCLOAK_TOKEN_URL
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
+            - name: EXCHANGE_MODE
+              value: "standard"
+            - name: EXCHANGE_CLIENT_ID
+              value: "ext-proc-delegation"
+            - name: EXCHANGE_SECRET_FILE
+              value: "/vault/secrets/client-secret"
+            - name: DOWNSTREAM_AUDIENCE
+              value: "mcp-downstream"
+            # Inbound JWT verification — ext-proc independently verifies the
+            # caller token (signature/iss/aud/exp) against Keycloak JWKS rather
+            # than trusting the gateway (defense in depth).
+            - name: KEYCLOAK_JWKS_URL
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs"
+            - name: KEYCLOAK_ISSUER
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            - name: EXPECTED_AUDIENCE
+              value: "mcp-gateway"
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_JWT_ROLE
+              value: "ext-proc-delegation"
+            - name: VAULT_JWT_AUDIENCE
+              value: "vault"
+            - name: TOOL_SECRET_PATH_PREFIX
+              value: "secret/data/mcp-tools/"
+            - name: FAIL_MODE
+              value: "closed"
+            - name: MAX_BODY_BYTES
+              value: "262144"
+            - name: GRPC_ADDR
+              value: ":9000"
+            - name: METRICS_ADDR
+              value: ":9090"
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: "unix:///spiffe-workload-api/spire-agent.sock"
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+          livenessProbe:
+            grpc:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

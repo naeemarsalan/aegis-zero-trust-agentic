@@ -1,0 +1,77 @@
+# agentgateway controller Helm values
+# Chart: oci://cr.agentgateway.dev/charts/agentgateway  version: 0.0.2
+# App:   v1.3.0-alpha.1  (pinned — re-pin after upstream GA)
+# Target namespace: mcp-gateway
+
+image:
+  registry: cr.agentgateway.dev
+  tag: "v1.3.0-alpha.1"
+  pullPolicy: IfNotPresent
+
+controller:
+  replicaCount: 1
+  logLevel: info
+
+  image:
+    registry: cr.agentgateway.dev
+    repository: controller
+    tag: "v1.3.0-alpha.1"
+    pullPolicy: IfNotPresent
+
+  # OpenShift SCC assigns UID — do NOT set runAsUser here.
+  # runAsNonRoot is enforced at pod level via podSecurityContext.
+
+  xds:
+    mode: tls
+
+  service:
+    enabled: true
+    type: ClusterIP
+
+proxy:
+  image:
+    registry: cr.agentgateway.dev
+    repository: agentgateway
+    tag: "v1.3.0-alpha.1"
+
+# OpenShift: SCC (restricted-v2) assigns UID automatically.
+# Setting runAsNonRoot=true without a fixed UID is correct.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Namespace discovery — watch mcp-gateway and agentic-mcp
+discoveryNamespaceSelectors:
+  - matchLabels:
+      kubernetes.io/metadata.name: mcp-gateway
+  - matchLabels:
+      kubernetes.io/metadata.name: agentic-mcp
+
+monitoring:
+  enabled: false
+
+inferenceExtension:
+  enabled: false
+
+# GatewayClass is provisioned by the controller; no explicit parameterRef needed
+# for default class "agentgateway".
+gatewayClassParametersRefs: {}

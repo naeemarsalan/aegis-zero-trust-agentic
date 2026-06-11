@@ -1,0 +1,52 @@
+---
+# ClusterSPIFFEID for ext-proc-delegation in mcp-gateway namespace.
+# Grants all pods running under the ext-proc-delegation ServiceAccount a SVID.
+# SVID format: spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/ext-proc-delegation
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mcp-gateway-ext-proc-delegation
+spec:
+  spiffeIDTemplate: "spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ext-proc-delegation
+  namespaceSelector:
+    matchNames:
+      - mcp-gateway
+  dnsNameTemplates:
+    - "ext-proc-delegation.mcp-gateway.svc.cluster.local"
+---
+# ClusterSPIFFEID for jit-approver in mcp-gateway namespace.
+# SVID format: spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/jit-approver
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mcp-gateway-jit-approver
+spec:
+  spiffeIDTemplate: "spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: jit-approver
+  namespaceSelector:
+    matchNames:
+      - mcp-gateway
+  dnsNameTemplates:
+    - "jit-approver.mcp-gateway.svc.cluster.local"
+---
+# ClusterSPIFFEID for agent workloads in agent-sandbox namespace.
+# Only pods labelled spiffe.io/spire-managed-identity: "true" receive a SVID.
+# This opt-in label prevents untrusted pods from automatically getting an SVID.
+# SVID format: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/<serviceAccountName>
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: agent-sandbox-workloads
+spec:
+  spiffeIDTemplate: "spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      spiffe.io/spire-managed-identity: "true"
+  namespaceSelector:
+    matchNames:
+      - agent-sandbox

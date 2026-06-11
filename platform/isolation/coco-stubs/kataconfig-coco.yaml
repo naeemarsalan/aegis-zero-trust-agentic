@@ -1,0 +1,42 @@
+# PRODUCTION TARGET — NOT APPLIED IN POC (no TEE hardware on SNO VM)
+#
+# This KataConfig enables Confidential Containers (CoCo) with peer-pods
+# backed by AMD SEV-SNP or Intel TDX.  It requires:
+#   - Bare-metal nodes with AMD EPYC (Genoa/Bergamo/Milan) or Intel Sapphire Rapids.
+#   - OSC operator 1.7+ with CoCo feature gate enabled.
+#   - Trustee (KBS) deployed and reachable from the node — see trustee-stub.yaml.
+#   - An AMD SEV firmware blob or Intel TDX PCCS configured in the OS.
+#
+# Differences from the PoC KataConfig (kata-runtimeclass/kataconfig.yaml):
+#   - enablePeerPods: true   — workload VMs are launched as remote peer-pods
+#                              rather than local QEMU VMs.
+#   - Runtime class created: kata-remote (alias for peer-pod shim).
+#   - Each peer-pod VM runs inside a hardware-encrypted memory region (SEV/TDX).
+#   - Attestation flow: peer-pod -> Trustee (KBS) -> Vault secret release.
+
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: cluster-kataconfig-coco
+  annotations:
+    platform.nvidia-ida/status: "NOT-APPLIED — POC stub for production CoCo target"
+    platform.nvidia-ida/requires: "bare-metal AMD SEV-SNP or Intel TDX nodes"
+spec:
+  enablePeerPods: true
+
+  # When peer-pods is true, the operator reads peer-pod configuration from
+  # the ConfigMap "peer-pods-cm" in the openshift-sandboxed-containers-operator
+  # namespace.  That CM must contain cloud-provider credentials (via ESO from
+  # Vault) pointing to the VM image and security group for peer-pod VMs.
+  #
+  # Example peer-pods-cm fields (production — source from Vault, not git):
+  #   CLOUD_PROVIDER: "vsphere"           # or libvirt / aws / azure / gcp
+  #   VXLAN_PORT: "9000"
+  #   AA_KBC_PARAMS: "cc_kbc::http://trustee.agentic-mcp.svc.cluster.local:8080"
+
+  checkNodeEligibility: true
+
+  kataConfigPoolSelector:
+    matchLabels:
+      # Bare-metal TEE nodes should be labelled separately from the SNO master pool.
+      node-role.kubernetes.io/coco-worker: ""

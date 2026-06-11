@@ -1,0 +1,10 @@
+---
+# ZeroTrustWorkloadIdentityManager singleton — ONE per cluster, named "cluster".
+# trustDomain is IMMUTABLE after first apply: do not change without full reinstall.
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+  namespace: zero-trust-workload-identity-manager
+spec:
+  trustDomain: anaeem.na-launch.com

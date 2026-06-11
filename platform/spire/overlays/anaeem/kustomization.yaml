@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Overlay patches parameterize trust domain and hostnames so another cluster
+# (e.g. anaeem2) can fork this overlay without touching base manifests.
+patches:
+  # Patch ZeroTrustWorkloadIdentityManager with the anaeem trust domain.
+  - path: patch-ztwim-trustdomain.yaml
+    target:
+      group: operator.openshift.io
+      version: v1alpha1
+      kind: ZeroTrustWorkloadIdentityManager
+      name: cluster
+
+  # Patch SpireServer with the anaeem OIDC issuer and explicit storageClass.
+  - path: patch-spireserver.yaml
+    target:
+      group: operator.openshift.io
+      version: v1alpha1
+      kind: SpireServer
+      name: cluster
+
+  # Patch SpireOIDCDiscoveryProvider with the anaeem OIDC issuer.
+  - path: patch-oidc-provider.yaml
+    target:
+      group: operator.openshift.io
+      version: v1alpha1
+      kind: SpireOIDCDiscoveryProvider
+      name: cluster
+
+  # Patch the OIDC Route hostname.
+  - path: patch-oidc-route.yaml
+    target:
+      group: route.openshift.io
+      version: v1
+      kind: Route
+      name: spire-oidc-discovery-provider

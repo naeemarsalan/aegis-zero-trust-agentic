@@ -1,0 +1,154 @@
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: dangerous-tools-admins-only
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/component: authz-policy
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # ── JIT session verification approach ────────────────────────────────────
+    # kyverno-envoy-plugin v0.3.0 CEL mode does NOT support out-of-band
+    # apiCall/http calls to arbitrary endpoints within a ValidatingPolicy.
+    # Therefore the gate uses a SIGNED SESSION JWT approach instead:
+    #
+    #   1. When jit-approver transitions a session to "issued", it mints a
+    #      short-lived RS256 JWT (X-JIT-Session-JWT) signed with its dedicated
+    #      signing key (kid "jit-approver-key-1"; JWKS at /jwks). Claims (the
+    #      jit-approver is the single source of truth for this shape — see
+    #      services/jit-approver/src/jit_approver/signing.py):
+    #        { "jti"/"sub": "<session-id>",
+    #          "tool_scope": ["<dangerous_mcp_tool_name>", ...],
+    #          "iss": "https://jit-approver.mcp-gateway.svc.cluster.local:8080",
+    #          "aud": "kyverno-authz",
+    #          "iat": <issued_at>, "nbf": <issued_at>,
+    #          "exp": <issued_at + approved_duration> }
+    #   2. The AGENT presents this JWT as the X-JIT-Session-JWT header on the
+    #      dangerous tool call (UC2). The gateway forwards it to THIS ext_authz
+    #      check BEFORE ext-proc; ext-proc does NOT inject it. The session JWT is
+    #      the agent's OWN approved capability (scoped/signed/short-lived), not a
+    #      downstream credential — so this does not violate no-credential-passing.
+    #   3. This policy verifies the JWT against the jit-approver JWKS endpoint
+    #      (http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks), checks
+    #      exp (decodedJwt.Valid), asserts iss matches the jit-approver service
+    #      (the constant below is kept identical to signing.JIT_SESSION_ISS), and
+    #      validates that the requested tool is within the tool_scope claim.
+    #   4. A non-empty plain X-JIT-Session header alone (the old gate) is NOT
+    #      sufficient — only a cryptographically valid X-JIT-Session-JWT passes.
+    #
+    # WHY NOT apiCall: The Kyverno Envoy plugin v0.3.0 CEL engine exposes
+    # jwks.Fetch(), jwt.Decode(), and mcp.Parse() builtins but does not expose
+    # an http.Get() / apiCall primitive that can reach cluster-internal endpoints
+    # at policy evaluation time. Session validity is therefore encoded in a
+    # signed, expiring JWT rather than via a live HTTP callback to jit-approver.
+    # See platform/kyverno/authz/README.md for the full design rationale.
+    policy.nvidia-ida/description: >
+      Write/mutating pfSense tools (add_firewall_rule and any tool whose name
+      starts with 'add_', 'set_', 'delete_', 'update_', 'create_', 'remove_',
+      'apply_', 'reload_') require TWO independently verified conditions:
+      (1) the caller JWT (from Keycloak) must be Valid AND the caller must be a
+      member of 'mcp-admins', AND (2) the request must carry a cryptographically
+      valid X-JIT-Session-JWT signed by jit-approver (JWKS at
+      http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks), with
+      state==issued (encoded as iss claim), exp not elapsed, and the requested
+      tool within the session's tool_scope claim.  A non-empty plain session
+      header string is NOT acceptable — only a verified signed JWT passes.
+      Missing either condition → 403.
+spec:
+  evaluation:
+    mode: Envoy
+  variables:
+    # ── User JWT (Keycloak) ──────────────────────────────────────────────────
+    - name: jwks
+      expression: |
+        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
+
+    - name: jwtString
+      expression: |
+        "authorization" in object.attributes.request.http.headers &&
+        object.attributes.request.http.headers["authorization"].startsWith("Bearer ") ?
+          object.attributes.request.http.headers["authorization"].split(" ")[1] : ""
+
+    - name: decodedJwt
+      expression: |
+        variables.jwtString == "" ?
+          jwt.Decode("eyJhbGciOiJIUzI1NiJ9.e30.invalid", variables.jwks) :
+          jwt.Decode(variables.jwtString, variables.jwks)
+
+    # H4 fix: gate group reads on decodedJwt.Valid AND non-empty token string.
+    # If the token did not validate (expired, wrong aud, bad sig, alg:none etc.)
+    # isMcpAdmin is false → gate denies.
+    - name: isMcpAdmin
+      expression: |
+        variables.jwtString != "" &&
+        variables.decodedJwt.Valid &&
+        ("groups" in variables.decodedJwt.Claims) &&
+        variables.decodedJwt.Claims["groups"].exists(g, g == "mcp-admins")
+
+    - name: toolName
+      expression: mcp.Parse(object.attributes.request.http.body).ToolCall.Name
+
+    # Dangerous tool detection: explicit list + write-prefix heuristic.
+    - name: isDangerousTool
+      expression: |
+        variables.toolName == "add_firewall_rule" ||
+        variables.toolName.startsWith("add_") ||
+        variables.toolName.startsWith("set_") ||
+        variables.toolName.startsWith("delete_") ||
+        variables.toolName.startsWith("update_") ||
+        variables.toolName.startsWith("create_") ||
+        variables.toolName.startsWith("remove_") ||
+        variables.toolName.startsWith("apply_") ||
+        variables.toolName.startsWith("reload_")
+
+    # ── JIT session JWT (signed by jit-approver) ─────────────────────────────
+    # JWKS served by jit-approver at /jwks; keys are rotated with the pod SVID.
+    - name: jitJwks
+      expression: |
+        jwks.Fetch("http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks")
+
+    # Raw signed session JWT from the X-JIT-Session-JWT header.
+    # A missing or empty header decodes to an intentionally-invalid sentinel so
+    # all downstream checks fail closed (decodedJitJwt.Valid == false).
+    - name: jitSessionJwtString
+      expression: |
+        "x-jit-session-jwt" in object.attributes.request.http.headers &&
+        object.attributes.request.http.headers["x-jit-session-jwt"] != "" ?
+          object.attributes.request.http.headers["x-jit-session-jwt"] :
+          ""
+
+    - name: decodedJitJwt
+      expression: |
+        variables.jitSessionJwtString == "" ?
+          jwt.Decode("eyJhbGciOiJIUzI1NiJ9.e30.invalid", variables.jitJwks) :
+          jwt.Decode(variables.jitSessionJwtString, variables.jitJwks)
+
+    # C3 fix: hasValidJitSession requires ALL of:
+    #   • the session JWT signature validated against jit-approver JWKS
+    #   • decodedJitJwt.Valid == true (exp not elapsed, aud correct)
+    #   • iss == "https://jit-approver.mcp-gateway.svc.cluster.local:8080"
+    #   • the session covers the requested tool (tool_scope claim contains toolName)
+    - name: hasValidJitSession
+      expression: |
+        variables.jitSessionJwtString != "" &&
+        variables.decodedJitJwt.Valid &&
+        ("iss" in variables.decodedJitJwt.Claims) &&
+        variables.decodedJitJwt.Claims["iss"] == "https://jit-approver.mcp-gateway.svc.cluster.local:8080" &&
+        ("tool_scope" in variables.decodedJitJwt.Claims) &&
+        variables.decodedJitJwt.Claims["tool_scope"].exists(s, s == variables.toolName)
+
+  matchConditions:
+    - name: isMcpToolsCall
+      expression: |
+        object.attributes.request.http.method == "POST" &&
+        object.attributes.request.http.path.startsWith("/mcp") &&
+        "authorization" in object.attributes.request.http.headers &&
+        mcp.Parse(object.attributes.request.http.body).Method == mcp.ToolsCallMethod
+
+  validations:
+    - expression: |
+        !variables.isDangerousTool ?
+          envoy.Allowed().Response() :
+          (variables.isMcpAdmin && variables.hasValidJitSession ?
+            envoy.Allowed().Response() :
+            envoy.Denied(403).Response())

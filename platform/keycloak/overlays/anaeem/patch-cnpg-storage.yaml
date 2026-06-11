@@ -1,0 +1,12 @@
+# Explicit nfs-csi storageClass for anaeem cluster.
+# The anaeem cluster has two default StorageClasses (nfs-csi and local-path).
+# Always set storageClassName explicitly to avoid ambiguity.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-db
+  namespace: keycloak
+spec:
+  storage:
+    storageClass: nfs-csi
+    size: 10Gi

@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-ida-operators
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: nvidia-ida
+
+  source:
+    repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
+    targetRevision: main
+    path: platform/00-operators
+
+  destination:
+    server: https://api.anaeem.na-launch.com:6443
+    namespace: openshift-operators   # cluster-scoped resources land here by convention
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,173 @@
+---
+# default-deny-all for kyverno namespace (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from mcp-gateway (ext_authz gRPC on port 9081)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-mcp-gateway
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 9081
+          protocol: TCP
+
+---
+# Allow ingress from kube-apiserver (Kyverno admission webhooks)
+# Kyverno registers ValidatingWebhookConfigurations and MutatingWebhookConfigurations;
+# the kube-apiserver must be able to reach Kyverno's webhook port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-kube-api-webhooks
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 9443
+          protocol: TCP   # Kyverno webhook HTTPS
+
+---
+# Allow egress to kube-api (Kyverno admission controller watches all resources;
+# policy controller syncs CRDs; background controller generates reports).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kube-api
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 6443
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 172.30.0.1/32
+
+---
+# Allow egress to keycloak for JWKS endpoint (Kyverno authz server validates
+# JWT bearer tokens against Keycloak's JWKS before making policy decisions).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-keycloak-jwks
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+
+---
+# Allow egress to jit-approver in mcp-gateway: the dangerous-tool authz policy fetches the
+# jit-approver JWKS at http://jit-approver.mcp-gateway.svc:8080/jwks to verify the signed
+# X-JIT-Session-JWT capability token. Without this the /jwks fetch is dropped and the gate
+# fails closed — denying every dangerous tool even with a valid approved session.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-jit-approver-jwks
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8080
+          protocol: TCP   # jit-approver /jwks
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

@@ -1,0 +1,134 @@
+{
+  "_comment": "Expected sequence of JIT audit events emitted by jit-approver for one complete session.",
+  "_comment_loki_query": "{app=\"jit-approver\"} | json | session_id = \"<SESSION_ID>\"",
+  "_comment_placeholders": "Values in <ANGLE_BRACKETS> are runtime-generated and will vary per run.",
+  "_comment_hash_note": "justification_hash and action_hashes are sha256 — never raw text.",
+
+  "events": [
+    {
+      "_step": "1 — EscalationRequest received (POST /requests)",
+      "ts": "<ISO-8601-UTC>",
+      "level": "INFO",
+      "logger": "jit_approver.audit",
+      "msg": "jit_request",
+      "event": "jit_request",
+      "session_id": "<UUIDv4>",
+      "requester_sub": "<Keycloak sub UUID of user arsalan>",
+      "namespace": "agent-sandbox",
+      "verbs": ["get", "list"],
+      "resources": ["pods"],
+      "tool_scope": ["add_firewall_rule"],
+      "justification_hash": "<sha256 of the justification text>"
+    },
+    {
+      "_step": "2 — Gitea PR created (same request handler, emitted after PR open)",
+      "_note": "This event is implicit in the jit_request step — the PR URL appears in the API response, not a separate audit event.",
+      "_pr_url": "https://git.arsalan.io/anaeem/nvidia-ida/pulls/<N>",
+      "_pr_branch": "jit/<SESSION_ID>",
+      "_pr_file": "grants/<SESSION_ID>.yaml"
+    },
+    {
+      "_step": "3 — PR merged (human approval) — Gitea webhook fires",
+      "ts": "<ISO-8601-UTC>",
+      "level": "INFO",
+      "logger": "jit_approver.audit",
+      "msg": "jit_approved",
+      "event": "jit_approved",
+      "session_id": "<UUIDv4>",
+      "merged_by": "<Gitea username of the approver>",
+      "pr_number": "<integer PR number>"
+    },
+    {
+      "_step": "4 — Vault issues ephemeral k8s role + SA token; jit-approver mints session JWT",
+      "_note_credential_delivery": "Both credentials (session_jwt + sa_token) are returned in GET /requests/{id}/status once state==issued, over the SVID-mTLS channel. The Vault Agent injector-at-pod-start pattern is NOT used for JIT sessions (impossible: the Vault role does not exist until after PR merge). See ADR 0006.",
+      "_note_session_jwt": "The session_jwt is an RS256 JWT signed by jit-approver (JWKS at /jwks). Claims: sub=<session_id>, iss='https://jit-approver.mcp-gateway.svc.cluster.local:8080', aud=['kyverno-authz'], tool_scope=[approved MCP tool names], nbf/iat/exp aligned to the approved window. The agent presents it as X-JIT-Session-JWT; Kyverno verifies statelessly. It is the agent's own scoped capability — NOT a downstream service credential.",
+      "_note_reaper": "jit-approver background task deletes kubernetes/roles/jit-<session> from Vault on expiry (prevents role accumulation — N3). It also hard-deletes secret/data/jit/<session> and secret/metadata/jit/<session> from KV.",
+      "ts": "<ISO-8601-UTC>",
+      "level": "INFO",
+      "logger": "jit_approver.audit",
+      "msg": "jit_issued",
+      "event": "jit_issued",
+      "session_id": "<UUIDv4>",
+      "namespace": "agent-sandbox",
+      "tool_scope": ["add_firewall_rule"],
+      "duration_minutes": 15,
+      "expires_at": "<ISO-8601-UTC expiry timestamp, 15m after issuance>",
+      "vault_role": "kubernetes/roles/jit-<UUIDv4>",
+      "session_jwt_jti": "<jti claim of the minted session JWT — same as session_id>"
+    },
+    {
+      "_step": "5 — Agent posts post-session summary (POST /requests/{id}/summary)",
+      "ts": "<ISO-8601-UTC>",
+      "level": "INFO",
+      "logger": "jit_approver.audit",
+      "msg": "jit_summary",
+      "event": "jit_summary",
+      "session_id": "<UUIDv4>",
+      "requester_sub": "<Keycloak sub UUID of user arsalan>",
+      "outcome_hash": "<sha256 of the outcome text>",
+      "actions_count": 6,
+      "action_hashes": [
+        "<sha256 of 'add_firewall_rule via MCP gateway (with X-JIT-Session-JWT) — 200 OK'>",
+        "<sha256 of 'add_firewall_rule via MCP gateway (without X-JIT-Session-JWT) — 403 DENIED'>",
+        "<sha256 of 'oc get pods -n agent-sandbox with sa_token — success'>",
+        "<sha256 of 'oc get pods -n kyverno with sa_token — FORBIDDEN (scope limit confirmed)'>",
+        "<sha256 of 'session_jwt after expiry — 403 (exp elapsed)'>",
+        "<sha256 of 'sa_token after expiry — Unauthorized'>"
+      ]
+    }
+  ],
+
+  "kube_api_audit_attribution": {
+    "_comment": "Kube API server audit.log entries show the JIT SA token as the user.",
+    "_query": "oc adm node-logs --role=master --path=kube-apiserver/audit.log | grep 'jit-<SESSION_ID>'",
+    "expected_user": {
+      "username": "system:serviceaccount:agent-sandbox:jit-<SESSION_ID>",
+      "uid": "<dynamically assigned>",
+      "groups": ["system:serviceaccounts", "system:serviceaccounts:agent-sandbox", "system:authenticated"]
+    },
+    "expected_objectRef": {
+      "resource": "pods",
+      "namespace": "agent-sandbox",
+      "apiVersion": "v1"
+    },
+    "expected_verb": "list",
+    "expected_responseStatus_code": 200
+  },
+
+  "kyverno_gate_behaviour": {
+    "_comment": "Kyverno dangerous-tools-admins-only gate verifies X-JIT-Session-JWT statelessly.",
+    "with_valid_session_jwt": {
+      "_description": "Request carries Authorization Bearer <keycloak-token> AND X-JIT-Session-JWT: <session_jwt>.",
+      "isMcpAdmin": true,
+      "hasValidJitSession": true,
+      "outcome": "envoy.Allowed() — HTTP 200"
+    },
+    "without_session_jwt_header": {
+      "_description": "Request carries only Authorization Bearer; X-JIT-Session-JWT header absent.",
+      "isMcpAdmin": true,
+      "hasValidJitSession": false,
+      "outcome": "envoy.Denied(403) — header missing, jitSessionJwtString empty, decodedJitJwt.Valid=false"
+    },
+    "with_expired_session_jwt": {
+      "_description": "Request carries an X-JIT-Session-JWT whose exp has elapsed.",
+      "isMcpAdmin": true,
+      "hasValidJitSession": false,
+      "outcome": "envoy.Denied(403) — decodedJitJwt.Valid=false (exp elapsed)"
+    },
+    "jwks_url": "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks",
+    "expected_iss": "https://jit-approver.mcp-gateway.svc.cluster.local:8080",
+    "expected_aud": "kyverno-authz",
+    "required_claims": ["iss", "aud", "sub", "tool_scope", "nbf", "iat", "exp"]
+  },
+
+  "denial_scenario": {
+    "_comment": "If the PR is CLOSED without merging, the jit_denied event is emitted instead of jit_approved/jit_issued.",
+    "ts": "<ISO-8601-UTC>",
+    "level": "INFO",
+    "logger": "jit_approver.audit",
+    "msg": "jit_denied",
+    "event": "jit_denied",
+    "session_id": "<UUIDv4>",
+    "reason": "pr_closed_without_merge"
+  }
+}

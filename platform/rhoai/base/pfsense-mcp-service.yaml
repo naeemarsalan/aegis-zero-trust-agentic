@@ -1,0 +1,32 @@
+---
+# Service: pfsense-mcp
+#
+# Exposes pfsense-mcp at pfsense-mcp.agentic-mcp.svc.cluster.local:8000.
+# This is the address the agentgateway AgentgatewayBackend references
+# (see platform/agentgateway/base/backend-pfsense-mcp.yaml).
+#
+# Contract: Service port 8000 is FIXED (gateway backend is configured to it).
+# The actual container listens on 3000 (upstream gensecaihq server).
+# targetPort 3000 bridges the two without changing the gateway contract.
+#
+# The app.kubernetes.io/component=mcp-server label is the RHOAI discovery label.
+# RHOAI 3.x Llama Stack integration scans for Services with this label in
+# namespaces marked opendatahub.io/dashboard=true to build its MCP tool registry.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pfsense-mcp
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: pfsense-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  selector:
+    app: pfsense-mcp
+  ports:
+    - name: http-mcp
+      port: 8000
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP

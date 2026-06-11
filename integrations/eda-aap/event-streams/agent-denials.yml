@@ -1,0 +1,45 @@
+---
+# event-streams/agent-denials.yml
+#
+# Declarative definition of the AAP 2.6 Event Stream "agent-denials".
+#
+# This file documents the desired state.  Actual creation is performed by
+# setup.sh via the AAP EDA REST API (/api/eda/v1/event-streams/).
+#
+# In AAP 2.6 an Event Stream is an always-on inbound webhook endpoint managed
+# by the EDA controller.  It receives Alertmanager webhook POSTs and forwards
+# them to all rulebook activations that reference it.  The activation itself
+# requires NO sources: block; the platform injects the event stream.
+#
+# The ingress URL returned by the AAP API looks like:
+#   https://aap-aap.apps.hammer.na-launch.com/api/eda/v1/event-streams/<uuid>/
+# Paste this URL into the AlertmanagerConfig receiver (see README.md).
+
+event_stream:
+  name: agent-denials
+  description: >
+    Receives AgentPermissionDenied Alertmanager webhook events and forwards
+    them to the agent-remediation rulebook activation.
+  # credential_type: "Token" — created in controller-credential.yml
+  # token value is read from env AAP_EDA_STREAM_TOKEN at setup.sh runtime.
+  forward_events: true
+  # channel_name maps to the activation that consumes this stream.
+  # setup.sh sets this after the activation is created.
+
+# ------------------------------------------------------------------
+# Companion: AAP Controller credential for EDA -> Controller JT trigger
+# ------------------------------------------------------------------
+# Also documented here for reference; created by setup.sh.
+controller_credential:
+  name: aap-controller-for-eda
+  description: >
+    "Red Hat Ansible Automation Platform" credential used by EDA to trigger
+    job templates on the AAP controller.  Tokens are deprecated as of AAP 2.5;
+    use username/password or OAuth application client credentials instead.
+  credential_type: "Red Hat Ansible Automation Platform"
+  inputs:
+    host: "https://aap-aap.apps.hammer.na-launch.com"
+    # username and password read from env at setup.sh runtime:
+    #   AAP_CONTROLLER_USERNAME
+    #   AAP_CONTROLLER_PASSWORD
+    # ssl_verify: true (default)

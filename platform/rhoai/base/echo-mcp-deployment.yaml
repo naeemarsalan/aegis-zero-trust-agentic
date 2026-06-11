@@ -1,0 +1,95 @@
+---
+# Deployment: echo-mcp
+#
+# UC1 golden-test server.  It reads the Authorization header that ext_proc
+# forwards on behalf of the end-user (downstream delegation), parses the JWT
+# principal from it, and echoes it back in the MCP tool response.
+#
+# This proves the zero-trust identity-forwarding invariant:
+#   "The downstream MCP server sees the USER's identity, never the agent's."
+#
+# No backend credentials are required; no Vault injection needed.
+# The server exposes a single MCP tool: echo_identity.
+#
+# Image note:
+#   Build target: oci.arsalan.io/nvidia-ida/echo-mcp:dev
+#   Source: images/echo-mcp/ in this repo (to be created).
+#   The image should be a minimal Python/FastAPI or Go process implementing
+#   StreamableHTTP MCP with one tool that returns the Authorization JWT sub/azp.
+#   No public MCP echo image was verifiable at time of authoring (2026-06-11);
+#   use the build target above and add a Containerfile under images/echo-mcp/.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-mcp
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: echo-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo-mcp
+  template:
+    metadata:
+      labels:
+        app: echo-mcp
+        app.kubernetes.io/name: echo-mcp
+        app.kubernetes.io/component: mcp-server
+        app.kubernetes.io/part-of: nvidia-ida
+    spec:
+      serviceAccountName: echo-mcp
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo-mcp
+          image: oci.arsalan.io/nvidia-ida/echo-mcp:dev
+          imagePullPolicy: Always
+          ports:
+            - name: http-mcp
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: MCP_LISTEN_PORT
+              value: "8000"
+            - name: LOKI_PUSH_URL
+              value: "http://172.16.2.252:3100"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

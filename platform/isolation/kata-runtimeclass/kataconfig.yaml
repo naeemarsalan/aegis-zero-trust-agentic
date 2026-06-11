@@ -1,0 +1,24 @@
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: cluster-kataconfig
+  annotations:
+    # Operator subscription lives in platform/00-operators (openshift-sandboxed-containers-operator).
+    # Do NOT create an OperatorGroup or Subscription here.
+    platform.nvidia-ida/apply-order: "after platform/00-operators"
+spec:
+  # enablePeerPods: false — nested virt confirmed on anaeem-sno (vmx in /proc/cpuinfo,
+  # /dev/kvm present), so we use the standard Kata runtime backed by QEMU on the host.
+  # Peer-pods (Azure/AWS VM-based TEE) are NOT enabled in this PoC.
+  enablePeerPods: false
+
+  # checkNodeEligibility: let the operator determine which nodes support Kata.
+  # On SNO there is only one node (anaeem-sno); the operator will apply the MachineConfig
+  # to that node and reboot it — see README for maintenance-window guidance.
+  checkNodeEligibility: true
+
+  # kataConfigPoolSelector selects the MachineConfigPool to apply Kata to.
+  # On SNO the only pool is "master" (worker and master share the single node).
+  kataConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/master: ""

@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-ida
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: nvidia-ida
+
+  source:
+    repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
+    targetRevision: main
+    path: gitops/applications
+
+  destination:
+    # Runs on the hub cluster — manages child Applications only
+    server: https://kubernetes.default.svc
+    namespace: openshift-gitops
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false   # PoC: human reviews before auto-healing
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

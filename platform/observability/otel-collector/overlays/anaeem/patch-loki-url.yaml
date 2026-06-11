@@ -1,0 +1,25 @@
+# Overlay patch: sets LOKI_PUSH_URL and PROMETHEUS_REMOTE_WRITE_URL for anaeem cluster.
+#
+# LOKI_PUSH_URL: Loki push endpoint — existing Grafana/Loki stack at 172.16.2.252:3100
+# (from environment/clusters.yaml: observability.lokiPush)
+#
+# PROMETHEUS_REMOTE_WRITE_URL: Prometheus remote-write endpoint — existing Prometheus at
+# 172.16.2.252:9090 (from environment/clusters.yaml: observability.grafana base host).
+# The prometheusremotewrite exporter in the base configmap forwards agent token/cost/latency
+# metrics here in addition to the primary UWM-scraped prometheus exporter on :8889.
+# Set to empty string ("") to disable remote-write (keep the exporter declared but inactive).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: agentic-observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: otel-collector
+          env:
+            - name: LOKI_PUSH_URL
+              value: "http://172.16.2.252:3100"
+            - name: PROMETHEUS_REMOTE_WRITE_URL
+              value: "http://172.16.2.252:9090/api/v1/write"

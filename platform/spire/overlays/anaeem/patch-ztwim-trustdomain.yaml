@@ -1,0 +1,11 @@
+---
+# Strategic merge patch: set trust domain for the anaeem cluster.
+# WARNING: trustDomain is IMMUTABLE after the SpireServer is first created.
+# Changing it requires deleting the SpireServer CR and all registered SVIDs.
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+  namespace: zero-trust-workload-identity-manager
+spec:
+  trustDomain: anaeem.na-launch.com

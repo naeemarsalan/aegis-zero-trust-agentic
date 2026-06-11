@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # ClusterCleanupPolicy (preferred — requires Kyverno 1.11+ with cleanup feature).
+  # On anaeem (Kyverno 1.16) this is the active resource.
+  - jit-resource-cleanup-policy.yaml
+  # jit-resource-cleanup-cronjob.yaml is provided as a commented fallback only.
+  # Uncomment it (and comment out the policy above) if ClusterCleanupPolicy CRD
+  # is unavailable.
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: kyverno-cleanup

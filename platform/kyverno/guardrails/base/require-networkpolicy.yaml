@@ -1,0 +1,79 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-networkpolicy
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Require and generate default-deny NetworkPolicy
+    policies.kyverno.io/description: >
+      Every platform namespace must have a default-deny NetworkPolicy.
+      The generate rule automatically creates a default-deny-all policy when a
+      new namespace matching our label selector is created, providing a
+      zero-trust network baseline.  The validate rule ensures no one has
+      accidentally deleted the default-deny policy from an existing namespace.
+      validationFailureAction is Audit for PoC.
+    # NOTE: flip validationFailureAction to Enforce before production.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    # Auto-generate a default-deny NetworkPolicy when a new platform namespace appears.
+    - name: generate-default-deny-networkpolicy
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  app.kubernetes.io/part-of: nvidia-ida
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: default-deny
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              app.kubernetes.io/managed-by: kyverno
+              app.kubernetes.io/part-of: nvidia-ida
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Ingress
+              - Egress
+
+    # Validate that a default-deny NetworkPolicy exists in platform namespaces.
+    - name: check-default-deny-networkpolicy-exists
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              namespaces:
+                - zero-trust-workload-identity-manager
+                - keycloak
+                - vault
+                - mcp-gateway
+                - kyverno
+                - agentic-mcp
+                - agent-sandbox
+                - agentic-observability
+      validate:
+        message: >
+          Namespace must have a NetworkPolicy named 'default-deny' with
+          podSelector: {} and policyTypes [Ingress, Egress].
+        deny:
+          conditions:
+            all:
+              - key: "{{ networkpolicies_count }}"
+                operator: Equals
+                value: 0
+        foreach:
+          - list: "request.object.metadata.name"
+            context:
+              - name: networkpolicies_count
+                apiCall:
+                  urlPath: "/apis/networking.k8s.io/v1/namespaces/{{element}}/networkpolicies"
+                  jmesPath: "items[?metadata.name=='default-deny'] | length(@)"

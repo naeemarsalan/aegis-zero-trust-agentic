@@ -1,0 +1,23 @@
+# TODO: Replace <EVENT-STREAM-UUID> with the actual UUID after creating the
+# Event Stream in AAP EDA. See alerts/README.md for instructions.
+#
+# Example:
+#   url: "https://aap-aap.apps.hammer.na-launch.com/eda-event-streams/api/eda/v1/external_event_stream/abcd1234-ef56-7890-abcd-ef1234567890/post/"
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: agentic-eda-routing
+  namespace: agentic-observability
+spec:
+  receivers:
+    - name: eda-event-stream
+      webhookConfigs:
+        - url: "https://aap-aap.apps.hammer.na-launch.com/eda-event-streams/api/eda/v1/external_event_stream/<EVENT-STREAM-UUID>/post/"
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                key: bearer-token
+                name: eda-webhook-creds
+          sendResolved: true
+          maxAlerts: 0

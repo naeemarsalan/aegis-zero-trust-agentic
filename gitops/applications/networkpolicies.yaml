@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-ida-networkpolicies
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: nvidia-ida
+
+  source:
+    repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
+    targetRevision: main
+    path: platform/networkpolicies/overlays/anaeem
+
+  destination:
+    server: https://api.anaeem.na-launch.com:6443
+    namespace: ""   # NetworkPolicies are namespace-scoped; ArgoCD applies to each ns via the manifests
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

@@ -1,0 +1,108 @@
+# AgentgatewayBackend: pfsense-mcp
+# Proxies StreamableHTTP MCP traffic to pfsense-mcp.agentic-mcp.svc.cluster.local:8000/mcp.
+# Verified field shapes from agentgateway/controller/api/v1alpha1/agentgateway/agentgateway_backend_types.go
+# (MCPBackend.Targets[].Static: host, port, path, protocol).
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: pfsense-mcp
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: pfsense-mcp
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  mcp:
+    targets:
+      - name: pfsense-mcp
+        static:
+          host: pfsense-mcp.agentic-mcp.svc.cluster.local
+          port: 8000
+          path: /mcp
+          protocol: StreamableHTTP
+    sessionRouting: Stateful
+    failureMode: FailClosed
+
+  # -----------------------------------------------------------------------
+  # FUTURE: Hub AAP MCP upstreams (cross-cluster — uncomment when NetworkPolicies
+  # and Vault PKI are wired for cross-cluster mTLS).
+  # -----------------------------------------------------------------------
+  # The hub servers live at aap-mcp-server ns on the virt cluster.
+  # Access will require a ServiceEntry or tunnel; backend hostnames below are
+  # illustrative placeholders based on the hub cluster's service DNS.
+  #
+  # Additional backends should be separate AgentgatewayBackend resources;
+  # shown here as comments only:
+  #
+  # ---
+  # apiVersion: agentgateway.dev/v1alpha1
+  # kind: AgentgatewayBackend
+  # metadata:
+  #   name: aap-mcp-ansible
+  #   namespace: mcp-gateway
+  # spec:
+  #   mcp:
+  #     targets:
+  #       - name: aap-mcp-ansible
+  #         static:
+  #           host: aap-mcp-ansible.aap-mcp-server.svc.cluster.local  # cross-cluster — TODO tunnel
+  #           port: 8000
+  #           path: /mcp
+  #           protocol: StreamableHTTP
+  #     sessionRouting: Stateful
+  #     failureMode: FailClosed
+  #
+  # ---
+  # apiVersion: agentgateway.dev/v1alpha1
+  # kind: AgentgatewayBackend
+  # metadata:
+  #   name: aap-mcp-eda
+  #   namespace: mcp-gateway
+  # spec:
+  #   mcp:
+  #     targets:
+  #       - name: aap-mcp-eda
+  #         static:
+  #           host: aap-mcp-eda.aap-mcp-server.svc.cluster.local  # cross-cluster — TODO tunnel
+  #           port: 8001
+  #           path: /mcp
+  #           protocol: StreamableHTTP
+  #     sessionRouting: Stateful
+  #     failureMode: FailClosed
+  #
+  # ---
+  # apiVersion: agentgateway.dev/v1alpha1
+  # kind: AgentgatewayBackend
+  # metadata:
+  #   name: aap-mcp-lint
+  #   namespace: mcp-gateway
+  # spec:
+  #   mcp:
+  #     targets:
+  #       - name: aap-mcp-lint
+  #         static:
+  #           host: aap-mcp-lint.aap-mcp-server.svc.cluster.local  # cross-cluster — TODO tunnel
+  #           port: 8002
+  #           path: /mcp
+  #           protocol: StreamableHTTP
+  #     sessionRouting: Stateful
+  #     failureMode: FailClosed
+  #
+  # ---
+  # apiVersion: agentgateway.dev/v1alpha1
+  # kind: AgentgatewayBackend
+  # metadata:
+  #   name: aap-mcp-redhat-docs
+  #   namespace: mcp-gateway
+  # spec:
+  #   mcp:
+  #     targets:
+  #       - name: aap-mcp-redhat-docs
+  #         static:
+  #           host: aap-mcp-redhat-docs.aap-mcp-server.svc.cluster.local  # cross-cluster — TODO tunnel
+  #           port: 8003
+  #           path: /mcp
+  #           protocol: StreamableHTTP
+  #     sessionRouting: Stateful
+  #     failureMode: FailClosed
+  # -----------------------------------------------------------------------

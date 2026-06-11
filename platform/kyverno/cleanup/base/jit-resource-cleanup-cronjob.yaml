@@ -1,0 +1,59 @@
+# CronJob fallback for clusters where ClusterCleanupPolicy CRD is not yet
+# available (e.g. Kyverno < 1.11 or policy engine feature-gate disabled).
+# Deploy EITHER this CronJob OR the ClusterCleanupPolicy above — not both.
+# On anaeem with Kyverno 1.16+ the ClusterCleanupPolicy is preferred.
+# This file is included in the kustomization as a comment-reference only.
+# To use the CronJob instead: uncomment in kustomization.yaml and comment out
+# jit-resource-cleanup-policy.yaml.
+#
+# ---
+# apiVersion: batch/v1
+# kind: CronJob
+# metadata:
+#   name: jit-resource-cleanup
+#   namespace: kyverno
+#   labels:
+#     app.kubernetes.io/component: kyverno-cleanup
+#     app.kubernetes.io/part-of: nvidia-ida
+# spec:
+#   schedule: "*/5 * * * *"
+#   concurrencyPolicy: Forbid
+#   successfulJobsHistoryLimit: 3
+#   failedJobsHistoryLimit: 3
+#   jobTemplate:
+#     spec:
+#       template:
+#         spec:
+#           serviceAccountName: jit-cleanup
+#           automountServiceAccountToken: false
+#           restartPolicy: OnFailure
+#           securityContext:
+#             runAsNonRoot: true
+#             seccompProfile:
+#               type: RuntimeDefault
+#           containers:
+#             - name: cleanup
+#               image: registry.redhat.io/openshift4/ose-cli:latest
+#               securityContext:
+#                 allowPrivilegeEscalation: false
+#                 capabilities:
+#                   drop: ["ALL"]
+#                 readOnlyRootFilesystem: true
+#               command:
+#                 - /bin/bash
+#                 - -c
+#                 - |
+#                   NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+#                   for ns in mcp-gateway agent-sandbox agentic-mcp; do
+#                     for kind in serviceaccount role rolebinding; do
+#                       kubectl get ${kind} -n ${ns} \
+#                         -l app.kubernetes.io/managed-by=vault-jit \
+#                         -o json | \
+#                       jq -r --arg now "${NOW}" \
+#                         '.items[] | select(.metadata.annotations["jit.nvidia-ida/expires-at"] // "" | . != "" and . <= $now) | .metadata.name' | \
+#                       while read name; do
+#                         echo "Deleting expired ${kind}/${name} in ${ns}"
+#                         kubectl delete ${kind} -n ${ns} "${name}" --ignore-not-found
+#                       done
+#                     done
+#                   done

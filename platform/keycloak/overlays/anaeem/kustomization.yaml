@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# anaeem-specific patches.
+# Currently the base is already parameterized for anaeem.
+# Add patches here when a second overlay (e.g. anaeem2) requires different values.
+patches:
+  # Patch CNPG Cluster to ensure nfs-csi storageClass (belt-and-suspenders for cluster
+  # that has two default SCs; base already sets storageClass explicitly).
+  - path: patch-cnpg-storage.yaml
+    target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: keycloak-db
+
+  # Patch Keycloak instance count (already 1 in base; explicit here for visibility).
+  - path: patch-keycloak-instances.yaml
+    target:
+      group: k8s.keycloak.org
+      version: v2beta1
+      kind: Keycloak
+      name: keycloak

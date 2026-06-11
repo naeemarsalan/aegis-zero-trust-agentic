@@ -1,0 +1,29 @@
+# Envoy CheckRequest: mcp-admins group calling add_firewall_rule WITH a valid
+# X-JIT-Session-JWT (C3 fix: signed session JWT, not a plain string).
+# JWT payload groups: ["mcp-admins"]
+#
+# The X-JIT-Session-JWT value below is the stub used by kyverno-json policy tests;
+# the test framework mocks jwks.Fetch() and jwt.Decode() so the signature bytes are
+# not verified — the mock returns Valid=true with the stubbed Claims.
+# In integration tests (chainsaw) jit-approver mints a real RS256 JWT.
+#
+# Expected outcomes:
+#   no-unauthenticated-calls       → pass (valid JWT, mcp-admins group)
+#   tool-allowlist-mcp-users       → pass (mcp-admins not subject to mcp-users allowlist)
+#   dangerous-tools-admins-only    → pass (mcp-admins + valid JIT session JWT)
+#   deny-restricted-group          → pass (not restricted)
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers:
+          authorization: "Bearer eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaHR0cHM6Ly9rZXljbG9hay5hcHBzLmFuYWVlbS5uYS1sYXVuY2guY29tL3JlYWxtcy9hZ2VudGljIiwgInN1YiI6ICJ1c2VyLXRlc3QiLCAiYXVkIjogIm1jcC1nYXRld2F5IiwgImV4cCI6IDk5OTk5OTk5OTksICJpYXQiOiAxNzE4MDAwMDAwLCAiZ3JvdXBzIjogWyJtY3AtYWRtaW5zIl19.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          # X-JIT-Session-JWT: signed JWT minted by jit-approver on session issuance.
+          # Claims (stub for policy tests): iss=jit-approver, tool_scope=["add_firewall_rule"],
+          #   aud=kyverno-authz, exp=far-future, Valid=true (mocked by test framework).
+          x-jit-session-jwt: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJqaXQtc2Vzcy1hYmMxMjMiLCJzdWIiOiJ1c2VyLXRlc3QiLCJ0b29sX3Njb3BlIjpbImFkZF9maXJld2FsbF9ydWxlIl0sImlzcyI6Imh0dHBzOi8vamt0LWFwcHJvdmVyLm1jcC1nYXRld2F5LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAiLCJhdWQiOiJreXZlcm5vLWF1dGh6IiwiaWF0IjoxNzE4MDAwMDAwLCJleHAiOjk5OTk5OTk5OTl9.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          content-type: application/json
+        body: |
+          {"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"add_firewall_rule","arguments":{"action":"pass","protocol":"tcp","destination_port":"8443"}}}

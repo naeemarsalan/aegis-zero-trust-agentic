@@ -1,0 +1,12 @@
+# Envoy CheckRequest: OPTIONS preflight (CORS).
+# Expected: no-unauthenticated-calls → allow (public path)
+object:
+  attributes:
+    request:
+      http:
+        method: OPTIONS
+        path: /mcp
+        headers:
+          origin: https://some-client.example.com
+          access-control-request-method: POST
+        body: ""

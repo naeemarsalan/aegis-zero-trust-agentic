@@ -1,0 +1,28 @@
+---
+# Namespace: agentic-mcp
+# Labeled as a Red Hat OpenShift AI (RHOAI) Data Science Project.
+# The opendatahub.io/dashboard: "true" label causes RHOAI Dashboard to list this
+# namespace as a Data Science Project, enabling Llama Stack / model-serving discovery
+# and the RHOAI pipeline/workbench UI for this project.
+#
+# NOTE: This namespace is ALSO referenced by platform/networkpolicies/ (default-deny
+# + allow-ingress-from-mcp-gateway-only). Apply networkpolicies AFTER this component.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-mcp
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: rhoai-agentic-mcp
+    # RHOAI Data Science Project discovery label.
+    # Without this label the namespace does NOT appear in the RHOAI Dashboard
+    # and Llama Stack agent model-serving pipelines cannot resolve it.
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: "Agentic MCP Servers"
+    openshift.io/description: >
+      Data Science Project hosting the pfsense-mcp and echo-mcp MCP servers.
+      All traffic is routed exclusively through the mcp-gateway (agentgateway +
+      ext-proc-delegation). Vault Agent Injector delivers backend credentials to
+      pfsense-mcp via an in-memory tmpfs volume — no secrets touch etcd.

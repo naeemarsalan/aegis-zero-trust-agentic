@@ -1,0 +1,103 @@
+---
+# Role: demo-agent-jit-receiver
+# Namespace: agent-sandbox
+#
+# This Role grants the demo-agent ServiceAccount the minimum permissions needed
+# to READ its own JIT-issued token from Vault-injected files.
+#
+# IMPORTANT: The demo-agent does NOT directly have any Kubernetes API permissions.
+# The JIT-issued SA token is a SEPARATE short-lived token, dynamically provisioned
+# by Vault (kubernetes secrets engine) at approval time and injected via Vault Agent.
+# This Role only allows the agent to run in the sandbox namespace.
+#
+# The jit-approver creates a dynamic Role/RoleBinding scoped to jit-<session-id>
+# at approval time, using the Vault kubernetes/creds/jit-scoped backend.
+# That dynamic RoleBinding is automatically revoked when the Vault lease expires.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-agent-pod-reader
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: demo-agent-pod-reader
+    app.kubernetes.io/part-of: nvidia-ida
+rules:
+  # The agent can list and get pods in its own namespace only.
+  # This is a static minimal grant — NOT the JIT-issued grant.
+  # The JIT grant (from Vault) is a separate SA token with separate RBAC.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# RoleBinding: demo-agent -> demo-agent-pod-reader
+# Binds the static (non-JIT) minimal role to the demo-agent SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-agent-pod-reader
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: demo-agent-pod-reader
+    app.kubernetes.io/part-of: nvidia-ida
+subjects:
+  - kind: ServiceAccount
+    name: demo-agent
+    namespace: agent-sandbox
+roleRef:
+  kind: Role
+  name: demo-agent-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole: jit-sa-creator
+# Allows jit-approver to create ServiceAccounts and RoleBindings
+# when issuing JIT credentials via the Vault Kubernetes secrets engine.
+#
+# This ClusterRole is bound to the jit-approver ServiceAccount (in mcp-gateway ns).
+# It is scoped to ONLY the namespaces in the JIT allowlist via RoleBindings
+# (not ClusterRoleBindings) — principle of least privilege.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jit-approver-credential-issuer
+  labels:
+    app.kubernetes.io/name: jit-approver-credential-issuer
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # This ClusterRole is bound per-namespace via RoleBinding, not ClusterRoleBinding.
+    # It must NOT be cluster-scoped in practice.
+    nvidia-ida/scope-note: "Bound only in agent-sandbox and agentic-mcp via RoleBindings"
+rules:
+  # Create/manage ServiceAccounts for JIT sessions
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "delete", "get", "list"]
+  # Create/delete token requests for JIT SAs
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  # Create/delete RoleBindings scoped to JIT grants
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create", "delete", "get", "list"]
+  # Read pods (needed for scope validation at approval time)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# RoleBinding: jit-approver (mcp-gateway ns) gets credential-issuer role in agent-sandbox
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jit-approver-credential-issuer
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: jit-approver-credential-issuer
+    app.kubernetes.io/part-of: nvidia-ida
+subjects:
+  - kind: ServiceAccount
+    name: jit-approver
+    namespace: mcp-gateway
+roleRef:
+  kind: ClusterRole
+  name: jit-approver-credential-issuer
+  apiGroup: rbac.authorization.k8s.io

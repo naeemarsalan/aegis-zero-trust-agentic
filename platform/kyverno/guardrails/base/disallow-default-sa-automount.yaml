@@ -1,0 +1,58 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-default-sa-automount
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Disallow default ServiceAccount token auto-mount
+    policies.kyverno.io/description: >
+      Pods in platform namespaces must not automount the default ServiceAccount
+      token unless explicitly required.  Auto-mounted tokens are a common pivot
+      vector in container escape scenarios.  Each workload should use a dedicated
+      ServiceAccount with automountServiceAccountToken: false set either on the SA
+      or the Pod spec.
+      validationFailureAction is Audit for PoC — flip to Enforce once all
+      workloads are confirmed to have explicit SA settings.
+    # NOTE: flip validationFailureAction to Enforce before production.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-no-default-sa-automount
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces:
+                - zero-trust-workload-identity-manager
+                - keycloak
+                - vault
+                - mcp-gateway
+                - kyverno
+                - agentic-mcp
+                - agent-sandbox
+                - agentic-observability
+      exclude:
+        any:
+          # Allow the Kyverno system pods themselves (they need token access).
+          - resources:
+              namespaces: ["kyverno"]
+              selector:
+                matchLabels:
+                  app.kubernetes.io/name: kyverno
+      validate:
+        message: >
+          Pods must not automount the default ServiceAccount token.
+          Set automountServiceAccountToken: false on the Pod spec or on the
+          dedicated ServiceAccount.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.automountServiceAccountToken }}"
+                operator: Equals
+                value: true
+              - key: "{{ request.object.spec.serviceAccountName }}"
+                operator: Equals
+                value: default

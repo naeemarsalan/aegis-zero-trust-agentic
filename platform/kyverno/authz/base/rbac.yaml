@@ -1,0 +1,32 @@
+---
+# ClusterRole allows the authz server to create SubjectAccessReview objects
+# (needed if SAR-based policies are ever added; harmless when not).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno-authz-server
+  labels:
+    app.kubernetes.io/name: kyverno-authz-server
+    app.kubernetes.io/component: authz-server
+    app.kubernetes.io/part-of: nvidia-ida
+rules:
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-authz-server
+  labels:
+    app.kubernetes.io/name: kyverno-authz-server
+    app.kubernetes.io/component: authz-server
+    app.kubernetes.io/part-of: nvidia-ida
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno-authz-server
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-authz-server
+    namespace: kyverno

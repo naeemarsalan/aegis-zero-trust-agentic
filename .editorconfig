@@ -1,0 +1,46 @@
+root = true
+
+# ── defaults for all files ────────────────────────────────────────────────────
+[*]
+charset             = utf-8
+end_of_line         = lf
+insert_final_newline  = true
+trim_trailing_whitespace = true
+
+# ── YAML (Kustomize, Kubernetes manifests) ────────────────────────────────────
+[*.{yaml,yml}]
+indent_style = space
+indent_size  = 2
+max_line_length = 120
+
+# ── Go source ─────────────────────────────────────────────────────────────────
+[*.go]
+indent_style = tab
+indent_size  = 4
+max_line_length = 120
+
+# ── Python ────────────────────────────────────────────────────────────────────
+[*.py]
+indent_style = space
+indent_size  = 4
+max_line_length = 88
+
+# ── Shell scripts ─────────────────────────────────────────────────────────────
+[*.sh]
+indent_style = space
+indent_size  = 2
+
+# ── JSON ──────────────────────────────────────────────────────────────────────
+[*.json]
+indent_style = space
+indent_size  = 2
+
+# ── Markdown ──────────────────────────────────────────────────────────────────
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ── Makefile (tabs required) ──────────────────────────────────────────────────
+[Makefile]
+indent_style = tab
+indent_size  = 4

@@ -1,0 +1,149 @@
+# Default-deny baseline: only allow explicitly whitelisted ingress/egress.
+---
+# Deny all ingress to jit-approver by default
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-deny-all
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow ingress from agent-sandbox pods (POST /requests)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-ingress-agents
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-sandbox
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Allow ingress from OpenShift Router (Gitea webhook /webhooks/gitea)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-ingress-router
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Allow ingress from monitoring (Prometheus scrape /metrics)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-ingress-monitoring
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-observability
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Egress: allow DNS (kube-dns)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-egress-dns
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Egress: allow Gitea (git.arsalan.io — FQDN resolves to 172.16.x.x/12 range)
+# If the IP is in 172.16.0.0/12, use the CIDR block. This is documented in README.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-egress-gitea
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        # git.arsalan.io — resolve via DNS; egress to :443 anywhere in RFC1918
+        # Update with specific IP once resolved: kubectl get svc -n gitea or nslookup
+        - ipBlock:
+            cidr: 172.16.0.0/12
+      ports:
+        - port: 443
+          protocol: TCP
+---
+# Egress: allow Vault (cluster-internal service)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-egress-vault
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+    # Also allow vault FQDN via Route (vault.apps.anaeem.na-launch.com -> router :443)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 443
+          protocol: TCP

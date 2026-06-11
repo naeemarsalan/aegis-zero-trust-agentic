@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "pfsense": {
+      "command": "/home/anaeem/pfsense-mcp-server/run_mcp.sh",
+      "args": [],
+      "env": {
+        "PFSENSE_URL": "https://172.99.0.1",
+        "AUTH_METHOD": "basic",
+        "PFSENSE_USERNAME": "admin",
+        "PFSENSE_PASSWORD": "${PFSENSE_PASSWORD}",
+        "VERIFY_SSL": "false"
+      }
+    },
+    "excalidraw": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "EXPRESS_SERVER_URL=http://172.16.2.24:3000",
+        "-e",
+        "ENABLE_CANVAS_SYNC=true",
+        "ghcr.io/yctimlin/mcp_excalidraw:latest"
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyverno-authz-server
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/name: kyverno-authz-server
+    app.kubernetes.io/component: authz-server
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # Referenced by agentgateway ext_authz cluster config:
+    # kyverno-authz-server.kyverno.svc.cluster.local:9081 (gRPC ext_authz)
+spec:
+  selector:
+    app.kubernetes.io/name: kyverno-authz-server
+  ports:
+    - name: grpc-authz
+      port: 9081
+      targetPort: grpc-authz
+      protocol: TCP
+  type: ClusterIP

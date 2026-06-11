@@ -1,0 +1,138 @@
+---
+# default-deny-all for vault namespace (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from Vault Agent Injector webhook consumers.
+# Only namespaces that run Vault-Agent-injected platform workloads are listed.
+# agent-sandbox and agentic-mcp are intentionally EXCLUDED: agents must never
+# reach Vault directly (invariant: no-direct-credential), and pfsense-mcp has no
+# injected sidecar that legitimately contacts Vault on :8200.
+# Monitoring scrape (agentic-observability) is allowed for metrics collection.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-injector-consumers
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - keycloak
+                  - mcp-gateway
+                  - agentic-observability
+      ports:
+        - port: 8200
+          protocol: TCP
+
+---
+# Allow ingress from mcp-gateway (direct Vault API calls for policy decisions)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-mcp-gateway
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8200
+          protocol: TCP
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Allow egress to kube-api (Vault Kubernetes auth method validates SA tokens
+# against the kube-apiserver; also required for raft HA peer discovery).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kube-api
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+        - podSelector:
+            matchLabels:
+              component: kube-apiserver
+      ports:
+        - port: 6443
+          protocol: TCP
+    # Also allow to the kube-apiserver ClusterIP (172.30.0.1 on OCP, port 443)
+    - ports:
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 172.30.0.1/32

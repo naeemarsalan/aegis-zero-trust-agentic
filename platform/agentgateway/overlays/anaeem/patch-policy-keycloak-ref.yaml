@@ -1,0 +1,27 @@
+# Patch: AgentgatewayPolicy — Keycloak JWKS backendRef for anaeem cluster.
+# Keycloak Service in ns "keycloak" exposes HTTPS on 8443 (CNPG-backed, RHBK).
+# Adjust port to 8080 if the internal Service is plain HTTP.
+#
+# NOTE: strategic merge patch on the first provider entry.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-gateway-policy
+  namespace: mcp-gateway
+spec:
+  traffic:
+    jwtAuthentication:
+      providers:
+        - issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+          audiences:
+            - mcp-gateway
+          jwks:
+            remote:
+              jwksPath: "/realms/agentic/protocol/openid-connect/certs"
+              cacheDuration: "5m"
+              backendRef:
+                group: ""
+                kind: Service
+                name: keycloak
+                namespace: keycloak
+                port: 8443

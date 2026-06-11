@@ -1,0 +1,45 @@
+---
+# decision-environment/de.yml
+#
+# ansible-builder definition for a custom Decision Environment (DE).
+#
+# IMPORTANT: For the webhook source and event_stream source used by this
+# integration, the DEFAULT DE shipped with AAP 2.6 (de-supported-rhel8 or
+# de-supported-rhel9) is SUFFICIENT.  Build this custom DE only if you need
+# additional EDA collections beyond ansible.eda (e.g. for future sources).
+#
+# Build:
+#   ansible-builder build -f decision-environment/de.yml \
+#     -t oci.arsalan.io/nvidia-ida/agent-remediation-de:dev
+#   podman push oci.arsalan.io/nvidia-ida/agent-remediation-de:dev
+#
+# Then reference the image in the rulebook activation via setup.sh or the UI.
+
+version: 3
+
+images:
+  base_image:
+    # Use the Red Hat supported base DE for AAP 2.6 / RHEL 9
+    name: registry.redhat.io/ansible-automation-platform-26/de-supported-rhel9:latest
+
+dependencies:
+  galaxy:
+    collections:
+      # Pin ansible.eda to the version shipped with AAP 2.6
+      - name: ansible.eda
+        version: ">=1.4.0,<2.0.0"
+      # ansible.builtin and ansible.posix are present in the base image;
+      # listed here for documentation only.
+      - name: ansible.posix
+        version: ">=1.5.0"
+
+  python_interpreter:
+    # Use the Python bundled in the base image
+    package_system: "python3"
+
+  system: []
+
+# No additional build steps required.
+additional_build_steps:
+  prepend_final: []
+  append_final: []

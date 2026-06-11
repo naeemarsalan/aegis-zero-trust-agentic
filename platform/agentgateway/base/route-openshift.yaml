@@ -1,0 +1,29 @@
+# OpenShift Route — edge TLS termination.
+# Terminates TLS at the router (Let's Encrypt / cluster wildcard cert) and
+# forwards plain HTTP to the Gateway Service on port 8080.
+# For re-encrypt mode: change termination to "reencrypt" and add
+# destinationCACertificate once a backend cert is configured.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-gateway
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/part-of: agentic-platform
+  annotations:
+    haproxy.router.openshift.io/timeout: 300s
+    # Sticky sessions not required — agentgateway handles MCP session routing internally
+spec:
+  host: mcp-gateway.apps.anaeem.na-launch.com
+  port:
+    targetPort: http  # Service port named "http" (8080) from the Gateway's provisioned Service
+  to:
+    kind: Service
+    name: mcp-gateway
+    weight: 100
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

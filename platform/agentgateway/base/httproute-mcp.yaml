@@ -1,0 +1,29 @@
+# HTTPRoute: /mcp -> pfsense-mcp AgentgatewayBackend
+# Routes all requests under /mcp to the pfsense-mcp backend.
+# The AgentgatewayPolicy (policy.yaml) attaches to this HTTPRoute to apply
+# JWT authn, extAuthz, extProc, and CEL RBAC.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: mcp-route
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  parentRefs:
+    - name: mcp-gateway
+      namespace: mcp-gateway
+  hostnames:
+    - "mcp-gateway.apps.anaeem.na-launch.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: pfsense-mcp
+          namespace: mcp-gateway

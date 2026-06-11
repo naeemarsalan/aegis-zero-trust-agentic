@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  # Explicit LOKI_PUSH_URL for anaeem — matches environment/clusters.yaml lokiPush value.
+  - path: patch-loki-url.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: otel-collector

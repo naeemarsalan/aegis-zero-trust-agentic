@@ -1,0 +1,76 @@
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: tool-allowlist-mcp-users
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/component: authz-policy
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policy.nvidia-ida/description: >
+      Users in the 'mcp-users' group may only call the read-only pfSense tools:
+      get_firewall_rules, get_interfaces, get_dhcp_leases.  Any other tool call
+      from an mcp-users member is denied with 403.
+      mcp-admins are not restricted by this policy (they are governed by
+      dangerous-tools-admins-only.yaml instead).
+spec:
+  evaluation:
+    mode: Envoy
+  variables:
+    - name: jwks
+      expression: |
+        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
+
+    - name: jwtString
+      expression: |
+        "authorization" in object.attributes.request.http.headers &&
+        object.attributes.request.http.headers["authorization"].startsWith("Bearer ") ?
+          object.attributes.request.http.headers["authorization"].split(" ")[1] : ""
+
+    - name: decodedJwt
+      expression: |
+        variables.jwtString == "" ?
+          jwt.Decode("eyJhbGciOiJIUzI1NiJ9.e30.invalid", variables.jwks) :
+          jwt.Decode(variables.jwtString, variables.jwks)
+
+    # True when the caller is strictly mcp-users (not mcp-admins).
+    # H4 fix: require decodedJwt.Valid before trusting Claims; an invalid token
+    # (expired, wrong aud, alg:none, etc.) is treated as not-mcp-users-only so
+    # the validation expression denies it (no-unauthenticated-calls already
+    # handles the 401 case; this policy fails closed to 403 on invalid tokens
+    # for defence-in-depth).
+    - name: isMcpUsersOnly
+      expression: |
+        variables.jwtString != "" &&
+        variables.decodedJwt.Valid &&
+        ("groups" in variables.decodedJwt.Claims) &&
+        variables.decodedJwt.Claims["groups"].exists(g, g == "mcp-users") &&
+        !variables.decodedJwt.Claims["groups"].exists(g, g == "mcp-admins")
+
+    # The MCP tool name extracted from the JSON-RPC body.
+    - name: toolName
+      expression: mcp.Parse(object.attributes.request.http.body).ToolCall.Name
+
+    # Read-only pfSense tools allowed for mcp-users.
+    - name: allowedReadOnlyTools
+      expression: >
+        [
+          "get_firewall_rules",
+          "get_interfaces",
+          "get_dhcp_leases"
+        ]
+
+  # This policy only applies to MCP tools/call requests (POST /mcp).
+  matchConditions:
+    - name: isMcpToolsCall
+      expression: |
+        object.attributes.request.http.method == "POST" &&
+        object.attributes.request.http.path.startsWith("/mcp") &&
+        "authorization" in object.attributes.request.http.headers &&
+        mcp.Parse(object.attributes.request.http.body).Method == mcp.ToolsCallMethod
+
+  validations:
+    - expression: |
+        !variables.isMcpUsersOnly || variables.toolName in variables.allowedReadOnlyTools ?
+          envoy.Allowed().Response() :
+          envoy.Denied(403).Response()

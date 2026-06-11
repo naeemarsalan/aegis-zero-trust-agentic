@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace must already exist (created by platform/00-operators/zero-trust-workload-identity-manager).
+# Do NOT include a namespace resource here — the operator Subscription creates it.
+namespace: zero-trust-workload-identity-manager
+
+resources:
+  - ztwim.yaml
+  - spire-server.yaml
+  - spire-agent.yaml
+  - spiffe-csi-driver.yaml
+  - spire-oidc-discovery-provider.yaml
+  # oidc-route.yaml is included but may be redundant if the operator creates
+  # the Route automatically.  See README.md for the check command.
+  - oidc-route.yaml
+  # ClusterSPIFFEIDs are cluster-scoped; the namespace field above does not apply.
+  - cluster-spiffe-ids.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: spire

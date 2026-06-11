@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jit-approver
+  namespace: mcp-gateway
+  labels:
+    app: jit-approver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jit-approver
+  template:
+    metadata:
+      labels:
+        app: jit-approver
+      annotations:
+        # ---------------------------------------------------------------------------
+        # Vault Agent Injector — writes secrets to tmpfs at /vault/secrets/
+        # ---------------------------------------------------------------------------
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "jit-approver"
+        vault.hashicorp.com/agent-inject-secret-gitea-token: "secret/data/jit-approver/gitea-token"
+        vault.hashicorp.com/agent-inject-template-gitea-token: |
+          {{- with secret "secret/data/jit-approver/gitea-token" -}}
+          {{ .Data.data.token }}
+          {{- end }}
+        vault.hashicorp.com/agent-inject-secret-webhook-secret: "secret/data/jit-approver/webhook-secret"
+        vault.hashicorp.com/agent-inject-template-webhook-secret: |
+          {{- with secret "secret/data/jit-approver/webhook-secret" -}}
+          {{ .Data.data.secret }}
+          {{- end }}
+        # N1: stable RS256 signing key for the X-JIT-Session-JWT (UC2). The
+        # Kyverno dangerous-tool gate verifies tokens against GET /jwks, so the
+        # key MUST be stable across restarts (an ephemeral key would invalidate
+        # already-issued session JWTs). Injected as a PEM at JIT_SIGNING_KEY_PATH.
+        # If this secret/mount is absent the service generates an EPHEMERAL key
+        # (PoC only — fine for a single-replica demo, not for production).
+        vault.hashicorp.com/agent-inject-secret-jit-signing-key: "secret/data/jit-approver/jit-signing-key"
+        vault.hashicorp.com/agent-inject-template-jit-signing-key: |
+          {{- with secret "secret/data/jit-approver/jit-signing-key" -}}
+          {{ .Data.data.pem }}
+          {{- end }}
+        # SPIFFE JWT SVID for Vault JWT auth — written by SPIFFE CSI sidecar
+        # The approver reads SVID_JWT_PATH=/var/run/secrets/svid.jwt at login time
+    spec:
+      serviceAccountName: jit-approver
+      automountServiceAccountToken: false
+      volumes:
+        # SPIFFE CSI volume — injects SVID at /var/run/secrets/spiffe.io/
+        - name: spiffe-csi
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        # tmpfs for Vault-injected secrets (mounted by Vault agent sidecar)
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: jit-approver
+          image: oci.arsalan.io/nvidia-ida/jit-approver:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            - name: GITEA_BASE_URL
+              value: "https://git.arsalan.io"
+            - name: GITEA_REPO
+              value: "anaeem/nvidia-ida"
+            - name: GITEA_DEFAULT_BRANCH
+              value: "main"
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_JWT_ROLE
+              value: "jit-approver"
+            - name: VAULT_JWT_AUTH_PATH
+              value: "jwt"
+            - name: JIT_ALLOWED_NAMESPACES
+              value: "agent-sandbox,agentic-mcp"
+            # File paths for secrets injected by Vault agent
+            - name: GITEA_TOKEN
+              value: ""  # overridden by file fallback /vault/secrets/gitea-token
+            - name: GITEA_WEBHOOK_SECRET
+              value: ""  # overridden by file fallback /vault/secrets/webhook-secret
+            # SVID JWT path — written by SPIFFE workload API / CSI driver helper
+            - name: SVID_JWT_PATH
+              value: "/var/run/secrets/svid.jwt"
+            # N1: stable RS256 signing key for the session JWT (UC2). If the file
+            # is absent an ephemeral key is generated (PoC). See /jwks + signing.py.
+            - name: JIT_SIGNING_KEY_PATH
+              value: "/vault/secrets/jit-signing-key"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: spiffe-csi
+              mountPath: /var/run/secrets/spiffe.io
+              readOnly: true
+            - name: vault-secrets
+              mountPath: /vault/secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault

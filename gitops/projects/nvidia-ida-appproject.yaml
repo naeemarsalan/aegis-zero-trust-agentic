@@ -1,0 +1,57 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: nvidia-ida
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  description: >
+    Project for all nvidia-ida PoC platform components deployed to the anaeem
+    SNO cluster, managed from the virt ACM hub ArgoCD instance.
+
+  sourceRepos:
+    - https://git.arsalan.io/anaeem/nvidia-ida.git
+
+  destinations:
+    # --- anaeem platform-target cluster ---
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: zero-trust-workload-identity-manager
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: keycloak
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: vault
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: mcp-gateway
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: kyverno
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: agentic-mcp
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: agent-sandbox
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: agentic-observability
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: openshift-sandboxed-containers-operator
+    # Allow cluster-scoped resources on anaeem (e.g. KataConfig, ClusterRole)
+    - server: https://api.anaeem.na-launch.com:6443
+      namespace: ""
+
+    # --- virt hub cluster: ArgoCD self-management ---
+    - server: https://kubernetes.default.svc
+      namespace: openshift-gitops
+
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  roles:
+    - name: read-only
+      description: Read-only access for auditors
+      policies:
+        - p, proj:nvidia-ida:read-only, applications, get, nvidia-ida/*, allow
+      groups: []

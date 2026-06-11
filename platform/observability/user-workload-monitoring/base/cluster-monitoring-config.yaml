@@ -1,0 +1,12 @@
+# WARNING: This ConfigMap patches the CLUSTER-WIDE monitoring stack in openshift-monitoring.
+# Applying this enables User Workload Monitoring for ALL users on the cluster.
+# Apply deliberately — this is a cluster-level change, not scoped to a namespace.
+# See: https://docs.openshift.com/container-platform/latest/monitoring/enabling-monitoring-for-user-defined-projects.html
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true

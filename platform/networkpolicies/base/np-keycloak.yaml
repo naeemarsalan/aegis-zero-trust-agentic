@@ -1,0 +1,119 @@
+---
+# default-deny-all for keycloak namespace (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from OpenShift router (HTTPS/HTTP routes)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-router
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+
+---
+# Allow ingress from mcp-gateway namespace (token validation, token exchange)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-mcp-gateway
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+
+---
+# Allow egress to openshift-dns for DNS resolution
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Allow egress to keycloak-db (CNPG PostgreSQL in same namespace)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-keycloak-db
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: keycloak-db
+      ports:
+        - port: 5432
+          protocol: TCP

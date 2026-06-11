@@ -1,0 +1,49 @@
+# AlertmanagerConfig (monitoring.coreos.com/v1alpha1) — User Workload Alertmanager.
+# This resource type is picked up by the UWM Alertmanager instance, NOT the
+# platform Alertmanager. Requires UWM to be enabled.
+#
+# Routing: alerts with label eda=true are sent to the AAP EDA Event Stream webhook.
+# All other alerts use the default (null) receiver.
+#
+# BEFORE APPLYING:
+# 1. Create an Event Stream in AAP EDA at https://aap-aap.apps.hammer.na-launch.com
+#    Controller > Event Streams > Create Event Stream
+# 2. Copy the UUID from the stream URL.
+# 3. In overlays/anaeem/patch-eda-url.yaml, replace <EVENT-STREAM-UUID> with
+#    the actual UUID.
+# 4. Populate the eda-webhook-creds Secret with the bearer token from the stream.
+#
+# The webhook POST body will be a JSON-encoded Alertmanager alert payload.
+# AAP EDA rulebooks should match on labels.severity and labels.tool.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: agentic-eda-routing
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/component: alerts
+spec:
+  route:
+    receiver: eda-event-stream
+    groupBy: ["alertname", "namespace", "tool"]
+    groupWait: 10s
+    groupInterval: 5m
+    repeatInterval: 1h
+    matchers:
+      - name: eda
+        value: "true"
+        matchType: "="
+
+  receivers:
+    - name: eda-event-stream
+      webhookConfigs:
+        - url: "https://aap-aap.apps.hammer.na-launch.com/eda-event-streams/api/eda/v1/external_event_stream/<EVENT-STREAM-UUID>/post/"
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                # References the eda-webhook-creds Secret key
+                key: bearer-token
+                name: eda-webhook-creds
+          sendResolved: true
+          maxAlerts: 0

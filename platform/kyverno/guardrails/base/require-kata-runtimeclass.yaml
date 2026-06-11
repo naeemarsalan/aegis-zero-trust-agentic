@@ -1,0 +1,35 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-kata-runtimeclass
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Require Kata RuntimeClass for agent-sandbox
+    policies.kyverno.io/description: >
+      Pods scheduled into the agent-sandbox namespace must specify
+      runtimeClassName: kata.  This ensures all agent workloads run inside
+      Kata Containers (hardware VM-level isolation), which is mandatory for
+      zero-trust containment of LLM-driven tool invocations.
+      validationFailureAction is Audit for PoC — flip to Enforce once kata
+      runtimeClass is confirmed available on all nodes (check:
+      kubectl get runtimeclass kata).
+    # NOTE: flip validationFailureAction to Enforce before production.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-kata-runtimeclass
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["agent-sandbox"]
+      validate:
+        message: >
+          Pods in agent-sandbox must set spec.runtimeClassName: kata.
+          Kata Containers provide hardware-VM isolation required for agent workloads.
+        pattern:
+          spec:
+            runtimeClassName: kata

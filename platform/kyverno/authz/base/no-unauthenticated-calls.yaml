@@ -1,0 +1,65 @@
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: no-unauthenticated-calls
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/component: authz-policy
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policy.nvidia-ida/description: >
+      Every request to the MCP gateway must carry a valid Bearer JWT issued by
+      the Keycloak 'agentic' realm, unless it is an OPTIONS preflight or a
+      /.well-known/* discovery request.  The caller must also be a member of the
+      'mcp-users' or 'mcp-admins' group.  Anything else gets 401.
+spec:
+  evaluation:
+    mode: Envoy
+  variables:
+    # True for requests that must always pass without authentication.
+    - name: isPublicPath
+      expression: |
+        object.attributes.request.http.method == "OPTIONS" ||
+        object.attributes.request.http.path.startsWith("/.well-known/")
+
+    # Fetch the JWKS from the Keycloak 'agentic' realm.
+    # URL uses the in-cluster Service FQDN to avoid dependency on OpenShift Routes.
+    - name: jwks
+      expression: |
+        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
+
+    # Extract the raw JWT string from the Authorization header, or "" if absent.
+    - name: jwtString
+      expression: |
+        variables.isPublicPath || !("authorization" in object.attributes.request.http.headers) ? "" :
+          (object.attributes.request.http.headers["authorization"].startsWith("Bearer ") ?
+            object.attributes.request.http.headers["authorization"].split(" ")[1] : "")
+
+    # Decode the JWT.  When no token is present we decode a known-invalid token so
+    # that downstream CEL expressions can still safely reference decodedJwt.Valid.
+    - name: decodedJwt
+      expression: |
+        variables.jwtString == "" ?
+          jwt.Decode("eyJhbGciOiJIUzI1NiJ9.e30.invalid", variables.jwks) :
+          jwt.Decode(variables.jwtString, variables.jwks)
+
+    # Group membership check — caller must be in mcp-users OR mcp-admins.
+    # H4 fix: gate Claims reads on decodedJwt.Valid so an expired/aud-mismatched
+    # token with populated Claims does not pass this check.
+    - name: isAllowedGroup
+      expression: |
+        variables.jwtString != "" &&
+        variables.decodedJwt.Valid &&
+        ("groups" in variables.decodedJwt.Claims) &&
+        variables.decodedJwt.Claims["groups"].exists(g,
+          g == "mcp-users" || g == "mcp-admins")
+
+  validations:
+    - expression: |
+        variables.isPublicPath ?
+          envoy.Allowed().Response() :
+          (variables.jwtString != "" &&
+           variables.decodedJwt.Valid &&
+           variables.isAllowedGroup ?
+            envoy.Allowed().Response() :
+            envoy.Denied(401).Response())

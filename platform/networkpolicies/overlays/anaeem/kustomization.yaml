@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# anaeem-specific notes:
+# - The base policies are already parameterized for the anaeem cluster topology.
+# - Vault kube-apiserver ClusterIP (172.30.0.1) is standard OCP — no patch needed.
+# - Loki/Grafana at 172.16.2.252 are set in the base.
+# - pfsense LAN 172.16.0.0/16 is set in the base.
+#
+# Add patches here if a second overlay (e.g. anaeem2) requires different
+# CIDR ranges or additional allowed ports.

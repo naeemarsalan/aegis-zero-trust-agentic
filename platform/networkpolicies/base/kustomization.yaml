@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NetworkPolicies base — cross-namespace default-deny + explicit allow rules
+# for all platform namespaces.  The namespace fields are set in each YAML file
+# because Kustomize's namespace override applies globally across all resources;
+# since these policies span multiple namespaces, per-resource namespace fields
+# are authoritative.
+#
+# Apply order: after all namespace-creating components (keycloak, vault, etc.)
+# are applied.  NetworkPolicies are namespace-scoped; the namespace must exist.
+
+resources:
+  - np-keycloak.yaml
+  - np-vault.yaml
+  - np-mcp-gateway.yaml
+  - np-kyverno.yaml
+  - np-agentic-mcp.yaml
+  - np-agent-sandbox.yaml
+  - np-agentic-observability.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: networkpolicies

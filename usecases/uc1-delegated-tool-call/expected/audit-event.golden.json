@@ -1,0 +1,48 @@
+{
+  "_comment": "Expected shape of an ext-proc-delegation audit event for a successful delegated tool call.",
+  "_comment_placeholders": "Values in <ANGLE_BRACKETS> are runtime-generated and will vary per run.",
+  "_comment_hash_note": "Tool arguments are NEVER logged raw — only sha256(canonical-JSON-args) appears.",
+  "_comment_loki_query": "{app=\"ext-proc-delegation\"} | json | session_id = \"<SESSION_ID>\"",
+
+  "ts": "<ISO-8601-UTC e.g. 2026-06-11T12:34:56.789012345Z>",
+  "event": "credential_delegation",
+  "session_id": "<UUIDv4 generated per-request by ext-proc-delegation>",
+  "trace_id": "<W3C trace ID if OTEL propagation is active, else empty string>",
+  "span_id": "<W3C span ID if OTEL propagation is active, else empty string>",
+
+  "agent": {
+    "spiffe_id": "spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/demo-agent",
+    "sub": "<Vault-issued subject claim for the agent SVID>"
+  },
+
+  "caller_user": {
+    "sub": "<Keycloak subject UUID for user arsalan>",
+    "preferred_username": "arsalan",
+    "groups": ["mcp-users"]
+  },
+
+  "mcp": {
+    "server": "pfsense-mcp",
+    "tool": "get_firewall_rules",
+    "args_hash": "<sha256(canonical-JSON-of-arguments) — 64 hex chars>"
+  },
+
+  "exchange": {
+    "keycloak": {
+      "mode": "token_exchange",
+      "audience": "pfsense-mcp",
+      "result": "success"
+    },
+    "vault": {
+      "auth": "success",
+      "secret_path": "secret/data/pfsense/api-key",
+      "result": "success"
+    }
+  },
+
+  "decision": "allow",
+  "reason": "",
+  "credential_injected": true,
+  "credential_stripped_from_response": true,
+  "latency_ms": "<float, typically < 50ms on warm path>"
+}

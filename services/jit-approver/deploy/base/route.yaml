@@ -1,0 +1,24 @@
+# OpenShift Route — exposes ONLY the webhook path /webhooks/gitea for Gitea callbacks.
+# Agent POST /requests traffic goes cluster-internal via Service (NetworkPolicy enforced).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: jit-approver-webhook
+  namespace: mcp-gateway
+  labels:
+    app: jit-approver
+  annotations:
+    # Restrict to webhook path only — other paths blocked by haproxy timeout/mismatch
+    # Full path restriction is enforced by NetworkPolicy (only router allowed on :8080
+    # for /webhooks/gitea; agent-sandbox pods call Service directly).
+spec:
+  host: jit-approver.apps.anaeem.na-launch.com
+  path: /webhooks/gitea
+  to:
+    kind: Service
+    name: jit-approver
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

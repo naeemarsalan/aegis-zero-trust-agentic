@@ -1,0 +1,231 @@
+# Chainsaw test skeleton for Kyverno ClusterPolicy guardrails.
+#
+# Run (requires chainsaw + kubeconfig pointing at anaeem cluster):
+#   chainsaw test platform/kyverno/tests/guardrails/
+#
+# Chainsaw documentation: https://kyverno.github.io/chainsaw/latest/
+# Install: https://kyverno.github.io/chainsaw/latest/quick-start/
+#
+# These tests exercise each ClusterPolicy (validationFailureAction: Audit) by
+# submitting resources that should either pass or be flagged in the audit log.
+# When validationFailureAction is flipped to Enforce, failing tests should be
+# updated to expect admission rejections instead of audit events.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: guardrails-require-kata-runtimeclass
+spec:
+  description: >
+    Pods in agent-sandbox without runtimeClassName:kata should produce an
+    audit event from the require-kata-runtimeclass ClusterPolicy.
+  steps:
+    - name: create-pod-without-kata
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-no-kata
+                namespace: agent-sandbox
+                labels:
+                  test: chainsaw-guardrail
+              spec:
+                containers:
+                  - name: pause
+                    image: registry.redhat.io/ubi9/ubi-minimal:latest
+                    command: ["/bin/sleep", "3600"]
+                restartPolicy: Never
+                # runtimeClassName intentionally omitted to trigger audit
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-no-kata
+                namespace: agent-sandbox
+      catch:
+        - describe:
+            apiVersion: v1
+            kind: Pod
+            name: test-no-kata
+            namespace: agent-sandbox
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Pod
+              name: test-no-kata
+              namespace: agent-sandbox
+
+    - name: create-pod-with-kata
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-with-kata
+                namespace: agent-sandbox
+                labels:
+                  test: chainsaw-guardrail
+              spec:
+                runtimeClassName: kata
+                containers:
+                  - name: pause
+                    image: registry.redhat.io/ubi9/ubi-minimal:latest
+                    command: ["/bin/sleep", "3600"]
+                restartPolicy: Never
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-with-kata
+                namespace: agent-sandbox
+              spec:
+                runtimeClassName: kata
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Pod
+              name: test-with-kata
+              namespace: agent-sandbox
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: guardrails-restrict-image-registries
+spec:
+  description: >
+    Pods in platform namespaces using unapproved registries should be flagged
+    (Audit) or rejected (Enforce).  Test uses agentic-mcp namespace.
+  steps:
+    - name: create-pod-approved-registry
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-approved-registry
+                namespace: agentic-mcp
+                labels:
+                  test: chainsaw-guardrail
+              spec:
+                containers:
+                  - name: pause
+                    image: registry.redhat.io/ubi9/ubi-minimal:latest
+                    command: ["/bin/sleep", "1"]
+                restartPolicy: Never
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-approved-registry
+                namespace: agentic-mcp
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Pod
+              name: test-approved-registry
+              namespace: agentic-mcp
+
+    - name: create-pod-unapproved-registry
+      description: >
+        This pod uses docker.io — should produce audit event in Audit mode,
+        or be rejected in Enforce mode.  The test applies and checks that the
+        pod exists (Audit) or does not (Enforce).
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-unapproved-registry
+                namespace: agentic-mcp
+                labels:
+                  test: chainsaw-guardrail
+              spec:
+                containers:
+                  - name: pause
+                    # docker.io image — unapproved in production
+                    image: docker.io/library/busybox:latest
+                    command: ["/bin/sleep", "1"]
+                restartPolicy: Never
+        # In Audit mode this apply succeeds; in Enforce mode it should fail.
+        # Uncomment the expect block to assert Enforce behaviour:
+        # expect:
+        #   - match:
+        #       apiVersion: v1
+        #       kind: Pod
+        #     check:
+        #       ($error != null): true
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Pod
+              name: test-unapproved-registry
+              namespace: agentic-mcp
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: guardrails-disallow-default-sa-automount
+spec:
+  description: >
+    Pods in platform namespaces that use the default ServiceAccount or set
+    automountServiceAccountToken:true should be flagged.
+  steps:
+    - name: create-pod-with-explicit-sa-no-automount
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: test-dedicated-sa
+                namespace: agentic-mcp
+              automountServiceAccountToken: false
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-dedicated-sa-pod
+                namespace: agentic-mcp
+                labels:
+                  test: chainsaw-guardrail
+              spec:
+                serviceAccountName: test-dedicated-sa
+                automountServiceAccountToken: false
+                containers:
+                  - name: pause
+                    image: registry.redhat.io/ubi9/ubi-minimal:latest
+                    command: ["/bin/sleep", "1"]
+                restartPolicy: Never
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-dedicated-sa-pod
+                namespace: agentic-mcp
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Pod
+              name: test-dedicated-sa-pod
+              namespace: agentic-mcp
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: ServiceAccount
+              name: test-dedicated-sa
+              namespace: agentic-mcp

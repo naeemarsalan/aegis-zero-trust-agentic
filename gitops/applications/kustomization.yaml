@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Sync-wave ordering:
+#   wave 0  — operators (OLM subscriptions must be Ready before anything else)
+#   wave 1  — spire     (SVID issuance required by all mTLS workloads)
+#   wave 2  — keycloak, vault (identity providers; vault k8s auth needs spire SVIDs)
+#   wave 3  — kyverno   (policy engine must be ready before workloads arrive)
+#   wave 4  — agentgateway (ext-proc + jit-approver depend on kyverno + vault)
+#   wave 5  — everything else (isolation/kata, rhoai, observability, networkpolicies)
+
+resources:
+  - operators.yaml
+  - spire.yaml
+  - keycloak.yaml
+  - vault.yaml
+  - kyverno.yaml
+  - agentgateway.yaml
+  - isolation.yaml
+  - rhoai.yaml
+  - observability.yaml
+  - networkpolicies.yaml

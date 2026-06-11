@@ -1,0 +1,47 @@
+---
+# CleanupPolicy: delete JIT-issued ServiceAccounts/Roles/RoleBindings past their
+# jit.nvidia-ida/expires-at annotation.
+#
+# BACKSTOP ONLY — Vault lease expiry is the primary revocation mechanism.
+# This policy fires if Vault fails to clean up (e.g. lease revoke race condition,
+# jit-approver crash, or manual debugging artifacts left behind).
+#
+# The expires-at annotation value must be an RFC3339 timestamp set by jit-approver
+# at resource creation time.  Resources without this annotation are NOT touched
+# (they are not JIT-managed).
+apiVersion: kyverno.io/v2alpha1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-expired-jit-resources
+  labels:
+    app.kubernetes.io/component: kyverno-cleanup
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policy.nvidia-ida/description: >
+      Backstop cleanup for JIT-scoped ServiceAccounts, Roles, and RoleBindings
+      labeled app.kubernetes.io/managed-by=vault-jit.  These are deleted once
+      the jit.nvidia-ida/expires-at annotation timestamp has passed.
+      Primary revocation is Vault lease expiry — this policy is a safety net only.
+spec:
+  # Run every 5 minutes.
+  schedule: "*/5 * * * *"
+  match:
+    any:
+      - resources:
+          kinds:
+            - ServiceAccount
+            - Role
+            - RoleBinding
+          namespaces:
+            - mcp-gateway
+            - agent-sandbox
+            - agentic-mcp
+          selector:
+            matchLabels:
+              app.kubernetes.io/managed-by: vault-jit
+  conditions:
+    any:
+      # Delete if the expires-at annotation is set and is in the past.
+      - key: "{{ time_before(time_now(), target.metadata.annotations.\"jit.nvidia-ida/expires-at\") }}"
+        operator: Equals
+        value: false

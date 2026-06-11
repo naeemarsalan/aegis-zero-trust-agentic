@@ -1,0 +1,96 @@
+---
+# default-deny-all for agentic-observability namespace (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from openshift-monitoring (Prometheus scrape for custom metrics
+# and ServiceMonitor targets defined in this namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-openshift-monitoring
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-monitoring
+      ports:
+        - port: 9090
+          protocol: TCP   # alertmanager / otel collector metrics
+        - port: 8888
+          protocol: TCP   # otel collector telemetry
+
+---
+# Allow egress to external Loki push endpoint (172.16.2.252:3100) and
+# Grafana (172.16.2.252:3000) on the management LAN.
+# LOKI_PUSH_URL = http://172.16.2.252:3100
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-loki-grafana
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.2.252/32
+      ports:
+        - port: 3100
+          protocol: TCP   # Loki push (LOKI_PUSH_URL)
+        - port: 3000
+          protocol: TCP   # Grafana HTTP
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

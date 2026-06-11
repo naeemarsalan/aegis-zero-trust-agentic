@@ -1,0 +1,14 @@
+# Patch: OpenShift Route hostname for anaeem cluster
+# Overlay also adds the cluster wildcard TLS termination (edge).
+# To use reencrypt instead, change termination to "reencrypt" and add
+# destinationCACertificate pointing to the gateway's backend cert.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-gateway
+  namespace: mcp-gateway
+spec:
+  host: mcp-gateway.apps.anaeem.na-launch.com
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

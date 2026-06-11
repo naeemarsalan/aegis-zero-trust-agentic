@@ -1,0 +1,45 @@
+# ADR 0005 — No Slack; Gitea PR merge is the approval gate
+
+## Status
+
+Accepted. (Supersedes the "Slack/PR" language in the approved plan's SWOT and JIT sections.)
+
+## Context
+
+The approved plan described the UC2 human-in-the-loop and the EDA self-healing loop as
+terminating in **"Slack/PR"** — a Slack interactive approval with an optional draft PR for the
+paper trail. After approval, the user decided to **drop Slack entirely**. There is no Slack
+anywhere in the realized environment.
+
+We still need: (a) a human approval gate for JIT escalation (UC2); (b) notifications/visibility
+for requests and outcomes; (c) an immutable, non-repudiable record of who approved what; and
+(d) protection against forged approvals causing silent escalation (SWOT Threat).
+
+## Decision
+
+- **The Gitea PR merge is the sole approval gate.** Merging the request PR in
+  `anaeem/nvidia-ida` (Gitea 13 at `git.arsalan.io`) *is* the human approval act. The merge
+  commit's author + the PR are the immutable, non-repudiable approval record.
+- **Gitea PR comments and webhooks replace Slack** for notification and audit visibility.
+  jit-approver posts request, decision, and session-summary information as PR comments.
+- **The merge webhook is HMAC-mandatory.** Gitea fires an HMAC-signed webhook on merge;
+  jit-approver **must** verify the HMAC signature **and** enforce a repo allowlist
+  (`anaeem/nvidia-ida` only) **and** the merged-PR event type before acting. The approved
+  scope is re-read from the **committed PR manifest** (trusted), never from the webhook body
+  (untrusted), and re-validated against the ceiling.
+- This same Gitea-PR-merge gate is the HITL for the **EDA remediation loop** — remediation
+  lands as a PR that a human merges; no direct privileged change.
+
+## Consequences
+
+- One approval channel, one paper trail, no Slack app/token to manage or secure — smaller
+  attack surface and a cleaner audit story for a bank.
+- The SWOT Threat "Forged Slack approvals = silent escalation" carries over unchanged to the
+  webhook and is mitigated identically: **HMAC verification + repo allowlist**, plus
+  scope-from-committed-manifest and post-merge ceiling re-check (threat-model abuse case 1).
+- The webhook HMAC secret is itself a credential — it lives in Vault and is delivered to
+  jit-approver via the injector (tmpfs), never in git/etcd (no-credential invariant).
+- Loses Slack's low-latency interactivity; approvals are as fast as a PR review/merge. For a
+  bank-context PoC, the durable git audit trail is the better trade.
+- All plan/doc references to "Slack/PR" or "Slack notifications" are to be read as **Gitea PR
+  merge / PR comments**; see swot.md scope-drift note.

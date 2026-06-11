@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kyverno
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - no-unauthenticated-calls.yaml
+  - tool-allowlist-mcp-users.yaml
+  - dangerous-tools-admins-only.yaml
+  - deny-restricted-group.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: kyverno-authz

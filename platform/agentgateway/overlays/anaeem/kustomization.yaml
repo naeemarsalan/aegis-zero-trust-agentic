@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mcp-gateway
+
+resources:
+  - ../../base
+
+patches:
+  # Patch Gateway hostname to the anaeem cluster apps domain
+  - path: patch-gateway-hostname.yaml
+    target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: mcp-gateway
+
+  # Patch Route hostname
+  - path: patch-route-hostname.yaml
+    target:
+      group: route.openshift.io
+      version: v1
+      kind: Route
+      name: mcp-gateway
+
+  # Patch Keycloak JWKS backendRef port (keycloak Service in ns keycloak)
+  # If Keycloak is plain HTTP internally (port 8080), adjust here.
+  - path: patch-policy-keycloak-ref.yaml
+    target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayPolicy
+      name: mcp-gateway-policy
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/instance: anaeem
+      app.kubernetes.io/part-of: agentic-platform

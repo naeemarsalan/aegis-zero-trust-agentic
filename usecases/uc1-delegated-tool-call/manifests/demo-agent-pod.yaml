@@ -1,0 +1,214 @@
+---
+# Deployment: demo-agent
+# Namespace: agent-sandbox
+#
+# PURPOSE: Runs the demo agent workload in a Kata VM (runtimeClassName: kata).
+# This pod is the proof-of-concept agent that calls MCP tools through the gateway.
+#
+# SECURITY INVARIANTS DEMONSTRATED:
+#   1. runtimeClassName: kata  — workload runs in hardware-isolated Kata micro-VM
+#   2. NO secrets mounted — credentials arrive via Vault Agent tmpfs injection only
+#   3. automountServiceAccountToken: false — no default SA token in etcd
+#   4. spiffe.io/spire-managed-identity: "true" — SPIRE issues an SVID (SPIFFE cert)
+#      for this pod; the SVID is the agent's Vault auth credential and its identity
+#      as seen by ext-proc-delegation (agent layer, separate from user layer)
+#   5. The user's token is NOT stored here — it is forwarded per-request by ext-proc
+#
+# PROVING NO CREDENTIALS PRESENT:
+#   See manifests/README-pod-inspection.md for oc exec commands to verify.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-agent
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: demo-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-agent
+  template:
+    metadata:
+      labels:
+        app: demo-agent
+        app.kubernetes.io/name: demo-agent
+        app.kubernetes.io/component: agent
+        app.kubernetes.io/part-of: nvidia-ida
+        # This label triggers SPIRE workload registration.
+        # The ZTWIM operator reads this and issues an SVID for:
+        #   spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/demo-agent
+        spiffe.io/spire-managed-identity: "true"
+      annotations:
+        # Vault Agent Injector annotations.
+        # The agent only needs the Vault token for its own operations (if any).
+        # It does NOT store user credentials — those are forwarded per-call by ext-proc.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "demo-agent"
+        # Example: if the agent needs a short-lived Kubernetes token for uc2,
+        # jit-approver will inject it here at approval time.
+        # See uc2-jit-escalation/ for that flow.
+        vault.hashicorp.com/log-level: "info"
+    spec:
+      # -----------------------------------------------------------------------
+      # Kata Containers — critical security boundary.
+      # Each pod gets a dedicated micro-VM (QEMU/KVM).
+      # Requires KataConfig CR to be Installed on the cluster.
+      # Verify: oc get runtimeclass kata -o yaml
+      # -----------------------------------------------------------------------
+      runtimeClassName: kata
+
+      serviceAccountName: demo-agent
+
+      # No default SA token — prevents token theft via env/filesystem.
+      # The SPIRE SVID (csi.spiffe.io volume below) is the only identity material.
+      automountServiceAccountToken: false
+
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: demo-agent
+          image: oci.arsalan.io/nvidia-ida/demo-agent:dev
+          imagePullPolicy: Always
+          env:
+            # Gateway endpoint — no credentials here, only the URL
+            - name: MCP_GATEWAY_URL
+              value: "https://mcp-gateway.apps.anaeem.na-launch.com/mcp"
+            - name: LOKI_PUSH_URL
+              value: "http://172.16.2.252:3100"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # tmpfs — Vault Agent writes short-lived secrets here.
+            # Verify empty at pod start: oc exec demo-agent -- ls /vault/secrets/
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+            # SPIRE CSI driver mounts the workload SVID (x509 cert+key) here.
+            # This is the agent's cryptographic identity — no password, no long-lived token.
+            - name: spire-svid
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      initContainers:
+        # Vault Agent init: authenticates to Vault using the SPIRE SVID,
+        # writes any approved short-lived secrets to /vault/secrets (tmpfs),
+        # then exits. The main container starts only after this completes.
+        - name: vault-agent-init
+          image: hashicorp/vault:1.17
+          args: ["agent", "-config=/vault/config/agent.hcl", "-exit-after-auth"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: vault-config
+              mountPath: /vault/config
+              readOnly: true
+            - name: vault-secrets
+              mountPath: /vault/secrets
+            - name: spire-svid
+              mountPath: /spiffe-workload-api
+              readOnly: true
+
+      volumes:
+        # tmpfs — secrets written by Vault Agent; never touch node disk or etcd
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+
+        # ConfigMap containing the Vault Agent HCL config (non-sensitive)
+        - name: vault-config
+          configMap:
+            name: demo-agent-vault-config
+
+        # SPIRE CSI driver — mounts the SVID as a UNIX domain socket
+        # The Vault Agent uses this socket to prove identity to Vault
+        - name: spire-svid
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+
+        - name: tmp
+          emptyDir: {}
+---
+# ServiceAccount: demo-agent
+# This is the Kubernetes identity used for:
+#   - SPIRE SVID issuance (SPIFFE ID includes sa name)
+#   - Vault Kubernetes auth (if SPIRE is not used directly)
+# NOT used for Kube API calls directly (automountServiceAccountToken: false)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-agent
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: demo-agent
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # Documents the expected SPIFFE ID — not enforced here, enforced by SPIRE ClusterSPIFFEID
+    spiffe.io/spiffe-id: "spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/demo-agent"
+---
+# ConfigMap: demo-agent-vault-config
+# Vault Agent HCL configuration — non-sensitive (no tokens or keys here).
+# The actual secrets are written to /vault/secrets/ at runtime.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-agent-vault-config
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: demo-agent
+    app.kubernetes.io/part-of: nvidia-ida
+data:
+  agent.hcl: |
+    vault {
+      address = "https://vault.apps.anaeem.na-launch.com"
+    }
+
+    auto_auth {
+      method "jwt" {
+        mount_path = "auth/jwt/spire"
+        config = {
+          # The SPIRE SVID JWT is used to authenticate to Vault.
+          # Vault validates it against the SPIRE OIDC discovery endpoint.
+          role            = "demo-agent"
+          path            = "/spiffe-workload-api/token"
+          oidc_discovery_url = "https://spire-oidc.apps.anaeem.na-launch.com"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault/secrets/.vault-token"
+        }
+      }
+    }
+
+    # No static secret templates here — agent only obtains a Vault token.
+    # Dynamic secrets (JIT creds) are written at approval time by jit-approver.
+    template_config {
+      static_secret_render_interval = "5m"
+      exit_on_retry_failure = true
+    }

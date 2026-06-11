@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply AFTER platform/00-operators/osc (OSC operator subscription).
+# The KataConfig CR will be rejected if the CRD is not present.
+#
+# WARNING: Applying this on SNO triggers a node reboot (MachineConfig push).
+# Schedule during a maintenance window — the cluster will be unreachable ~5-10 min.
+
+resources:
+  - kataconfig.yaml
+  # agent-pod-example.yaml is a reference snippet only — not applied here.
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: kata-runtimeclass

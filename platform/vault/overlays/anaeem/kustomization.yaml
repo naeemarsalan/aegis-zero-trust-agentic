@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Overlay for the anaeem SNO cluster.
+# Build: kustomize build --enable-helm platform/vault/overlays/anaeem
+# The --enable-helm flag is required because the base uses the helmCharts generator.
+
+resources:
+  - ../../base
+
+# The base values.yaml already targets anaeem (single-replica, nfs-csi, correct host).
+# This overlay exists to allow future per-cluster divergence (e.g. anaeem2 with
+# different storageClass or route host) without touching base manifests.
+# Add patches here if needed — e.g. to change the route host or replica count.
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: vault
+      app.kubernetes.io/instance: anaeem

@@ -1,0 +1,9 @@
+---
+# SpiffeCSIDriver singleton — ONE per cluster, named "cluster".
+# Installs the CSI driver that mounts SPIFFE workload API sockets into pods.
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+  name: cluster
+  namespace: zero-trust-workload-identity-manager
+spec: {}

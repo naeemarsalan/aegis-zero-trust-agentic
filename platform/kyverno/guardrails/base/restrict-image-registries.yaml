@@ -1,0 +1,73 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Restrict image registries to approved sources
+    policies.kyverno.io/description: >
+      Container images in platform namespaces must originate from approved
+      registries only: oci.arsalan.io (project private registry) and
+      registry.redhat.io or quay.io (Red Hat / community images).
+      Images from docker.io, ghcr.io, or other unapproved sources are not
+      permitted.  This prevents supply-chain attacks via unvetted public images.
+      validationFailureAction is Audit for PoC — the kyverno-authz-server itself
+      uses ghcr.io/kyverno/kyverno-envoy-plugin:v0.3.0 which is currently
+      excluded; re-mirror to oci.arsalan.io before flipping to Enforce.
+    # NOTE: flip validationFailureAction to Enforce before production.
+    # NOTE: before Enforce, re-mirror ghcr.io/kyverno/kyverno-envoy-plugin:v0.3.0
+    #       to oci.arsalan.io/nvidia-ida/kyverno-envoy-plugin:v0.3.0 and update
+    #       the authz/base/deployment.yaml image reference.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-approved-registries
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces:
+                - zero-trust-workload-identity-manager
+                - keycloak
+                - vault
+                - mcp-gateway
+                - kyverno
+                - agentic-mcp
+                - agent-sandbox
+                - agentic-observability
+      validate:
+        message: >
+          Images must come from oci.arsalan.io, registry.redhat.io, or quay.io.
+          Found image '{{images.containers.*.registry | join(', ', @)}}' from an
+          unapproved registry.  Re-mirror the image to oci.arsalan.io/nvidia-ida/
+          and update the deployment before switching this policy to Enforce.
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                all:
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "oci.arsalan.io/*"
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "registry.redhat.io/*"
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "quay.io/*"
+          - list: "request.object.spec.initContainers"
+            deny:
+              conditions:
+                all:
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "oci.arsalan.io/*"
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "registry.redhat.io/*"
+                  - key: "{{element.image}}"
+                    operator: NotEquals
+                    value: "quay.io/*"

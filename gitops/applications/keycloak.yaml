@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-ida-keycloak
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: nvidia-ida
+
+  source:
+    repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
+    targetRevision: main
+    path: platform/keycloak/overlays/anaeem
+
+  destination:
+    server: https://api.anaeem.na-launch.com:6443
+    namespace: keycloak
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

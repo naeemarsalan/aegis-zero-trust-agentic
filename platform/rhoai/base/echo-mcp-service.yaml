@@ -1,0 +1,28 @@
+---
+# Service: echo-mcp
+#
+# Exposes echo-mcp at echo-mcp.agentic-mcp.svc.cluster.local:8000.
+# Used exclusively by UC1 golden tests via the mcp-gateway; not exposed
+# through an AgentgatewayBackend in the base layer (add one under
+# platform/agentgateway/ when UC1 is wired end-to-end).
+#
+# The app.kubernetes.io/component=mcp-server label enables RHOAI discovery
+# alongside pfsense-mcp.
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-mcp
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: echo-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  selector:
+    app: echo-mcp
+  ports:
+    - name: http-mcp
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP

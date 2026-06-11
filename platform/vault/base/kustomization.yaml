@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Vault is deployed via Helm chart rendered through kustomize's helmCharts generator.
+# Build offline: kustomize build --enable-helm platform/vault/base
+# (or via the overlay: kustomize build --enable-helm platform/vault/overlays/anaeem)
+#
+# The --enable-helm flag is required and is exercised in hack/validate.sh.
+# Chart: hashicorp/vault  version: 0.32.0
+# Repo: https://helm.releases.hashicorp.com
+
+namespace: vault
+
+resources:
+  - namespace.yaml
+  - networkpolicy.yaml
+
+helmCharts:
+  - name: vault
+    repo: https://helm.releases.hashicorp.com
+    version: "0.32.0"
+    releaseName: vault
+    namespace: vault
+    valuesFile: values.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: vault

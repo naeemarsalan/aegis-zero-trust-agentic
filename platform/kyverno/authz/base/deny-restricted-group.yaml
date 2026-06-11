@@ -1,0 +1,67 @@
+apiVersion: policies.kyverno.io/v1beta1
+kind: ValidatingPolicy
+metadata:
+  name: deny-restricted-group
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/component: authz-policy
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policy.nvidia-ida/description: >
+      Any caller whose JWT contains the group 'restricted' is unconditionally
+      denied (403) on MCP tools/call requests.  This policy acts as a hard block
+      for suspended or quarantined identities regardless of other group membership.
+      The 'restricted' group should be added to a Keycloak user/client when that
+      identity is under review or has been flagged.
+spec:
+  evaluation:
+    mode: Envoy
+  variables:
+    - name: jwks
+      expression: |
+        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
+
+    - name: jwtString
+      expression: |
+        "authorization" in object.attributes.request.http.headers &&
+        object.attributes.request.http.headers["authorization"].startsWith("Bearer ") ?
+          object.attributes.request.http.headers["authorization"].split(" ")[1] : ""
+
+    - name: decodedJwt
+      expression: |
+        variables.jwtString == "" ?
+          jwt.Decode("eyJhbGciOiJIUzI1NiJ9.e30.invalid", variables.jwks) :
+          jwt.Decode(variables.jwtString, variables.jwks)
+
+    # H4 fix: isRestricted requires a VALID token AND groups present.
+    # If the token did not validate (expired, aud mismatch, alg:none, etc.),
+    # isTokenInvalid is true and the validation expression denies — fail CLOSED.
+    # An attacker with an expired restricted token must NOT slip this hard block.
+    - name: isRestricted
+      expression: |
+        variables.jwtString != "" &&
+        variables.decodedJwt.Valid &&
+        ("groups" in variables.decodedJwt.Claims) &&
+        variables.decodedJwt.Claims["groups"].exists(g, g == "restricted")
+
+    # Explicit flag for invalid/missing token — ensures the validation expression
+    # below denies rather than allowing when a token is malformed.
+    - name: isTokenInvalid
+      expression: |
+        variables.jwtString == "" || !variables.decodedJwt.Valid
+
+  matchConditions:
+    - name: isMcpToolsCall
+      expression: |
+        object.attributes.request.http.method == "POST" &&
+        object.attributes.request.http.path.startsWith("/mcp") &&
+        "authorization" in object.attributes.request.http.headers &&
+        mcp.Parse(object.attributes.request.http.body).Method == mcp.ToolsCallMethod
+
+  validations:
+    - expression: |
+        variables.isTokenInvalid ?
+          envoy.Denied(403).Response() :
+          (variables.isRestricted ?
+            envoy.Denied(403).Response() :
+            envoy.Allowed().Response())

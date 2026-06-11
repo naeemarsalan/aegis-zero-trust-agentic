@@ -1,0 +1,9 @@
+---
+# Strategic merge patch: set Route hostname for the anaeem apps domain.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: spire-oidc-discovery-provider
+  namespace: zero-trust-workload-identity-manager
+spec:
+  host: spire-oidc.apps.anaeem.na-launch.com

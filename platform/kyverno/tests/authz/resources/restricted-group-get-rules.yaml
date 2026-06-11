@@ -1,0 +1,19 @@
+# Envoy CheckRequest: restricted group calling get_firewall_rules.
+# JWT payload groups: ["restricted"]
+#
+# Expected outcomes:
+#   no-unauthenticated-calls       → fail/deny 401 (restricted is not mcp-users/mcp-admins)
+#   tool-allowlist-mcp-users       → pass (not mcp-users-only, so policy does not apply)
+#   dangerous-tools-admins-only    → pass (get_firewall_rules is not dangerous)
+#   deny-restricted-group          → fail/deny 403 (restricted group is blocked)
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers:
+          authorization: "Bearer eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaHR0cHM6Ly9rZXljbG9hay5hcHBzLmFuYWVlbS5uYS1sYXVuY2guY29tL3JlYWxtcy9hZ2VudGljIiwgInN1YiI6ICJ1c2VyLXRlc3QiLCAiYXVkIjogIm1jcC1nYXRld2F5IiwgImV4cCI6IDk5OTk5OTk5OTksICJpYXQiOiAxNzE4MDAwMDAwLCAiZ3JvdXBzIjogWyJyZXN0cmljdGVkIl19.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          content-type: application/json
+        body: |
+          {"jsonrpc":"2.0","id":"6","method":"tools/call","params":{"name":"get_firewall_rules","arguments":{}}}

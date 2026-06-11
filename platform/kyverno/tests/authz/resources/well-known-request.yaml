@@ -1,0 +1,10 @@
+# Envoy CheckRequest: GET /.well-known/openid-configuration (OIDC discovery).
+# Expected: no-unauthenticated-calls → allow (public path)
+object:
+  attributes:
+    request:
+      http:
+        method: GET
+        path: /.well-known/openid-configuration
+        headers: {}
+        body: ""

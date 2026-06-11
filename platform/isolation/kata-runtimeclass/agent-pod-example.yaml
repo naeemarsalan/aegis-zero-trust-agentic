@@ -1,0 +1,84 @@
+# Example annotated Deployment showing the runtimeClassName: kata field required
+# for all agent pods in the agent-sandbox namespace.
+# This file is a reference snippet — NOT applied by kustomize directly.
+# Copy the relevant fields into actual Deployment manifests under platform/agent-sandbox/.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-example                 # replace with your agent name
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: agent-sandbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-example
+  template:
+    metadata:
+      labels:
+        app: agent-example
+      annotations:
+        # SPIRE SVID annotation — injected by spire-k8s-workload-registrar.
+        # The SVID path below must match the ClusterSPIFFEID selector for agent-sandbox.
+        spiffe.io/spiffe-id: "spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/agent-example"
+    spec:
+      # -----------------------------------------------------------------------
+      # runtimeClassName: kata
+      # This is the critical field that routes pod creation through the
+      # Kata Containers shim (kata-qemu) instead of runc.
+      # The RuntimeClass "kata" is created automatically by the OSC operator
+      # when the KataConfig CR transitions to Installed.
+      # -----------------------------------------------------------------------
+      runtimeClassName: kata
+
+      serviceAccountName: agent-example
+
+      # automountServiceAccountToken: false — agent receives credentials via
+      # Vault Agent tmpfs injection, not the default SA token mount.
+      automountServiceAccountToken: false
+
+      containers:
+        - name: agent
+          image: oci.arsalan.io/nvidia-ida/agent-example:dev
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          # No environment variables with credentials — Vault Agent injects
+          # secrets as files under /vault/secrets/ (tmpfs, never etcd).
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+
+      initContainers:
+        # Vault Agent init container — waits for SVID, authenticates to Vault,
+        # writes short-lived secrets to tmpfs before the main container starts.
+        - name: vault-agent-init
+          image: hashicorp/vault:1.17
+          args: ["agent", "-config=/vault/config/agent.hcl", "-exit-after-auth"]
+          volumeMounts:
+            - name: vault-config
+              mountPath: /vault/config
+            - name: vault-secrets
+              mountPath: /vault/secrets
+            - name: spire-svid
+              mountPath: /spiffe-workload-api
+
+      volumes:
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory      # tmpfs — secrets never touch node disk
+        - name: vault-config
+          configMap:
+            name: agent-vault-config
+        - name: spire-svid
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true

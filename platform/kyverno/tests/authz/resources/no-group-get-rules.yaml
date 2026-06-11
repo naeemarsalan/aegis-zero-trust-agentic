@@ -1,0 +1,19 @@
+# Envoy CheckRequest: JWT with empty groups array calling get_firewall_rules.
+# JWT payload groups: []
+#
+# Expected outcomes:
+#   no-unauthenticated-calls       → fail/deny 401 (no authorized group)
+#   tool-allowlist-mcp-users       → pass (not mcp-users-only)
+#   dangerous-tools-admins-only    → pass (not a dangerous tool)
+#   deny-restricted-group          → pass (not restricted)
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers:
+          authorization: "Bearer eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaHR0cHM6Ly9rZXljbG9hay5hcHBzLmFuYWVlbS5uYS1sYXVuY2guY29tL3JlYWxtcy9hZ2VudGljIiwgInN1YiI6ICJ1c2VyLXRlc3QiLCAiYXVkIjogIm1jcC1nYXRld2F5IiwgImV4cCI6IDk5OTk5OTk5OTksICJpYXQiOiAxNzE4MDAwMDAwLCAiZ3JvdXBzIjogW119.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          content-type: application/json
+        body: |
+          {"jsonrpc":"2.0","id":"7","method":"tools/call","params":{"name":"get_firewall_rules","arguments":{}}}

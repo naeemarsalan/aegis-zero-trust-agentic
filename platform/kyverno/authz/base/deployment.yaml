@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-authz-server
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/name: kyverno-authz-server
+    app.kubernetes.io/component: authz-server
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kyverno-authz-server
+        app.kubernetes.io/component: authz-server
+        app.kubernetes.io/part-of: nvidia-ida
+      annotations:
+        # Vault Agent Injector — inject SPIFFE JWT audience token if needed in future
+        # vault.hashicorp.com/agent-inject: "false"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9081"
+    spec:
+      serviceAccountName: kyverno-authz-server
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kyverno-authz-server
+          # Image verified from ghcr.io/kyverno/kyverno-envoy-plugin chart values.yaml
+          # Latest stable release: v0.3.0  (https://github.com/kyverno/kyverno-envoy-plugin/releases/tag/v0.3.0)
+          image: ghcr.io/kyverno/kyverno-envoy-plugin:v0.3.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - authz-server
+            - --type=envoy
+            - --address=:9081
+            - --network=tcp
+            # Policy resources are discovered cluster-wide via the CRD watch
+          ports:
+            - name: grpc-authz
+              containerPort: 9081
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          livenessProbe:
+            grpc:
+              port: 9081
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            grpc:
+              port: 9081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kyverno-authz-server

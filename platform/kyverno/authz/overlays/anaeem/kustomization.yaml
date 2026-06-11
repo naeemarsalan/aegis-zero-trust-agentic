@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# anaeem-specific patches.
+# The base is already parameterized for anaeem (Keycloak URL, realm, port).
+# Add patches here when a second overlay requires different values.
+#
+# Example: if a staging overlay needs a different Keycloak realm, patch the
+# ValidatingPolicy JWKS fetch URL via a strategic merge patch on each policy.

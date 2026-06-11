@@ -1,0 +1,86 @@
+---
+# Default-deny all ingress/egress in the kyverno namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow agentgateway (mcp-gateway ns) to reach the authz server on gRPC port 9081.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ext-authz-from-gateway
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 9081
+          protocol: TCP
+---
+# Allow DNS egress and egress to Keycloak JWKS endpoint.
+# The authz server fetches JWKS from Keycloak during policy evaluation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-authz-server
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Keycloak JWKS (HTTPS 443 via OpenShift Route or internal svc port 8443)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+      ports:
+        - port: 8443
+          protocol: TCP
+    # Kubernetes API for SubjectAccessReview
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 6443
+          protocol: TCP
+    # Allow kube-apiserver (in-cluster)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP

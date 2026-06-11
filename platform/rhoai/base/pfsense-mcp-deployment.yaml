@@ -1,0 +1,190 @@
+---
+# Deployment: pfsense-mcp
+#
+# Runs the upstream gensecaihq/pfsense-mcp-server (327 tools, MCP 2025-11-25,
+# streamable-http on internal port 3000 at path /mcp).
+#
+# Service port 8000 -> targetPort 3000 so the agentgateway backend contract
+# (pfsense-mcp.agentic-mcp.svc.cluster.local:8000) remains unchanged.
+#
+# Credential flow — Vault Agent Injector (tmpfs, never in etcd):
+#
+#   /vault/secrets/pfsense    — pfSense backend credentials rendered from
+#                               secret/data/pfsense/credentials (PFSENSE_USERNAME /
+#                               PFSENSE_PASSWORD sourced into env at startup)
+#   /vault/secrets/mcp-tokens — per-user MCP_API_KEY list rendered from
+#                               secret/data/mcp-tools/mcp-tokens
+#                               ext-proc-delegation reads the calling USER's token
+#                               from Vault and injects it as Authorization: Bearer.
+#                               The server validates that token here.
+#
+# Identity delegation (UC1 proof):
+#   ext-proc fetches the requesting USER's pfSense MCP token from Vault and
+#   injects it as the Bearer header.  The upstream BearerAuthMiddleware validates
+#   against MCP_API_KEY (per-user token list from /vault/secrets/mcp-tokens).
+#   Each user has a unique token, so the server's audit attributes every tool call
+#   to the specific user — the agent's service-account identity is never seen here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pfsense-mcp
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: pfsense-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pfsense-mcp
+  template:
+    metadata:
+      labels:
+        app: pfsense-mcp
+        app.kubernetes.io/name: pfsense-mcp
+        app.kubernetes.io/component: mcp-server
+        app.kubernetes.io/part-of: nvidia-ida
+      annotations:
+        # ── Vault Agent Injector ──────────────────────────────────────────────
+        # Role "pfsense-mcp" must exist in Vault with a policy that allows
+        # reading secret/data/pfsense/credentials and secret/data/mcp-tools/mcp-tokens.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "pfsense-mcp"
+        vault.hashicorp.com/agent-revoke-on-shutdown: "true"
+        vault.hashicorp.com/log-level: "info"
+
+        # pfSense backend credentials (username + password for basic auth).
+        # Template renders an env-sourceable shell file:
+        #   export PFSENSE_USERNAME=admin
+        #   export PFSENSE_PASSWORD=<value>
+        vault.hashicorp.com/agent-inject-secret-pfsense: "secret/data/pfsense/credentials"
+        vault.hashicorp.com/agent-inject-template-pfsense: |
+          {{- with secret "secret/data/pfsense/credentials" -}}
+          export PFSENSE_USERNAME={{ .Data.data.username }}
+          export PFSENSE_PASSWORD={{ .Data.data.password }}
+          {{- end }}
+        vault.hashicorp.com/agent-inject-file-pfsense: "pfsense"
+
+        # Per-user MCP_API_KEY token list (comma-separated).
+        # ext-proc-delegation injects the calling user's token as Bearer; the
+        # upstream BearerAuthMiddleware validates it against this list.
+        vault.hashicorp.com/agent-inject-secret-mcp-tokens: "secret/data/mcp-tools/mcp-tokens"
+        vault.hashicorp.com/agent-inject-template-mcp-tokens: |
+          {{- with secret "secret/data/mcp-tools/mcp-tokens" -}}
+          {{ .Data.data.tokens }}
+          {{- end }}
+        vault.hashicorp.com/agent-inject-file-mcp-tokens: "mcp-tokens"
+    spec:
+      serviceAccountName: pfsense-mcp
+      automountServiceAccountToken: true   # required for Vault Kubernetes auth
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Source the Vault-rendered credential files into env vars and write
+        # them to /vault/secrets/env so the main container can source them.
+        # This init container runs AFTER vault-agent-init (injected by Vault).
+        - name: source-vault-env
+          image: oci.arsalan.io/nvidia-ida/pfsense-mcp:1.0.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              . /vault/secrets/pfsense
+              printf 'PFSENSE_USERNAME=%s\nPFSENSE_PASSWORD=%s\nMCP_API_KEY=%s\n' \
+                "${PFSENSE_USERNAME}" "${PFSENSE_PASSWORD}" \
+                "$(cat /vault/secrets/mcp-tokens)" \
+                > /vault/secrets/env
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: pfsense-mcp
+          image: oci.arsalan.io/nvidia-ida/pfsense-mcp:1.0.0
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -a
+              . /vault/secrets/pfsense
+              MCP_API_KEY="$(cat /vault/secrets/mcp-tokens)"
+              set +a
+              exec python3 -m src.main -t streamable-http
+          ports:
+            - name: http-mcp
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: PFSENSE_URL
+              value: "https://172.99.0.1"
+            - name: PFSENSE_VERSION
+              value: "CE_2_8_1"
+            - name: AUTH_METHOD
+              value: "basic"
+            - name: VERIFY_SSL
+              value: "false"
+            - name: MCP_TRANSPORT
+              value: "streamable-http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            # Read-only default: off (write tools gated by JIT + Kyverno authz).
+            # Set to "true" to restrict the server to get_*/search_* tools only.
+            - name: MCP_READ_ONLY
+              value: "false"
+            # UC2 demo allowlist: read tools + one MEDIUM-risk write.
+            # get_*/search_* tools are always permitted regardless of this list.
+            - name: MCP_ALLOWED_TOOLS
+              value: "get_firewall_rules,get_interfaces,get_dhcp_leases,get_system_info,search_firewall_rules,search_aliases,create_firewall_rule_advanced"
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Health probe: upstream Dockerfile healthcheck hits http://127.0.0.1:3000/mcp
+          readinessProbe:
+            httpGet:
+              path: /mcp
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /mcp
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /logs
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}

@@ -1,0 +1,226 @@
+---
+# default-deny-all for mcp-gateway namespace (ingress + egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from OpenShift router (all external MCP traffic enters via Route/Gateway)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-router
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+        - port: 9000
+          protocol: TCP   # ext-proc-delegation gRPC
+
+---
+# Allow ingress from kyverno to jit-approver (the dangerous-tool authz policy fetches
+# jit-approver's JWKS at :8080/jwks to verify the signed X-JIT-Session-JWT). Paired with
+# the allow-egress-jit-approver-jwks rule in np-kyverno.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-kyverno-jwks
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kyverno
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Allow egress to keycloak (OIDC discovery, token introspection, token exchange)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-keycloak
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+
+---
+# Allow egress to vault (Vault Agent sidecar, direct policy API calls)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-vault
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+
+---
+# Allow egress to kyverno-authz-server (ext_authz gRPC policy check)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kyverno
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kyverno
+      ports:
+        - port: 9081
+          protocol: TCP   # kyverno-authz-server gRPC
+
+---
+# Allow egress to agentic-mcp (upstream MCP servers, incl. pfsense-mcp)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-agentic-mcp
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-mcp
+      ports:
+        - port: 8000
+          protocol: TCP   # pfsense-mcp StreamableHTTP /mcp
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Allow egress to kube-api (jit-approver watches PRs via kube informers;
+# agentgateway uses kube SA token review for auth).
+# Note: mcp-gateway does NOT need direct kube-api for "none" resource types —
+# this is restricted to specific controller pods only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kube-api
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  # jit-approver needs kube-api for PR watch loop; agentgateway for SA token review.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - jit-approver
+          - agentgateway
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 6443
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 172.30.0.1/32

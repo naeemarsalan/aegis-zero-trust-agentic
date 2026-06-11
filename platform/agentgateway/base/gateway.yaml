@@ -1,0 +1,27 @@
+# Gateway (gateway.networking.k8s.io/v1)
+# GatewayClass "agentgateway" is provisioned by the controller Helm chart.
+# Listener: plain HTTP on 8080 — TLS termination is handled by the OpenShift Route (edge).
+# The Route re-encrypts to port 8443 when a cert Secret is available (see overlays/anaeem).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mcp-gateway
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/part-of: agentic-platform
+  annotations:
+    # agentgateway controller watches this annotation for AgentgatewayParameters ref
+    # (optional — default GatewayClass parameters apply when omitted)
+    agentgateway.dev/gateway-parameters: ""
+spec:
+  gatewayClassName: agentgateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8080
+      hostname: "mcp-gateway.apps.anaeem.na-launch.com"
+      allowedRoutes:
+        namespaces:
+          from: Same

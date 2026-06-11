@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: agentic-observability
+data:
+  otelcol.yaml: |
+    # OpenTelemetry Collector Contrib configuration
+    # Plain Deployment (no OTel operator on anaeem cluster).
+    # LOKI_PUSH_URL is injected via env var from the Deployment; the value in
+    # overlays/anaeem/patch-loki-url.yaml sets it to
+    # http://172.16.2.252:3100 by default.
+    #
+    # PROMETHEUS_REMOTE_WRITE_URL is an optional env var for forwarding agent
+    # token/cost/latency metrics to an existing Prometheus (in addition to the
+    # primary UWM-scraped prometheus exporter on :8889).
+    # Set in overlays/anaeem/patch-loki-url.yaml to
+    # http://172.16.2.252:9090/api/v1/write to reach the existing Prometheus.
+    # Leave empty ("") to disable remote-write (the exporter is still declared
+    # but its pipeline entry is omitted when the URL is not set — use the
+    # PROMETHEUS_REMOTE_WRITE_URL env var to opt in).
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+      attributes/add_cluster:
+        actions:
+          - key: cluster
+            value: anaeem
+            action: insert
+
+      # Hash tool_args before forwarding to Loki — security invariant:
+      # tool arguments must never appear raw in audit logs.
+      attributes/hash_tool_args:
+        actions:
+          - key: tool_args
+            action: hash
+          - key: tool_input
+            action: hash
+
+    exporters:
+      # Primary: Prometheus exporter scraped by UWM ServiceMonitor on :8889/metrics
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        namespace: agentic
+        resource_to_telemetry_conversion:
+          enabled: true
+        enable_open_metrics: true
+
+      # Secondary (opt-in): forward agent token/cost/latency metrics to the
+      # existing Prometheus at http://172.16.2.252:9090 via remote-write.
+      # Enable by setting PROMETHEUS_REMOTE_WRITE_URL env var in the overlay.
+      # Endpoint: http://172.16.2.252:9090/api/v1/write  (Prometheus remote-write API)
+      prometheusremotewrite:
+        endpoint: "${env:PROMETHEUS_REMOTE_WRITE_URL}"
+        tls:
+          insecure: true
+        resource_to_telemetry_conversion:
+          enabled: true
+        # Add cluster label so the existing Prometheus can filter by source
+        external_labels:
+          cluster: anaeem
+          source: otel-collector
+
+      # Loki exporter — logs and traces-as-logs land here.
+      # Endpoint resolved from LOKI_PUSH_URL env var at runtime via envsubst.
+      # The collector reads the env var via the ${env:LOKI_PUSH_URL} syntax.
+      loki:
+        endpoint: "${env:LOKI_PUSH_URL}/loki/api/v1/push"
+        tls:
+          insecure: true
+        default_labels_enabled:
+          exporter: false
+          job: true
+          instance: false
+          level: true
+        labels:
+          resource:
+            cluster: "cluster"
+            k8s.namespace.name: "namespace"
+            service.name: "app"
+          attributes:
+            severity: "severity"
+            user: "user"
+            tool: "tool"
+
+      # Debug exporter — traces only; useful for development; low overhead.
+      debug:
+        verbosity: basic
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch, attributes/add_cluster, attributes/hash_tool_args]
+          exporters: [loki, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [batch, attributes/add_cluster]
+          # Primary: UWM-scraped prometheus exporter (:8889)
+          # Secondary: prometheusremotewrite to existing Prometheus at 172.16.2.252:9090
+          # The remote-write exporter is enabled by setting PROMETHEUS_REMOTE_WRITE_URL
+          # in the anaeem overlay; both exporters are listed here so enabling the URL
+          # activates the secondary path without any config change.
+          exporters: [prometheus, prometheusremotewrite]
+        logs:
+          receivers: [otlp]
+          processors: [batch, attributes/add_cluster, attributes/hash_tool_args]
+          exporters: [loki]

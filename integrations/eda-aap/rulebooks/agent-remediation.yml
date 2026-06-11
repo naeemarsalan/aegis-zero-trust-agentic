@@ -1,0 +1,69 @@
+---
+# rulebooks/agent-remediation.yml
+#
+# EDA rulebook: AgentPermissionDenied self-healing loop
+#
+# PRIMARY INGESTION PATH (production):
+#   AAP 2.6 Event Stream "agent-denials" (server-side streaming, no listener poll)
+#   AlertManager -> Event Stream webhook -> EDA rulebook activation
+#   The event_stream source is configured in AAP UI/API and forwards events directly
+#   to this rulebook activation.  No source block is required in the rulebook itself
+#   when running under an Event Stream-backed activation.
+#
+# LOCAL-DEV FALLBACK (lab only, NOT for production activations):
+#   When running eda-server locally without an AAP Event Stream configured, the
+#   webhook source below stands in.  The production activation must be created with
+#   source_type "event_stream" pointing to the "agent-denials" Event Stream.
+#
+# AlertManager -> Alertmanager Config sends webhook POST to the Event Stream
+# ingress URL printed by setup.sh.  Payload shape expected:
+#   {
+#     "alerts": [
+#       {
+#         "labels":      { "alertname": "AgentPermissionDenied", "namespace": "...",
+#                          "tool": "...", "user": "...", "denial_reason": "..." },
+#         "annotations": { "summary": "...", "description": "..." }
+#       }
+#     ]
+#   }
+
+---
+- name: Agent Permission Denied — self-healing remediation
+  hosts: all
+
+  # -------------------------------------------------------------------
+  # LOCAL DEV FALLBACK SOURCE
+  # Remove or comment this sources block when deploying via Event Stream
+  # activation in AAP (the Event Stream itself is the source in that case).
+  # -------------------------------------------------------------------
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+        # Mount a token from the activation's "Token" credential if desired:
+        # token: "{{ EDA_WEBHOOK_TOKEN }}"
+
+  # -------------------------------------------------------------------
+  rules:
+  - name: Remediate AgentPermissionDenied alert
+    condition: >
+      event.payload is defined
+      and event.payload.alerts is defined
+      and event.payload.alerts | length > 0
+      and event.payload.alerts[0].labels.alertname == "AgentPermissionDenied"
+
+    action:
+      run_job_template:
+        name: "Agent Remediation PR"
+        organization: "Default"
+        job_args:
+          extra_vars:
+            # --- alert metadata forwarded to the playbook ---
+            alert_namespace:   "{{ event.payload.alerts[0].labels.namespace | default('unknown') }}"
+            alert_tool:        "{{ event.payload.alerts[0].labels.tool | default('unknown') }}"
+            alert_user:        "{{ event.payload.alerts[0].labels.user | default('unknown') }}"
+            alert_denial_reason: "{{ event.payload.alerts[0].labels.denial_reason | default('unknown') }}"
+            alert_summary:     "{{ event.payload.alerts[0].annotations.summary | default('') }}"
+            alert_description: "{{ event.payload.alerts[0].annotations.description | default('') }}"
+            # full raw payload for audit/log capture in the playbook
+            raw_alert_payload: "{{ event.payload | to_json }}"

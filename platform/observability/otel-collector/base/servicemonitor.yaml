@@ -1,0 +1,19 @@
+# ServiceMonitor tells the UWM Prometheus instance to scrape the OTel collector's
+# Prometheus exporter on :8889/metrics.
+# Requires User Workload Monitoring to be enabled (see ../user-workload-monitoring/).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: agentic-observability
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scheme: http

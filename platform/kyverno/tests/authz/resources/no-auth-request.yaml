@@ -1,0 +1,20 @@
+# Envoy CheckRequest: POST /mcp with no Authorization header.
+# Expected: no-unauthenticated-calls → deny 401
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: no-auth-request
+data: {}
+---
+# kyverno-json resource stub representing an Envoy CheckRequest.
+# The top-level shape matches object.attributes.request.http as seen by the
+# ValidatingPolicy CEL expressions.
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers: {}
+        body: |
+          {"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_firewall_rules","arguments":{}}}

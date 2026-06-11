@@ -1,0 +1,19 @@
+# WARNING: This ConfigMap configures the USER WORKLOAD MONITORING prometheus instance
+# (ns openshift-user-workload-monitoring). Changing retention or storage here affects
+# all user workload metrics cluster-wide. Apply deliberately.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      retention: 7d
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

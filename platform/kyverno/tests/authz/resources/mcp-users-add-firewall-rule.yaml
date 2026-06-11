@@ -1,0 +1,19 @@
+# Envoy CheckRequest: mcp-users group calling add_firewall_rule (write — not allowed).
+# JWT payload groups: ["mcp-users"]
+#
+# Expected outcomes:
+#   no-unauthenticated-calls       → pass (valid JWT, mcp-users group)
+#   tool-allowlist-mcp-users       → fail/deny 403 (add_firewall_rule not in allowlist)
+#   dangerous-tools-admins-only    → fail/deny 403 (dangerous, not mcp-admins)
+#   deny-restricted-group          → pass (not restricted)
+object:
+  attributes:
+    request:
+      http:
+        method: POST
+        path: /mcp
+        headers:
+          authorization: "Bearer eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiaHR0cHM6Ly9rZXljbG9hay5hcHBzLmFuYWVlbS5uYS1sYXVuY2guY29tL3JlYWxtcy9hZ2VudGljIiwgInN1YiI6ICJ1c2VyLXRlc3QiLCAiYXVkIjogIm1jcC1nYXRld2F5IiwgImV4cCI6IDk5OTk5OTk5OTksICJpYXQiOiAxNzE4MDAwMDAwLCAiZ3JvdXBzIjogWyJtY3AtdXNlcnMiXX0.FAKESIG_FOR_POLICY_TESTS_ONLY"
+          content-type: application/json
+        body: |
+          {"jsonrpc":"2.0","id":"2","method":"tools/call","params":{"name":"add_firewall_rule","arguments":{"action":"pass","protocol":"tcp","destination_port":"443"}}}

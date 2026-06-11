@@ -1,0 +1,94 @@
+# PRODUCTION TARGET — NOT APPLIED IN POC (no TEE hardware on SNO VM)
+#
+# Trustee (Key Broker Service / KBS) provides attestation-gated secret release
+# for Confidential Containers.  The peer-pod guest agent contacts Trustee to
+# prove it is running in a genuine hardware TEE before Vault secrets are handed
+# over.
+#
+# Attestation flow (production):
+#   1. Peer-pod VM boots inside AMD SEV-SNP encrypted memory region.
+#   2. Guest agent (Kata Agent) runs inside the VM and contacts Trustee via the
+#      AA_KBC_PARAMS URL configured in the peer-pods ConfigMap.
+#   3. Trustee challenges the guest to produce an attestation report
+#      (AMD SEV-SNP attestation report or Intel TDX Quote).
+#   4. Trustee verifies the report against AMD KDS (Key Distribution Service) or
+#      Intel PCCS.  If valid, Trustee releases a Vault token or wrapping key.
+#   5. The Vault token is used inside the VM to fetch secrets via the Vault Agent
+#      running within the peer-pod — identical to the PoC pattern but gated on
+#      hardware attestation rather than SPIRE SVID alone.
+#
+# Trustee is deployed by the confidential-containers-operator (separate from OSC).
+# The operator creates the Trustee Deployment when a KbsConfig CR is applied.
+
+---
+apiVersion: confidentialcontainers.org/v1alpha1
+kind: KbsConfig
+metadata:
+  name: kbsconfig
+  namespace: trustee-operator-system
+  annotations:
+    platform.nvidia-ida/status: "NOT-APPLIED — POC stub for production CoCo target"
+    platform.nvidia-ida/requires: "confidential-containers-operator installed, AMD SEV-SNP or TDX"
+spec:
+  kbsConfigMapName: kbs-config
+  kbsAuthSecretName: kbs-auth-public-key
+  kbsDeploymentType: AllInOneDeployment
+  kbsRvpsRefValuesConfigMapName: rvps-reference-values
+  kbsResourcePolicyConfigMapName: kbs-resource-policy
+  kbsServicePort: 8080
+
+---
+# Trustee Deployment stub — AllInOneDeployment mode bundles KBS + AS + RVPS.
+# In production, split into separate deployments for AS (Attestation Service) and
+# RVPS (Reference Value Provider Service) for independent scaling.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee
+  namespace: trustee-operator-system
+  annotations:
+    platform.nvidia-ida/status: "NOT-APPLIED — POC stub for production CoCo target"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee
+  template:
+    metadata:
+      labels:
+        app: trustee
+    spec:
+      # Trustee itself must run on a trusted (non-TEE) node that has access to
+      # AMD KDS or Intel PCCS for quote verification.
+      serviceAccountName: trustee
+      automountServiceAccountToken: false
+      containers:
+        - name: kbs
+          # Replace with the appropriate CoCo operator-managed image tag.
+          image: quay.io/confidential-containers/trustee:latest
+          args:
+            - --config-file=/etc/kbs/kbs.toml
+          ports:
+            - containerPort: 8080
+              name: kbs-http
+          volumeMounts:
+            - name: kbs-config
+              mountPath: /etc/kbs
+              readOnly: true
+            - name: vault-creds
+              mountPath: /vault/secrets
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: kbs-config
+          configMap:
+            name: kbs-config
+        - name: vault-creds
+          emptyDir:
+            medium: Memory   # Vault Agent-injected Vault token (tmpfs)

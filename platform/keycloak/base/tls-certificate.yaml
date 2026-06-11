@@ -1,0 +1,30 @@
+# TLS certificate for Keycloak ingress.
+#
+# OPTION A (active): OpenShift service-ca annotation on the Service.
+#   The service-ca operator injects a cert signed by the cluster's internal CA into
+#   a Secret named in the annotation.  This is the simplest path for PoC.
+#   Drawback: the CA is not publicly trusted; browsers will warn.
+#
+# OPTION B (recommended for production): cert-manager Certificate.
+#   Uncomment the Certificate resource below and ensure cert-manager + a ClusterIssuer
+#   (e.g. Let's Encrypt via ACME HTTP-01 or DNS-01) is installed on the cluster.
+#   Then set tlsSecret: keycloak-tls in the Keycloak CR.
+#
+# Currently we use Option A via the Service annotation in keycloak-cr.yaml.
+# The secret keycloak-tls is created automatically by the service-ca operator.
+
+# --- OPTION B: cert-manager Certificate (UNCOMMENT TO USE) ---
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: keycloak-tls
+#   namespace: keycloak
+# spec:
+#   secretName: keycloak-tls
+#   issuerRef:
+#     name: letsencrypt-prod          # must exist — adjust to your ClusterIssuer name
+#     kind: ClusterIssuer
+#   dnsNames:
+#     - keycloak.apps.anaeem.na-launch.com
+#   duration: 2160h    # 90 days
+#   renewBefore: 360h  # renew 15 days before expiry

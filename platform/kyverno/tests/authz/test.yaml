@@ -1,0 +1,114 @@
+# kyverno-json test suite for authz ValidatingPolicies (Envoy mode).
+#
+# Run:
+#   kyverno-json test .
+#
+# The test framework evaluates each policy against each resource file and
+# checks the expected pass/fail outcome.  Envoy CheckRequest objects are
+# represented as plain YAML matching the structure the authz server receives
+# from the Envoy ext_authz filter.
+#
+# NOTE: JWT signatures are intentionally fake here because kyverno-json
+# policy tests mock the jwks.Fetch() and jwt.Decode() builtins via the
+# payload stubs in each resource file.  In integration tests (chainsaw)
+# real tokens from Keycloak are used instead.
+---
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: authz-policy-tests
+policies:
+  - ../../authz/base/no-unauthenticated-calls.yaml
+  - ../../authz/base/tool-allowlist-mcp-users.yaml
+  - ../../authz/base/dangerous-tools-admins-only.yaml
+  - ../../authz/base/deny-restricted-group.yaml
+resources:
+  - resources/no-auth-request.yaml
+  - resources/options-preflight.yaml
+  - resources/well-known-request.yaml
+  - resources/mcp-users-get-firewall-rules.yaml
+  - resources/mcp-users-add-firewall-rule.yaml
+  - resources/mcp-admins-add-firewall-rule-no-jit.yaml
+  - resources/mcp-admins-add-firewall-rule-with-jit.yaml
+  - resources/mcp-admins-add-firewall-rule-invalid-jit-jwt.yaml
+  - resources/mcp-admins-get-firewall-rules.yaml
+  - resources/restricted-group-get-rules.yaml
+  - resources/no-group-get-rules.yaml
+results:
+  # no-unauthenticated-calls: no Bearer header → 401
+  - policy: no-unauthenticated-calls
+    resource: no-auth-request
+    result: fail
+
+  # no-unauthenticated-calls: OPTIONS preflight → allowed (public path)
+  - policy: no-unauthenticated-calls
+    resource: options-preflight
+    result: pass
+
+  # no-unauthenticated-calls: /.well-known/ → allowed (public path)
+  - policy: no-unauthenticated-calls
+    resource: well-known-request
+    result: pass
+
+  # no-unauthenticated-calls: mcp-users valid JWT → allowed
+  - policy: no-unauthenticated-calls
+    resource: mcp-users-get-firewall-rules
+    result: pass
+
+  # no-unauthenticated-calls: mcp-admins valid JWT → allowed
+  - policy: no-unauthenticated-calls
+    resource: mcp-admins-add-firewall-rule-with-jit
+    result: pass
+
+  # no-unauthenticated-calls: restricted group valid JWT → allowed at this layer
+  # (deny-restricted-group handles the 403 separately)
+  - policy: no-unauthenticated-calls
+    resource: restricted-group-get-rules
+    result: pass
+
+  # tool-allowlist-mcp-users: mcp-users calling get_firewall_rules → allowed
+  - policy: tool-allowlist-mcp-users
+    resource: mcp-users-get-firewall-rules
+    result: pass
+
+  # tool-allowlist-mcp-users: mcp-users calling add_firewall_rule → denied 403
+  - policy: tool-allowlist-mcp-users
+    resource: mcp-users-add-firewall-rule
+    result: fail
+
+  # tool-allowlist-mcp-users: mcp-admins calling add_firewall_rule → allowed
+  # (mcp-admins is not subject to this policy)
+  - policy: tool-allowlist-mcp-users
+    resource: mcp-admins-add-firewall-rule-with-jit
+    result: pass
+
+  # dangerous-tools-admins-only: mcp-admins + add_firewall_rule + valid JIT JWT → allowed
+  - policy: dangerous-tools-admins-only
+    resource: mcp-admins-add-firewall-rule-with-jit
+    result: pass
+
+  # dangerous-tools-admins-only: mcp-admins + add_firewall_rule + NO JIT header → denied
+  - policy: dangerous-tools-admins-only
+    resource: mcp-admins-add-firewall-rule-no-jit
+    result: fail
+
+  # C3 regression: mcp-admins + add_firewall_rule + PRESENT-BUT-INVALID JIT JWT → denied
+  # A non-empty X-JIT-Session-JWT with a bad signature must not clear the gate.
+  - policy: dangerous-tools-admins-only
+    resource: mcp-admins-add-firewall-rule-invalid-jit-jwt
+    result: fail
+
+  # dangerous-tools-admins-only: mcp-admins + get_firewall_rules (read) → allowed
+  - policy: dangerous-tools-admins-only
+    resource: mcp-admins-get-firewall-rules
+    result: pass
+
+  # deny-restricted-group: restricted group calling any tool → denied 403
+  - policy: deny-restricted-group
+    resource: restricted-group-get-rules
+    result: fail
+
+  # deny-restricted-group: mcp-users calling a tool → not restricted → allowed
+  - policy: deny-restricted-group
+    resource: mcp-users-get-firewall-rules
+    result: pass

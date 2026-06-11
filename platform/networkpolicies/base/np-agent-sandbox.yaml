@@ -1,0 +1,131 @@
+---
+# default-deny-all for agent-sandbox namespace (ingress + egress)
+# Agent pods run with runtimeClassName: kata (hardware-isolated micro-VMs).
+# At the Kubernetes network layer, these policies enforce that agent pods
+# have NO direct path to Vault, Keycloak, or agentic-mcp —
+# enforcing the "no-direct-credential" invariant at L3/4.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow egress to mcp-gateway (all MCP calls from agents go through the gateway).
+# Agents MUST NOT contact MCP servers directly — only via the authenticated gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-mcp-gateway
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+
+---
+# Allow egress to jit-approver (agents can request JIT approval for privileged tools).
+# jit-approver lives in the mcp-gateway namespace; this rule is separate for clarity.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-jit-approver
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8080
+          protocol: TCP   # jit-approver HTTP
+
+---
+# Allow egress to kube-api (agents may need kube-api for tooling; SA token review
+# is done by the Vault Agent init container, not the agent process itself).
+# RESTRICTED to port 6443 / 443 only — no egress to other cluster-internal services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-kube-api
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 6443
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 172.30.0.1/32
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+# NOTE: There is intentionally NO egress rule to:
+#   - vault namespace (agents get secrets via Vault Agent tmpfs injection, not direct API)
+#   - keycloak namespace (token exchange is done by mcp-gateway on the agent's behalf)
+#   - agentic-mcp namespace (MCP servers are only reachable via mcp-gateway)
+# This enforces the platform invariant: agents NEVER hold long-lived credentials,
+# never contact credential stores directly, and never bypass the gateway audit path.

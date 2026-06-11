@@ -1,0 +1,84 @@
+# Environment inventory — discovered 2026-06-11 via live cluster access.
+# This file parameterizes all kustomize overlays and ArgoCD ApplicationSets.
+# Credentials live in environment/.env (gitignored) — never here.
+clusters:
+  virt:
+    role: acm-hub
+    api: https://api.virt.na-launch.com:6443
+    appsDomain: apps.virt.na-launch.com
+    ocpVersion: 4.19.19
+    hardware: 3x bare-metal (24-48 CPU, ~300Gi RAM each), 2x NVIDIA GPU on node 24-6e-96-33-24-90
+    exists:
+      - acm: 2.14.2 (manages anaeem, anaeem2, asaran, hammer, hammer2)
+      - openshift-gitops: 1.20.4 (ArgoCD ns openshift-gitops; GitOpsCluster hybridbank-gitops)
+      - cnv: kubevirt-hyperconverged stable (workload clusters are VMs here)
+      - rhoai-operator: rhods-operator stable (NO DataScienceCluster — operator only)
+      - nvidia-gpu-operator: v25.3 + nfd
+      - cert-manager, external-secrets, metallb, logging 6.5, lightspeed, rhdh
+      - mcp-servers: ns aap-mcp-server — aap-mcp-ansible:8000, aap-mcp-eda:8001,
+          aap-mcp-lint:8002, aap-mcp-redhat-docs:8003 (running 252d; future gateway upstreams)
+    deployTargetsHere: [gitops-applications (hub ArgoCD), acm-gitopscluster-registration]
+
+  anaeem:
+    role: platform-target            # ALL PoC platform components land here
+    api: https://api.anaeem.na-launch.com:6443
+    appsDomain: apps.anaeem.na-launch.com
+    consoleURL: https://console-openshift-console.apps.anaeem.na-launch.com
+    ocpVersion: 4.20.11              # k8s 1.33.6 — ZTWIM stable-v1 (GA) available
+    hardware: SNO VM on virt hub (node anaeem-sno, 31.5 CPU / 130Gi allocatable)
+    nestedVirt: confirmed            # vmx in /proc/cpuinfo + /dev/kvm — Kata/OSC feasible
+    access: hub secret anaeem/anaeem-admin-kubeconfig -> ~/.kube/anaeem-kubeconfig (system:admin)
+    storageClasses:
+      default: nfs-csi               # WARNING: local-path ALSO marked default — fix or always
+      note: set storageClassName explicitly in every PVC (we use nfs-csi)
+    exists:
+      - rhoai: 3.4.0-ea.2 with DataScienceCluster data-skill-factory READY — do not create another
+      - cnpg: cloud-native-postgresql stable-v1.29 (Keycloak DB via Cluster CR)
+      - rhbk-operator: stable-v26.4 in ns openshift-mta (MTA dependency; Keycloak CR mta-rhbk exists)
+      - gateway-api: CRDs present (via servicemeshoperator3)
+      - external-secrets, keda, pipelines, rhdh, mta
+    deployHere:
+      - ztwim-spire (ns zero-trust-workload-identity-manager, channel stable-v1)
+      - keycloak (ns keycloak, our own RHBK instance + CNPG cluster, realm agentic)
+      - vault (ns vault, helm 0.32.0, SINGLE-replica raft — SNO; HA documented for prod)
+      - agentgateway + ext-proc-delegation + jit-approver (ns mcp-gateway)
+      - kyverno + authz server (ns kyverno)
+      - demo MCP servers incl. pfsense-mcp (ns agentic-mcp, Data Science Project)
+      - agent sandbox w/ Kata runtimeClass (ns agent-sandbox)
+      - otel collector + alertmanager rules (ns agentic-observability)
+
+  hammer:
+    role: aap-host
+    api: https://api.hammer.na-launch.com:6443
+    ocpVersion: "4.20.x (k8s 1.33.10)"
+    exists:
+      - aap: 2.6 (gateway) / controller 4.7.12 at https://aap-aap.apps.hammer.na-launch.com
+    deployHere: []                   # config-only: Event Streams, rulebooks, job templates via AAP API/UI
+
+  unmanaged:                         # other managed clusters, not used by this PoC
+    - anaeem2 (OCP 4.20, admin kubeconfig on hub)
+    - asaran
+    - hammer2
+
+external:
+  git:
+    url: https://git.arsalan.io     # Gitea 13.0.4
+    repo: anaeem/nvidia-ida
+    usedFor: [argocd-source, eda-remediation-PRs, jit-approval-PRs]   # NO Slack — PR-merge = approval
+  registry:
+    url: oci.arsalan.io
+    imagePrefix: oci.arsalan.io/nvidia-ida
+  observability:
+    grafana: http://172.16.2.252:3000
+    lokiPush: http://172.16.2.252:3100   # TODO confirm Loki ingest port
+  pfsense:
+    apiUrl: ""                       # TODO from Arsalan — then API key into Vault, not here
+
+identity:
+  trustDomain: anaeem.na-launch.com  # IMMUTABLE once SPIRE server created — confirm before apply
+  spireOidcIssuer: https://spire-oidc.apps.anaeem.na-launch.com
+  keycloakHost: keycloak.apps.anaeem.na-launch.com
+  keycloakRealm: agentic
+  vaultHost: vault.apps.anaeem.na-launch.com
+  gatewayHost: mcp-gateway.apps.anaeem.na-launch.com
+  dnsChangesNeeded: none             # everything rides *.apps.anaeem.na-launch.com wildcard

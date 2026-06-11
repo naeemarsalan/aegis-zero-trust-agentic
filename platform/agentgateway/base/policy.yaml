@@ -1,0 +1,139 @@
+# AgentgatewayPolicy: mcp-gateway-policy
+#
+# Attaches to HTTPRoute "mcp-route" (PostRouting phase).
+# Enforces:
+#   (a) JWT authentication — strict, Keycloak agentic realm, audience mcp-gateway
+#   (b) extAuthz  — gRPC to kyverno-authz-server (fail-closed)
+#   (c) extProc   — gRPC to ext-proc-delegation (fail-closed, request headers+body, response headers only)
+#   (d) CEL RBAC  — tool-level allowlist per jwt.groups (second defense layer)
+#
+# Field shapes verified from:
+#   agentgateway/controller/api/v1alpha1/agentgateway/agentgateway_policy_types.go  (v1.3.0-alpha.1)
+#
+# INFERRED fields (marked with # INFERRED) — not directly observable in the Go source
+# but consistent with Envoy ext_proc/ext_authz semantics the source wraps:
+#   - processingOptions.requestBodyMode, responseBodyMode — verified enum values: Buffered/None
+#   - extAuth.forwardBody.maxSize — verified type ByteSize, field forwardBody
+#   - extAuth.grpc.requestMetadata — verified map[string]CELExpression
+#   - traffic.authorization.rules[].action/claims — CEL Authorization type
+#
+# The RemoteJWKS.backendRef points to a Service named "keycloak" in ns "keycloak".
+# The Service must be reachable from mcp-gateway; NetworkPolicy allows this (see networkpolicies.yaml).
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-gateway-policy
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: mcp-gateway-policy
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: mcp-route
+
+  traffic:
+    # -----------------------------------------------------------------------
+    # (a) JWT Authentication — Strict
+    # Keycloak realm "agentic" issues tokens; JWKS fetched remotely.
+    # The gateway validates iss, aud, and signature before any other policy runs.
+    # -----------------------------------------------------------------------
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+          audiences:
+            - mcp-gateway
+          jwks:
+            remote:
+              # Keycloak standard JWKS path
+              jwksPath: "/realms/agentic/protocol/openid-connect/certs"
+              cacheDuration: "5m"
+              backendRef:
+                # Service must exist in ns keycloak; NetworkPolicy allows egress (see networkpolicies.yaml)
+                group: ""
+                kind: Service
+                name: keycloak
+                namespace: keycloak
+                port: 8443
+      # MCP OAuth metadata endpoint integration (Keycloak provider)
+      mcp:
+        provider: Keycloak
+
+    # -----------------------------------------------------------------------
+    # (b) External Authorization — gRPC Kyverno (fail-closed)
+    # kyverno-authz-server implements the Envoy ext_authz gRPC protocol.
+    # JWT claims are forwarded via requestMetadata under the well-known
+    # "dev.agentgateway.jwt" key so Kyverno policies can inspect them.
+    # forwardBody buffers request body (up to 256Ki) for policy inspection.
+    # -----------------------------------------------------------------------
+    extAuth:
+      backendRef:
+        group: ""
+        kind: Service
+        name: kyverno-authz-server
+        namespace: kyverno
+        port: 9081
+      failureMode: FailClosed
+      grpc:
+        # Forward validated JWT claims to Kyverno for policy evaluation.
+        # The "dev.agentgateway.jwt" namespace is the agentgateway standard
+        # for JWT claim forwarding to ext_authz (INFERRED — follows Envoy jwt_authn metadata pattern).
+        requestMetadata:
+          "dev.agentgateway.jwt": "jwt.claims"
+      forwardBody:
+        maxSize: "262144"  # 256Ki — matches task spec maxRequestBytes
+
+    # -----------------------------------------------------------------------
+    # (c) External Processing — gRPC ext-proc-delegation (fail-closed)
+    # Runs after authn+authz. Processes request headers and body (buffered),
+    # response headers only (skip body to avoid double-buffering).
+    # FAIL CLOSED: if ext-proc service is unreachable the request is denied.
+    # processingOptions field shapes verified from ProcessingOptions struct.
+    # -----------------------------------------------------------------------
+    extProc:
+      backendRef:
+        group: ""
+        kind: Service
+        name: ext-proc-delegation
+        namespace: mcp-gateway
+        port: 9000
+      processingOptions:
+        requestHeaderMode: Send      # HeaderSendModeSend
+        requestBodyMode: Buffered    # BodySendModeBuffered
+        responseHeaderMode: Send     # HeaderSendModeSend
+        responseBodyMode: None       # BodySendModeNone — skip response body
+
+    # -----------------------------------------------------------------------
+    # (d) CEL RBAC — tool-level allowlist (second defense layer)
+    # After JWT validation, jwt.claims.groups is a list of group strings.
+    # These rules deny requests to specific MCP tools based on group membership.
+    #
+    # CEL Authorization field shapes: Authorization.rules[].action + condition
+    # The "authorization" field maps to type Authorization (traffic-level).
+    # INFERRED: CEL variable "jwt" contains validated claims post-jwtAuthentication.
+    # -----------------------------------------------------------------------
+    authorization:
+      rules:
+        # Allow mcp.tool.name "pfsense_*" only to users in group "network-ops"
+        - name: pfsense-tools-network-ops-only
+          action: Deny
+          condition: >-
+            request.headers["mcp-tool-name"].startsWith("pfsense_") &&
+            !("network-ops" in jwt.claims.groups)
+
+        # Allow mcp.tool.name "pfsense_firewall_*" only to group "firewall-admins"
+        - name: pfsense-firewall-admins-only
+          action: Deny
+          condition: >-
+            request.headers["mcp-tool-name"].startsWith("pfsense_firewall_") &&
+            !("firewall-admins" in jwt.claims.groups)
+
+        # Example: block read_file tool for all except "platform-engineers"
+        - name: read-file-platform-only
+          action: Deny
+          condition: >-
+            request.headers["mcp-tool-name"] == "read_file" &&
+            !("platform-engineers" in jwt.claims.groups)

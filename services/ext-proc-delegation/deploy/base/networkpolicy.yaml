@@ -1,0 +1,72 @@
+---
+# Ingress: allow agentgateway pods in mcp-gateway on port 9000,
+# and agentic-observability (Prometheus) on port 9090.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ext-proc-delegation-ingress
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: ext-proc-delegation
+  policyTypes:
+    - Ingress
+  ingress:
+    # agentgateway calls ext_proc over gRPC
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentgateway
+      ports:
+        - port: 9000
+          protocol: TCP
+    # Prometheus scrape from agentic-observability namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-observability
+      ports:
+        - port: 9090
+          protocol: TCP
+---
+# Egress: allow DNS, Keycloak (443), Vault (8200/443), and SPIRE agent (unix).
+# All other egress is denied.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ext-proc-delegation-egress
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: ext-proc-delegation
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Keycloak HTTPS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+    # Vault HTTPS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+        - port: 443
+          protocol: TCP

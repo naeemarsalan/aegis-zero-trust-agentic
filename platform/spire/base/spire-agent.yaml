@@ -1,0 +1,10 @@
+---
+# SpireAgent singleton — ONE per cluster, named "cluster".
+# The agent runs as a DaemonSet on every node and contacts the SpireServer
+# to obtain node attestation and workload SVIDs.
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: cluster
+  namespace: zero-trust-workload-identity-manager
+spec: {}

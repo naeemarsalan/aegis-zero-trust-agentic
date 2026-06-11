@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace is created by this component (namespace.yaml).
+# Apply 00-operators/rhbk BEFORE this component so the RHBK operator is ready.
+namespace: keycloak
+
+resources:
+  - namespace.yaml
+  - cnpg-cluster.yaml
+  - tls-certificate.yaml   # contains only comments + Option B cert-manager stub (no-op until uncommented)
+  - keycloak-cr.yaml
+  - realm-import.yaml
+  - network-policy.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: keycloak

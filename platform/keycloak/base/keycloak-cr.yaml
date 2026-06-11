@@ -1,0 +1,67 @@
+# Keycloak CR — deployed by the RHBK operator (stable-v26.4) from ns keycloak.
+# This is OUR instance; the mta-rhbk instance in openshift-mta is separate.
+#
+# TLS: the Service annotation below triggers the OpenShift service-ca operator to
+# inject a cluster-signed cert into secret keycloak-tls.
+# For a publicly-trusted cert switch to cert-manager (see tls-certificate.yaml).
+#
+# Preview feature flags in additionalOptions:
+#   token-exchange       — enables RFC8693 token exchange endpoint.
+#                          NOTE: as of RHBK 26.2+ standard token exchange (RFC8693) is GA
+#                          and does NOT require this flag.  The flag enables the LEGACY
+#                          Keycloak-proprietary exchange endpoint as a fallback.
+#                          Keep it enabled during PoC until the gateway ext-proc is
+#                          confirmed to use the standard /token endpoint with
+#                          grant_type=urn:ietf:params:oauth:grant-type:token-exchange.
+#   admin-fine-grained-authz — enables per-client admin permissions; required for
+#                          mcp-downstream token-exchange policy to be configured
+#                          through the admin REST API.
+#   Both flags are marked as preview in the Keycloak upstream docs.
+#   Remove them once the standard exchange path is validated end-to-end.
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+  annotations:
+    # Trigger OpenShift service-ca to inject a signed cert into secret keycloak-tls.
+    # The annotation must be on the Service, but the operator creates the Service;
+    # use an additional Service annotation via the operator CR if supported,
+    # or manually annotate post-install (see README.md verify section).
+    service.beta.openshift.io/serving-cert-secret-name: keycloak-tls
+spec:
+  instances: 1   # SNO PoC — scale to 2+ for HA (requires shared DB, already present)
+
+  db:
+    vendor: postgres
+    host: keycloak-db-rw          # CNPG read-write service
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: keycloak-db-app       # auto-created by CNPG bootstrap
+      key: username
+    passwordSecret:
+      name: keycloak-db-app
+      key: password
+
+  hostname:
+    hostname: keycloak.apps.anaeem.na-launch.com
+    strict: true                  # reject requests with wrong Host header
+
+  http:
+    tlsSecret: keycloak-tls       # secret injected by service-ca or cert-manager
+
+  proxy:
+    headers: xforwarded           # trust X-Forwarded-* from OpenShift ingress
+
+  additionalOptions:
+    # Preview flags — see header comment above.
+    - name: features
+      value: "token-exchange,admin-fine-grained-authz"
+
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi

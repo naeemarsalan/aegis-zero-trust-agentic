@@ -1,0 +1,17 @@
+---
+# SpireServer singleton — ONE per cluster, named "cluster".
+# jwtIssuer must match the public OIDC discovery URL exposed by the Route/ingress.
+# storageClassName is set explicitly (nfs-csi) because this cluster has two
+# default StorageClasses (nfs-csi and local-path) — omitting it is ambiguous.
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+  namespace: zero-trust-workload-identity-manager
+spec:
+  jwtIssuer: https://spire-oidc.apps.anaeem.na-launch.com
+  persistence:
+    # dataDir is the SPIRE server data directory; volume is provisioned by the operator.
+    storageClassName: nfs-csi
+    # 1Gi is sufficient for a single-node cluster with O(100) SVIDs.
+    size: 1Gi

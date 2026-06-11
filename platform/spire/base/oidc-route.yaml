@@ -1,0 +1,34 @@
+---
+# Route for the SPIRE OIDC Discovery Provider.
+#
+# NOTE: Check whether the ZTWIM operator already creates this Route automatically
+# before applying this manifest.  Run:
+#   oc get route -n zero-trust-workload-identity-manager
+# If a route for spire-oidc.apps.anaeem.na-launch.com already exists, skip this file
+# (remove it from kustomization.yaml or set the resource as commented below).
+#
+# This manifest is provided as a fallback for operator versions that do NOT
+# create the Route automatically.  It uses reencrypt TLS so traffic from the
+# OCP router to the OIDC provider pod is also encrypted.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: spire-oidc-discovery-provider
+  namespace: zero-trust-workload-identity-manager
+  labels:
+    app.kubernetes.io/part-of: spire
+    app.kubernetes.io/component: oidc-discovery-provider
+spec:
+  host: spire-oidc.apps.anaeem.na-launch.com
+  # The operator typically creates a Service named spire-oidc-discovery-provider
+  # on port 443 (TLS).  Adjust targetPort if your operator names it differently.
+  to:
+    kind: Service
+    name: spire-oidc-discovery-provider
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

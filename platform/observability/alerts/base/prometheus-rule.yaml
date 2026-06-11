@@ -1,0 +1,77 @@
+# PrometheusRule in the agentic-observability namespace.
+# UWM picks this up because the namespace has label openshift.io/cluster-monitoring=true.
+#
+# Metric names assume the OTel collector exports with namespace "agentic" (set in
+# otel-collector/base/configmap.yaml prometheusremotewrite namespace field).
+# Adjust metric names if the instrumentation library changes them.
+#
+# agent_authz_denials_total — incremented by ext-proc-delegation on every AuthZ deny.
+# agent_jit_grants_issued_total — incremented by jit-approver on every JIT grant.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agentic-platform-alerts
+  namespace: agentic-observability
+  labels:
+    app.kubernetes.io/component: alerts
+spec:
+  groups:
+    - name: agentic.authz
+      interval: 30s
+      rules:
+        # Fires when any agent receives an authorization denial.
+        # label eda=true routes this to the EDA Event Stream webhook via AlertmanagerConfig.
+        - alert: AgentPermissionDenied
+          expr: |
+            rate(agentic_agent_authz_denials_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            eda: "true"
+            team: platform
+          annotations:
+            summary: "Agent authorization denial detected"
+            description: >-
+              Agent {{ $labels.user }} was denied permission to call tool
+              {{ $labels.tool }} in namespace {{ $labels.namespace }}.
+              Denial rate over 5m: {{ $value | humanize }}/s.
+            namespace: "{{ $labels.namespace }}"
+            tool: "{{ $labels.tool }}"
+            user: "{{ $labels.user }}"
+            runbook: "https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/docs/runbooks/agent-permission-denied.md"
+
+        # Fires immediately when a JIT grant is issued (informational — no action required).
+        # label eda=true so EDA can track the approval workflow.
+        - alert: JITGrantIssued
+          expr: |
+            increase(agentic_agent_jit_grants_issued_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: info
+            eda: "true"
+            team: platform
+          annotations:
+            summary: "JIT grant issued"
+            description: >-
+              A JIT grant was issued for agent {{ $labels.user }} to call
+              tool {{ $labels.tool }} in namespace {{ $labels.namespace }}.
+              Grants in last 5m: {{ $value }}.
+            namespace: "{{ $labels.namespace }}"
+            tool: "{{ $labels.tool }}"
+            user: "{{ $labels.user }}"
+            runbook: "https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/docs/runbooks/jit-grant-issued.md"
+
+    - name: agentic.health
+      interval: 60s
+      rules:
+        # OTel collector liveness — fires if collector pod stops scraping.
+        - alert: OtelCollectorDown
+          expr: |
+            up{namespace="agentic-observability", job="otel-collector"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "OTel collector is down"
+            description: "The OTel collector in agentic-observability has been unreachable for 2m. Metrics and logs will not be forwarded."

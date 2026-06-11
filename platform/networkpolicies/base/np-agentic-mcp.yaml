@@ -1,0 +1,100 @@
+---
+# default-deny-all for agentic-mcp namespace (ingress + egress)
+# MCP servers in this namespace are ONLY reachable via the mcp-gateway.
+# Direct access from agent pods is blocked at L3/4 by this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress from mcp-gateway ONLY — MCP servers are unreachable except via gateway.
+# This is the primary security invariant for this namespace: the gateway enforces
+# authentication, authorization (kyverno), identity forwarding, and audit logging
+# before any MCP call reaches a downstream server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-mcp-gateway-only
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mcp-gateway
+      ports:
+        - port: 8000
+          protocol: TCP   # pfsense-mcp StreamableHTTP /mcp
+
+---
+# Allow egress to openshift-dns
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+      ports:
+        - port: 5353
+          protocol: UDP
+        - port: 5353
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Allow egress from pfsense-mcp to the pfSense firewall REST API at 172.99.0.1
+# (https://172.99.0.1/api/v1/...).  The /16 CIDR covers the full pfSense mgmt
+# segment; the target host is 172.99.0.1 port 443 (HTTPS REST API).
+# Only pods labelled app=pfsense-mcp in agentic-mcp are allowed — all other pods
+# in this namespace have no egress to this range (default-deny applies).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-pfsense-api
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app: pfsense-mcp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.99.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

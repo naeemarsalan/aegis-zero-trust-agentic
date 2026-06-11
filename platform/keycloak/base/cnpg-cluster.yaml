@@ -1,0 +1,41 @@
+# CloudNativePG Cluster for Keycloak's PostgreSQL database.
+# The operator (cloud-native-postgresql stable-v1.29) is already installed cluster-scoped
+# in openshift-operators — no Subscription is needed here.
+#
+# CNPG auto-generates a secret named <cluster>-app (keycloak-db-app) with keys:
+#   username, password, host, port, dbname, uri, jdbc-uri
+# This secret is consumed by the Keycloak CR below via usernameSecret/passwordSecret.
+#
+# BOOTSTRAP EXCEPTION: keycloak-db-app is stored in etcd (standard CNPG behaviour).
+# This is acceptable for PoC bootstrapping.  Production path: enable Vault Agent Injector
+# to deliver DB credentials via tmpfs instead; see README.md.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-db
+  namespace: keycloak
+spec:
+  instances: 1   # SNO single-node — scale to 3 for HA in production
+
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+      # CNPG creates secret keycloak-db-app with the generated password.
+      # No explicit passwordSecret needed here; CNPG manages it.
+
+  storage:
+    size: 10Gi
+    storageClass: nfs-csi   # explicit — cluster has two default SCs (nfs-csi + local-path)
+
+  # Monitoring: CNPG exposes a /metrics endpoint on port 9187 automatically.
+  # Add a PodMonitor or ServiceMonitor in the agentic-observability namespace if desired.
+  monitoring:
+    enablePodMonitor: false  # set true once Prometheus is wired
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi

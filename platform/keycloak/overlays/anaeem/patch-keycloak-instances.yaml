@@ -1,0 +1,9 @@
+# SNO PoC: single Keycloak instance.
+# For production HA: increase to 2+ (requires shared DB already provided by CNPG).
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  instances: 1

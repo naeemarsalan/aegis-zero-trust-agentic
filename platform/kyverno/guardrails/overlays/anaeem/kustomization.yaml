@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# anaeem-specific patches.
+# Currently the base is already parameterized for anaeem.
+# Add patches here if a second overlay needs different namespace lists or
+# different validationFailureAction values per policy.

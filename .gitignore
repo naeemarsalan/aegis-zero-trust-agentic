@@ -1,0 +1,25 @@
+# Secrets and local environment — never commit
+.env
+*.env
+!.env.example
+!environment/.env.example
+*kubeconfig*
+*.pem
+*.key
+*.crt
+# Claude Code local MCP config — contains local credentials
+.mcp.json
+
+# Rendered/generated output
+rendered/
+dist/
+bin/
+
+# Go
+vendor/
+*.test
+
+# Editor/tooling
+.idea/
+.vscode/
+*.swp

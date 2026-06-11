@@ -1,0 +1,155 @@
+# KeycloakRealmImport — creates/updates the "agentic" realm on first reconciliation.
+# The RHBK operator applies this once; subsequent manual changes in the Keycloak UI
+# will NOT be overwritten unless the CR is deleted and re-created (or forceRecreate=true).
+#
+# Clients:
+#   agent-runtime    — the agent's own OAuth2 client (confidential, client-credentials flow).
+#                      Used by the agent runtime to obtain its own access token before
+#                      calling the gateway.  standardFlowEnabled=false (no browser login).
+#   mcp-gateway      — the audience the agentgateway validates when it receives a token.
+#                      The gateway's ext-proc verifies aud contains "mcp-gateway".
+#   mcp-downstream   — the audience ext-proc exchanges the inbound agent token TO before
+#                      forwarding to a downstream MCP server, so the downstream server
+#                      sees the USER identity (not the agent's).
+#                      tokenExchangeEnabled=true on this client to allow the exchange.
+#
+# Identity provider:
+#   spire            — SPIRE OIDC bridge; allows SPIFFE SVIDs to be exchanged for
+#                      Keycloak tokens via jwt-bearer grant (RFC7523).
+#                      This is a PREVIEW / stub.  Full wiring requires:
+#                        1. A SPIRE ClusterSPIFFEID for the gateway SA.
+#                        2. A Keycloak identity-provider-mapper to copy spiffe:// sub claim.
+#                        3. ext-proc sending grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+#                           with the SVID as assertion.
+#                      These steps are documented in platform/mcp-gateway/README.md.
+#
+# Demo user arsalan:
+#   Password is NOT stored in git (security invariant).
+#   Set via CLI after realm import — see README.md.
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: agentic-realm
+  namespace: keycloak
+spec:
+  keycloakCRName: keycloak
+  realm:
+    realm: agentic
+    enabled: true
+    displayName: "Agentic MCP Platform"
+
+    # ---------- Clients ----------
+    clients:
+
+      # agent-runtime: the agent's own client (client-credentials / machine-to-machine)
+      - clientId: agent-runtime
+        name: "Agent Runtime"
+        description: "Machine-to-machine client for the agentic runtime process"
+        enabled: true
+        protocol: openid-connect
+        publicClient: false          # confidential
+        standardFlowEnabled: false   # no browser login for agent service accounts
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: false
+        serviceAccountsEnabled: true  # enables client_credentials grant
+        authorizationServicesEnabled: false
+        # client secret is auto-generated; retrieve with:
+        #   oc -n keycloak exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh \
+        #     get clients -r agentic --fields clientId,secret \
+        #     --no-config --server https://localhost:8443 \
+        #     --user admin --password <admin-pw> --realm master
+        defaultClientScopes:
+          - openid
+          - profile
+          - email
+
+      # mcp-gateway: audience the agentgateway validates
+      - clientId: mcp-gateway
+        name: "MCP Gateway"
+        description: "Audience validated by agentgateway ext-authz/ext-proc"
+        enabled: true
+        protocol: openid-connect
+        publicClient: false          # confidential
+        standardFlowEnabled: false
+        serviceAccountsEnabled: true
+        # ext-proc uses the mcp-gateway client secret to call the token-exchange endpoint
+        # on behalf of the user.  Store this secret in Vault (path secret/keycloak/mcp-gateway).
+
+      # mcp-downstream: audience ext-proc exchanges tokens TO
+      - clientId: mcp-downstream
+        name: "MCP Downstream"
+        description: "Audience for downstream MCP server tokens after identity exchange"
+        enabled: true
+        protocol: openid-connect
+        publicClient: false          # confidential
+        standardFlowEnabled: false
+        serviceAccountsEnabled: false
+        # Standard token exchange (RFC8693) target audience.
+        # The ext-proc sends:
+        #   POST /realms/agentic/protocol/openid-connect/token
+        #   grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+        #   subject_token=<original-user-token>
+        #   subject_token_type=urn:ietf:params:oauth:token-type:access_token
+        #   audience=mcp-downstream
+        #   requested_token_type=urn:ietf:params:oauth:token-type:access_token
+        attributes:
+          # PREVIEW: enable standard token exchange for this client as target audience.
+          # Requires features=token-exchange in Keycloak CR additionalOptions.
+          # In RHBK 26.2+ this is GA-level; the flag enables the legacy endpoint fallback.
+          "token-exchange.standard.enabled": "true"
+
+    # ---------- Groups ----------
+    groups:
+      - name: mcp-users
+        path: /mcp-users
+      - name: mcp-admins
+        path: /mcp-admins
+
+    # ---------- Demo user (no password in git) ----------
+    users:
+      - username: arsalan
+        enabled: true
+        email: "arsalan@anaeem.na-launch.com"
+        firstName: Arsalan
+        lastName: ""
+        groups:
+          - /mcp-users
+          - /mcp-admins
+        # PASSWORD IS NOT SET HERE — set via CLI after realm import:
+        #   oc -n keycloak exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh \
+        #     set-password -r agentic --username arsalan --new-password <pw> \
+        #     --no-config --server https://localhost:8443 \
+        #     --user admin --password <admin-pw> --realm master
+        credentials: []   # explicitly empty — forces password reset on first login
+
+    # ---------- Identity Provider: SPIRE OIDC (jwt-bearer stub) ----------
+    # PREVIEW — incomplete until ext-proc jwt-bearer wiring is done.
+    # Full configuration notes:
+    #   - alias "spire" must match the alias referenced in ext-proc config.
+    #   - firstBrokerLoginFlowAlias can be set to "first broker login" or a custom flow
+    #     that auto-links the SPIFFE subject to an existing Keycloak user.
+    #   - Add an Identity Provider Mapper of type "hardcoded-role-idp-mapper" to grant
+    #     mcp-users role to all SPIRE-authenticated subjects, or use oidc-user-attribute-idp-mapper
+    #     to map the sub (spiffe://...) to a local attribute.
+    identityProviders:
+      - alias: spire
+        displayName: "SPIRE OIDC (workload identity)"
+        providerId: oidc           # Keycloak built-in OIDC IdP
+        enabled: true
+        trustEmail: false
+        storeToken: false
+        addReadTokenRoleOnCreate: false
+        firstBrokerLoginFlowAlias: first broker login
+        config:
+          # SPIRE OIDC discovery endpoint (populated by SpireOIDCDiscoveryProvider)
+          discoveryEndpoint: "https://spire-oidc.apps.anaeem.na-launch.com/.well-known/openid-configuration"
+          clientId: "keycloak"          # SPIRE audience — must match a registered SPIRE audience
+          clientSecret: ""              # JWT-bearer flows do not require a client secret from the IdP
+          # For jwt-bearer (RFC7523) usage the ext-proc posts to Keycloak's token endpoint
+          # with grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer directly;
+          # this IdP stub is used for browser-based federation only.
+          # Machine-to-machine path: ext-proc -> Keycloak token endpoint (not via IdP redirect).
+          defaultScopes: "openid"
+          syncMode: IMPORT
+          # PREVIEW: these attributes are informational until the full jwt-bearer flow is wired.
+          # See platform/mcp-gateway/README.md for the complete exchange sequence.
