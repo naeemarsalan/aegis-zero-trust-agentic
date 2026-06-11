@@ -14,6 +14,7 @@ resources:
   - keycloak-cr.yaml
   - realm-import.yaml
   - network-policy.yaml
+  - referencegrant.yaml
 
 labels:
   - pairs:

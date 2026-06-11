@@ -1,0 +1,17 @@
+# Gateway API ReferenceGrant: the AgentgatewayPolicy in mcp-gateway references
+# keycloak-service across namespaces (remote JWKS backendRef).
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-agentgateway-jwks
+  namespace: keycloak
+spec:
+  from:
+    - group: agentgateway.dev
+      kind: AgentgatewayPolicy
+      namespace: mcp-gateway
+  to:
+    - group: ""
+      kind: Service
+      name: keycloak-service

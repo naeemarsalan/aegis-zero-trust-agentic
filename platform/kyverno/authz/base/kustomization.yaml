@@ -11,6 +11,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
+  - referencegrant.yaml
   - no-unauthenticated-calls.yaml
   - tool-allowlist-mcp-users.yaml
   - dangerous-tools-admins-only.yaml
