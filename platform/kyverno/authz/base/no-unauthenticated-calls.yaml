@@ -26,7 +26,7 @@ spec:
     # URL uses the in-cluster Service FQDN to avoid dependency on OpenShift Routes.
     - name: jwks
       expression: |
-        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
+        jwks.Fetch("http://keycloak-service.keycloak.svc.cluster.local:8080/realms/agentic/protocol/openid-connect/certs")
 
     # Extract the raw JWT string from the Authorization header, or "" if absent.
     - name: jwtString
