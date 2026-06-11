@@ -73,16 +73,17 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # FastMCP streamable-http serves only /mcp — there is no /healthz
+          # endpoint, and httpGet probes 404ed the pod into CrashLoopBackOff.
+          # TCP probes are sufficient until the app grows a health route.
           readinessProbe:
-            httpGet:
-              path: /healthz
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
-            httpGet:
-              path: /healthz
+            tcpSocket:
               port: 8000
             initialDelaySeconds: 15
             periodSeconds: 20

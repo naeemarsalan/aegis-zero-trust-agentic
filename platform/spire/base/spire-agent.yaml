@@ -7,4 +7,11 @@ kind: SpireAgent
 metadata:
   name: cluster
   namespace: zero-trust-workload-identity-manager
-spec: {}
+spec:
+  # CRD defaults only apply inside objects that are present: with spec {} the
+  # operator rendered an agent config with ZERO NodeAttestors and the agent
+  # crashed ("expected exactly 1 but got 0"). Set both attestors explicitly.
+  nodeAttestor:
+    k8sPSATEnabled: "true"
+  workloadAttestors:
+    k8sEnabled: "true"
