@@ -36,15 +36,22 @@ spec:
           # Latest stable release: v0.3.0  (https://github.com/kyverno/kyverno-envoy-plugin/releases/tag/v0.3.0)
           image: ghcr.io/kyverno/kyverno-envoy-plugin:v0.3.0
           imagePullPolicy: IfNotPresent
+          # CLI verified from v0.3.0 source (pkg/commands/serve/authz-server):
+          # the subcommand is `serve authz-server`; gRPC listener flags are
+          # --grpc-address/--grpc-network; health probes are HTTP on :9080
+          # (GET /livez, /readyz). Policies are discovered via the in-cluster
+          # kube policy source (--kube-policy-source defaults to true).
           args:
+            - serve
             - authz-server
-            - --type=envoy
-            - --address=:9081
-            - --network=tcp
-            # Policy resources are discovered cluster-wide via the CRD watch
+            - --grpc-address=:9081
+            - --grpc-network=tcp
           ports:
             - name: grpc-authz
               containerPort: 9081
+              protocol: TCP
+            - name: probes
+              containerPort: 9080
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
@@ -53,13 +60,15 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
           livenessProbe:
-            grpc:
-              port: 9081
+            httpGet:
+              path: /livez
+              port: 9080
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
-            grpc:
-              port: 9081
+            httpGet:
+              path: /readyz
+              port: 9080
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

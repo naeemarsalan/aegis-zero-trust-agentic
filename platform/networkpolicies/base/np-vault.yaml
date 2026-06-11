@@ -136,3 +136,57 @@ spec:
       to:
         - ipBlock:
             cidr: 172.30.0.1/32
+
+---
+# Allow egress to the Kubernetes API server.
+# OVN-Kubernetes enforces NetworkPolicy after service DNAT: traffic to the
+# kubernetes.default ClusterIP (172.30.0.1:443) reaches the host at :6443,
+# so both forms must be allowed. Controllers/operators in this namespace
+# (and webhook/injector clients) fail without this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-apiserver
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.30.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+          protocol: TCP
+
+---
+# Allow the Vault Agent Injector mutating webhook calls from the API server
+# (host network on SNO — source IP is the node IP, not namespace-selectable).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-injector-webhook
+  namespace: vault
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault-agent-injector
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP

@@ -52,6 +52,20 @@ data:
           - key: tool_input
             action: hash
 
+      # Loki label mapping. The lokiexporter `labels:` config block was removed
+      # upstream; label selection now works via the loki.resource.labels /
+      # loki.attribute.labels hint attributes set by these processors.
+      resource/loki_hints:
+        attributes:
+          - key: loki.resource.labels
+            value: cluster, k8s.namespace.name, service.name
+            action: insert
+      attributes/loki_hints:
+        actions:
+          - key: loki.attribute.labels
+            value: severity, user, tool
+            action: insert
+
     exporters:
       # Primary: Prometheus exporter scraped by UWM ServiceMonitor on :8889/metrics
       prometheus:
@@ -88,15 +102,9 @@ data:
           job: true
           instance: false
           level: true
-        labels:
-          resource:
-            cluster: "cluster"
-            k8s.namespace.name: "namespace"
-            service.name: "app"
-          attributes:
-            severity: "severity"
-            user: "user"
-            tool: "tool"
+        # Label mapping lives in the resource/loki_hints and
+        # attributes/loki_hints processors (the `labels:` block no longer
+        # exists in the exporter config schema).
 
       # Debug exporter — traces only; useful for development; low overhead.
       debug:
@@ -106,9 +114,11 @@ data:
       extensions: [health_check]
       pipelines:
         traces:
+          # loki is a logs-only exporter and cannot appear here; traces that
+          # should land in Loki must arrive via the logs pipeline.
           receivers: [otlp]
           processors: [batch, attributes/add_cluster, attributes/hash_tool_args]
-          exporters: [loki, debug]
+          exporters: [debug]
         metrics:
           receivers: [otlp]
           processors: [batch, attributes/add_cluster]
@@ -120,5 +130,5 @@ data:
           exporters: [prometheus, prometheusremotewrite]
         logs:
           receivers: [otlp]
-          processors: [batch, attributes/add_cluster, attributes/hash_tool_args]
+          processors: [batch, attributes/add_cluster, attributes/hash_tool_args, resource/loki_hints, attributes/loki_hints]
           exporters: [loki]

@@ -1,17 +1,44 @@
 # Kyverno Helm values — single-node (SNO) PoC sizing.
-# OpenShift: restricted-v2 SCC assigns the UID; the chart does not pin
-# runAsUser, so defaults are SCC-compatible.
+#
+# OpenShift SCC: the chart pins runAsUser: 65534 in every securityContext,
+# which restricted-v2 rejects (UID must come from the namespace range).
+# Null out runAsUser everywhere so the SCC assigns the UID.
 
 admissionController:
   replicas: 1
+  initContainer:
+    securityContext:
+      runAsUser: null
+  container:
+    securityContext:
+      runAsUser: null
 
 backgroundController:
   replicas: 1
+  securityContext:
+    runAsUser: null
 
 # cleanupController is required: platform/kyverno/cleanup ships a
 # ClusterCleanupPolicy (JIT resource reaping).
 cleanupController:
   replicas: 1
+  securityContext:
+    runAsUser: null
 
 reportsController:
   replicas: 1
+  securityContext:
+    runAsUser: null
+
+crds:
+  migration:
+    securityContext:
+      runAsUser: null
+
+webhooksCleanup:
+  securityContext:
+    runAsUser: null
+
+test:
+  securityContext:
+    runAsUser: null

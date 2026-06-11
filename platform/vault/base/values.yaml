@@ -13,6 +13,13 @@ global:
 
 injector:
   enabled: true
+  # Fully-qualified registries: the cluster resolves unqualified shortnames
+  # against registry.connect.redhat.com first, where these tags do not exist
+  # (vault-0 sat in ImagePullBackOff on "hashicorp/vault:1.21.2").
+  image:
+    repository: docker.io/hashicorp/vault-k8s
+  agentImage:
+    repository: docker.io/hashicorp/vault
   # The Vault Agent Injector webhook requires access from all namespaces that
   # run agent-injected workloads (mcp-gateway, vault itself).
   # MutatingWebhookConfiguration is cluster-scoped — no namespace selector needed
@@ -26,6 +33,9 @@ injector:
       cpu: 250m
 
 server:
+  image:
+    repository: docker.io/hashicorp/vault
+
   # Single-replica integrated raft storage — correct for SNO.
   # HA (3 replicas) is documented in README.md for production.
   ha:
