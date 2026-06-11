@@ -28,12 +28,13 @@ log()  { echo "[bootstrap] $*"; }
 warn() { echo "[bootstrap] WARN: $*" >&2; }
 
 enable_or_skip() {
-  # $1 = type (auth|secrets), $2 = path, rest = extra args
-  local type="$1" path="$2"; shift 2
-  if vault "$type" list 2>/dev/null | grep -q "^${path%/}"; then
+  # $1 = type (auth|secrets), $2 = mount path, $3 = engine type, rest = options
+  # (vault ... enable takes options BEFORE the positional engine type)
+  local type="$1" path="$2" engine="$3"; shift 3
+  if vault "$type" list 2>/dev/null | grep -q "^${path%/}/"; then
     warn "${type} engine at '${path}' already enabled — skipping enable"
   else
-    vault "$type" enable -path="$path" "$@"
+    vault "$type" enable -path="$path" "$@" "$engine"
     log "Enabled ${type} engine at '${path}'"
   fi
 }
@@ -57,7 +58,7 @@ vault audit enable file \
 
 # ── 2. KV v2 secrets engine ───────────────────────────────────────────────────
 log "Enabling KV-v2 at 'secret/'..."
-enable_or_skip secrets secret -version=2
+enable_or_skip secrets secret kv -version=2
 
 # ── 3. Policies ───────────────────────────────────────────────────────────────
 log "Writing policies..."
@@ -70,7 +71,7 @@ log "Policies written: ext-proc, jit-approver, agent-deny"
 
 # ── 4. JWT/OIDC auth (SPIRE OIDC issuer) ─────────────────────────────────────
 log "Enabling JWT auth engine..."
-enable_or_skip auth jwt -path=jwt
+enable_or_skip auth jwt jwt
 
 # IMPORTANT: The SPIRE OIDC discovery endpoint uses a cert signed by the cluster
 # CA.  In production, configure VAULT_CACERT or add the CA to the Vault container
@@ -113,7 +114,7 @@ log "JWT roles created"
 
 # ── 5. Kubernetes secrets engine ─────────────────────────────────────────────
 log "Enabling Kubernetes secrets engine..."
-enable_or_skip secrets kubernetes -path=kubernetes
+enable_or_skip secrets kubernetes kubernetes
 
 # Configure against the anaeem cluster API.
 # When run inside the Vault pod the SA token/CA come from the standard mount;
@@ -174,7 +175,7 @@ log "Kubernetes secrets engine configured (per-session jit-* roles; no static ji
 # TokenReview using its own in-cluster identity (auth-delegator binding is
 # created by the Helm chart).
 log "Enabling Kubernetes auth method..."
-enable_or_skip auth kubernetes
+enable_or_skip auth kubernetes kubernetes
 vault write auth/kubernetes/config \
   kubernetes_host="https://kubernetes.default.svc:443"
 

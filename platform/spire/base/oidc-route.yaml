@@ -20,11 +20,11 @@ metadata:
     app.kubernetes.io/component: oidc-discovery-provider
 spec:
   host: spire-oidc.apps.anaeem.na-launch.com
-  # The operator typically creates a Service named spire-oidc-discovery-provider
-  # on port 443 (TLS).  Adjust targetPort if your operator names it differently.
+  # ZTWIM 1.13 names the Service spire-spiffe-oidc-discovery-provider
+  # (port "https"/443). Verified against the live operator on anaeem.
   to:
     kind: Service
-    name: spire-oidc-discovery-provider
+    name: spire-spiffe-oidc-discovery-provider
     weight: 100
   port:
     targetPort: https
