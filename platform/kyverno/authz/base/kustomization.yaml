@@ -5,6 +5,7 @@ namespace: kyverno
 
 resources:
   - namespace.yaml
+  - authorizationpolicy-crd.yaml  # envoy.kyverno.io CRD the authz server watches (vendored from kyverno-envoy-plugin v0.3.0)
   - serviceaccount.yaml
   - rbac.yaml
   - deployment.yaml

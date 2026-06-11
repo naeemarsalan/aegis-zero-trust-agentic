@@ -26,7 +26,10 @@ spec:
 
   storage:
     size: 10Gi
-    storageClass: nfs-csi   # explicit — cluster has two default SCs (nfs-csi + local-path)
+    # local-path, NOT nfs-csi: initdb hung indefinitely on NFS (same class of
+    # failure as the SPIRE sqlite datastore). Explicit because the cluster has
+    # two default StorageClasses.
+    storageClass: local-path
 
   # Monitoring: CNPG exposes a /metrics endpoint on port 9187 automatically.
   # Add a PodMonitor or ServiceMonitor in the agentic-observability namespace if desired.

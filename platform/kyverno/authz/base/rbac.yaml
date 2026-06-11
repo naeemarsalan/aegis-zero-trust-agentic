@@ -13,6 +13,14 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+  # The authz server's in-cluster policy source watches these CRs at startup;
+  # without list/watch the informer cache never syncs and the pod crashloops.
+  - apiGroups: ["envoy.kyverno.io"]
+    resources: ["authorizationpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policies.kyverno.io"]
+    resources: ["validatingpolicies"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
