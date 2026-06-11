@@ -12,10 +12,12 @@ spec:
   # Peer-pods (Azure/AWS VM-based TEE) are NOT enabled in this PoC.
   enablePeerPods: false
 
-  # checkNodeEligibility: let the operator determine which nodes support Kata.
-  # On SNO there is only one node (anaeem-sno); the operator will apply the MachineConfig
-  # to that node and reboot it — see README for maintenance-window guidance.
-  checkNodeEligibility: true
+  # checkNodeEligibility requires the NFD operator ("no Nodes with required
+  # labels found. Is NFD running?"), which is not installed on anaeem.
+  # Nested virt was verified manually (vmx in /proc/cpuinfo, /dev/kvm present)
+  # so eligibility checking is disabled. The operator applies a MachineConfig
+  # and REBOOTS the SNO node when this lands — see README.
+  checkNodeEligibility: false
 
   # kataConfigPoolSelector selects the MachineConfigPool to apply Kata to.
   # On SNO the only pool is "master" (worker and master share the single node).
