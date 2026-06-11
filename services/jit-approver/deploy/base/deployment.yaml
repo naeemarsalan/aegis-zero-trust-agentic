@@ -120,7 +120,8 @@ spec:
               memory: 256Mi
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1001
+            # no runAsUser: restricted-v2 assigns the UID from the namespace
+            # range; a fixed 1001 is rejected by SCC admission
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:

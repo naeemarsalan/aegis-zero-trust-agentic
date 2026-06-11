@@ -37,10 +37,9 @@ spec:
           csi:
             driver: "csi.spiffe.io"
             readOnly: true
-        # Vault Agent injects secrets here (tmpfs, never persisted).
-        - name: vault-secrets
-          emptyDir:
-            medium: Memory
+        # NOTE: no manual vault-secrets volume here — the Vault Agent injector
+        # adds its own volume+mount named vault-secrets, and pre-declaring it
+        # makes the mutated pod invalid (duplicate volume name / mountPath).
       containers:
         - name: ext-proc-delegation
           image: oci.arsalan.io/nvidia-ida/ext-proc-delegation:dev
@@ -99,9 +98,6 @@ spec:
           volumeMounts:
             - name: spiffe-workload-api
               mountPath: /spiffe-workload-api
-              readOnly: true
-            - name: vault-secrets
-              mountPath: /vault/secrets
               readOnly: true
           livenessProbe:
             grpc:
