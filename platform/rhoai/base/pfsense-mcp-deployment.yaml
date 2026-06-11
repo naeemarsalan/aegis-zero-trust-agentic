@@ -50,6 +50,10 @@ spec:
         # Role "pfsense-mcp" must exist in Vault with a policy that allows
         # reading secret/data/pfsense/credentials and secret/data/mcp-tools/mcp-tokens.
         vault.hashicorp.com/agent-inject: "true"
+        # Required: the injector appends its init container LAST by default,
+        # but source-vault-env (below) consumes /vault/secrets/* and must run
+        # after the agent. agent-init-first puts vault-agent-init first.
+        vault.hashicorp.com/agent-init-first: "true"
         vault.hashicorp.com/role: "pfsense-mcp"
         vault.hashicorp.com/agent-revoke-on-shutdown: "true"
         vault.hashicorp.com/log-level: "info"
