@@ -59,12 +59,18 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# Namespace discovery — watch mcp-gateway and agentic-mcp
+# Namespace discovery — every namespace whose Services appear in
+# backendRefs must be listed or the proxy fails with "backend does not
+# exist": kyverno (extAuth) and keycloak (JWKS) included.
 discoveryNamespaceSelectors:
   - matchLabels:
       kubernetes.io/metadata.name: mcp-gateway
   - matchLabels:
       kubernetes.io/metadata.name: agentic-mcp
+  - matchLabels:
+      kubernetes.io/metadata.name: kyverno
+  - matchLabels:
+      kubernetes.io/metadata.name: keycloak
 
 monitoring:
   enabled: false
