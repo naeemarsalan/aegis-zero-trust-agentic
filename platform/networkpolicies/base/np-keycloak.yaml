@@ -149,3 +149,23 @@ spec:
       ports:
         - port: 6443
           protocol: TCP
+
+---
+# Allow intra-namespace egress: RHBK realm-import job pods (labels differ from
+# app=keycloak) must reach keycloak-db:5432 and keycloak:8443 inside the
+# namespace; the app-scoped DB rule above does not match them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-intra-namespace
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector: {}
