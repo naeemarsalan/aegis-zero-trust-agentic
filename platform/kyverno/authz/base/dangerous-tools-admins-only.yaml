@@ -61,7 +61,7 @@ spec:
     # ── User JWT (Keycloak) ──────────────────────────────────────────────────
     - name: jwks
       expression: |
-        jwks.Fetch("http://keycloak-service.keycloak.svc.cluster.local:8080/realms/agentic/protocol/openid-connect/certs")
+        jwks.Fetch("https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs")
 
     - name: jwtString
       expression: |

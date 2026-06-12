@@ -225,3 +225,32 @@ spec:
     - ports:
         - port: 9443
           protocol: TCP
+
+---
+# Allow the authz server to reach the OpenShift router: the envoy authz
+# ValidatingPolicies fetch JWKS from the public Keycloak route URL
+# (https://keycloak.apps.../certs). On SNO the router is hostNetwork, so the
+# only way to permit it is an ipBlock on :443 (a namespaceSelector for
+# openshift-ingress can never match a hostNetwork pod). Without this the
+# fetch fails, every token decodes as invalid, and extAuthz denies 401.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-router-jwks
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno-authz-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
