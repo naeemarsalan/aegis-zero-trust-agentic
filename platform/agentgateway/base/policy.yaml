@@ -36,35 +36,19 @@ spec:
 
   traffic:
     # -----------------------------------------------------------------------
-    # (a) JWT Authentication — Strict
-    # Keycloak realm "agentic" issues tokens; JWKS fetched remotely.
-    # The gateway validates iss, aud, and signature before any other policy runs.
-    # -----------------------------------------------------------------------
-    jwtAuthentication:
-      mode: Strict
-      providers:
-        - issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
-          audiences:
-            - mcp-gateway
-          jwks:
-            remote:
-              # Keycloak standard JWKS path
-              jwksPath: "/realms/agentic/protocol/openid-connect/certs"
-              cacheDuration: "5m"
-              backendRef:
-                # Service must exist in ns keycloak; NetworkPolicy allows egress (see networkpolicies.yaml)
-                group: ""
-                kind: Service
-                # RHBK operator names it keycloak-service
-                name: keycloak-service
-                namespace: keycloak
-                port: 8443
-      # NOTE: the MCP OAuth metadata extension (mcp.provider: Keycloak) is
-      # intentionally NOT enabled. With it on, the gateway enforces the MCP
-      # authorization spec (resource-URI audience + /.well-known metadata),
-      # 401s plain JWTs, and the metadata endpoints aren't even reachable —
-      # the HTTPRoute only matches /mcp. Re-enable once the route exposes
-      # /.well-known/oauth-protected-resource and clients do MCP-spec OAuth.
+    # (a) JWT Authentication — DISABLED (see ext-proc instead)
+    #
+    # agentgateway v1.3.0-alpha.1's jwtAuthentication validates the bearer
+    # token and then STRIPS it, forwarding neither the token nor its claims to
+    # the ext_authz / ext_proc filters (verified empirically: ext_proc receives
+    # 13 headers, none the authorization header, and metadata_context is empty).
+    # That breaks UC1: ext-proc-delegation needs the user's actual JWT to run
+    # the RFC 8693 token exchange. Since ext-proc INDEPENDENTLY verifies the JWT
+    # (signature/iss/aud/exp against the Keycloak JWKS — it is designed not to
+    # trust the gateway), authentication is preserved without this filter.
+    # Re-enable once agentgateway can forward the token/claims to ext_proc.
+    #
+    # jwtAuthentication: { ... }   # intentionally omitted
 
     # -----------------------------------------------------------------------
     # (b) External Authorization — gRPC Kyverno (fail-closed)

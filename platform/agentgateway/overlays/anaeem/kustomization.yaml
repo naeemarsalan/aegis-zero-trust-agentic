@@ -26,14 +26,6 @@ patches:
       kind: Route
       name: mcp-gateway
 
-  # Patch Keycloak JWKS backendRef port (keycloak Service in ns keycloak)
-  # If Keycloak is plain HTTP internally (port 8080), adjust here.
-  - path: patch-policy-keycloak-ref.yaml
-    target:
-      group: agentgateway.dev
-      version: v1alpha1
-      kind: AgentgatewayPolicy
-      name: mcp-gateway-policy
 
 labels:
   - pairs:
