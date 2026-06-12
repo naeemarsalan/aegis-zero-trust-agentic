@@ -1,7 +1,8 @@
-# HTTPRoute: /mcp -> pfsense-mcp AgentgatewayBackend
-# Routes all requests under /mcp to the pfsense-mcp backend.
-# The AgentgatewayPolicy (policy.yaml) attaches to this HTTPRoute to apply
-# JWT authn, extAuthz, extProc, and CEL RBAC.
+# HTTPRoute: /mcp -> pfsense-mcp, /echo -> echo-mcp AgentgatewayBackends
+# The AgentgatewayPolicy (policy.yaml) attaches to this HTTPRoute, so extAuth +
+# extProc + authorization (credential delegation) apply to BOTH path rules:
+#   /mcp  -> pfsense-mcp  (real 327-tool server; static MCP_API_KEY)
+#   /echo -> echo-mcp     (UC1 golden test; echoes the delegated user identity)
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -31,5 +32,15 @@ spec:
         - group: agentgateway.dev
           kind: AgentgatewayBackend
           name: pfsense-mcp
+          namespace: mcp-gateway
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /echo
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: echo-mcp
           namespace: mcp-gateway
           weight: 1

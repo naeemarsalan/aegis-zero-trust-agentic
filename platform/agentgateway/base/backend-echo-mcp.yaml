@@ -1,0 +1,31 @@
+# AgentgatewayBackend: echo-mcp
+#
+# UC1 GOLDEN-TEST target. echo-mcp decodes the injected bearer JWT WITHOUT
+# verifying (the gateway + ext-proc already validated it) and echoes back the
+# principal it received — proving the zero-trust invariant: the downstream MCP
+# server sees the USER's identity, never the agent's. Unlike pfsense-mcp (static
+# MCP_API_KEY), echo-mcp accepts the ext-proc-injected exchanged JWT directly,
+# so it is the clean end-to-end proof of credential delegation.
+#
+# Reached via the /echo path rule on the mcp-route HTTPRoute (same
+# AgentgatewayPolicy: extAuth + extProc + authorization apply identically).
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: echo-mcp
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: echo-mcp
+    app.kubernetes.io/part-of: agentic-platform
+spec:
+  mcp:
+    targets:
+      - name: echo-mcp
+        static:
+          host: echo-mcp.agentic-mcp.svc.cluster.local
+          port: 8000
+          path: /mcp
+          protocol: StreamableHTTP
+    sessionRouting: Stateful
+    failureMode: FailClosed

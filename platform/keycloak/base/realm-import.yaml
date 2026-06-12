@@ -78,21 +78,40 @@ spec:
         #     --no-config --server https://localhost:8443 \
         #     --user admin --password <admin-pw> --realm master
         defaultClientScopes:
+          # 'basic' is REQUIRED: it carries the `sub` claim. Without it, access
+          # tokens have no subject and ext-proc rejects them ("verified token has
+          # empty sub").
+          - basic
           - openid
           - profile
           - email
+          # makes mcp-downstream a requestable audience for the RFC 8693 exchange
+          - mcp-downstream-aud
 
-      # mcp-gateway: audience the agentgateway validates
+      # mcp-gateway: the confidential client ext-proc authenticates AS to run the
+      # RFC 8693 token exchange, and the audience the gateway validates.
       - clientId: mcp-gateway
         name: "MCP Gateway"
-        description: "Audience validated by agentgateway ext-authz/ext-proc"
+        description: "Audience validated by agentgateway ext-authz/ext-proc; ext-proc exchanges AS this client"
         enabled: true
         protocol: openid-connect
         publicClient: false          # confidential
         standardFlowEnabled: false
         serviceAccountsEnabled: true
+        # Required for the exchange to succeed: this is the REQUESTING client, so
+        # it needs standard token exchange enabled and full scope to target the
+        # mcp-downstream audience.
+        fullScopeAllowed: true
+        attributes:
+          "standard.token.exchange.enabled": "true"
+          "token-exchange.standard.enabled": "true"
+        defaultClientScopes:
+          - basic
+          - openid
+          - mcp-downstream-aud
         # ext-proc uses the mcp-gateway client secret to call the token-exchange endpoint
-        # on behalf of the user.  Store this secret in Vault (path secret/keycloak/mcp-gateway).
+        # on behalf of the user.  Stored in Vault at secret/mcp-gateway/keycloak-client-secret
+        # (the bootstrap fetches it from the Keycloak admin API).
 
       # mcp-downstream: audience ext-proc exchanges tokens TO
       - clientId: mcp-downstream
@@ -117,6 +136,26 @@ spec:
           # In RHBK 26.2+ this is GA-level; the flag enables the legacy endpoint fallback.
           "token-exchange.standard.enabled": "true"
 
+    # ---------- Client scopes ----------
+    # mcp-downstream-aud injects aud=mcp-downstream so the RFC 8693 exchange can
+    # target that audience (without it Keycloak returns "Requested audience not
+    # available"). Assigned as a default scope to agent-runtime and mcp-gateway.
+    clientScopes:
+      - name: mcp-downstream-aud
+        description: "Adds aud=mcp-downstream for the RFC 8693 token exchange"
+        protocol: openid-connect
+        attributes:
+          "include.in.token.scope": "true"
+          "display.on.consent.screen": "false"
+        protocolMappers:
+          - name: mcp-downstream-audience
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            config:
+              included.client.audience: mcp-downstream
+              access.token.claim: "true"
+              id.token.claim: "false"
+
     # ---------- Groups ----------
     groups:
       - name: mcp-users
@@ -129,17 +168,19 @@ spec:
       - username: arsalan
         enabled: true
         email: "arsalan@anaeem.na-launch.com"
+        # emailVerified + a complete profile (lastName) are REQUIRED or the
+        # password grant fails with "Account is not fully set up".
+        emailVerified: true
         firstName: Arsalan
-        lastName: ""
+        lastName: Naeem
+        requiredActions: []
         groups:
           - /mcp-users
           - /mcp-admins
-        # PASSWORD IS NOT SET HERE — set via CLI after realm import:
-        #   oc -n keycloak exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh \
-        #     set-password -r agentic --username arsalan --new-password <pw> \
-        #     --no-config --server https://localhost:8443 \
-        #     --user admin --password <admin-pw> --realm master
-        credentials: []   # explicitly empty — forces password reset on first login
+        # PASSWORD IS NOT SET HERE (kept out of git). It is set idempotently from
+        # DEMO_PASSWORD in environment/.env by hack/setup-demo-user.sh after import
+        # (or via kcadm set-password). credentials stays empty in git.
+        credentials: []
 
     # ---------- Identity Provider: SPIRE OIDC (jwt-bearer stub) ----------
     # PREVIEW — incomplete until ext-proc jwt-bearer wiring is done.

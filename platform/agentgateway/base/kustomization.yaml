@@ -8,6 +8,7 @@ resources:
   - gateway.yaml
   - route-openshift.yaml
   - backend-pfsense-mcp.yaml
+  - backend-echo-mcp.yaml
   - httproute-mcp.yaml
   - policy.yaml
   - networkpolicies.yaml

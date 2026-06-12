@@ -232,7 +232,47 @@ vault kv put secret/pfsense/credentials \
 vault kv put secret/mcp-tools/mcp-tokens \
   tokens="${MCP_API_TOKENS}"
 
-log "Secrets written: secret/mcp-tools/pfsense, secret/pfsense/credentials, secret/mcp-tools/mcp-tokens"
+# _default fallback: ext-proc fetches a per-tool secret on every MCP tool call;
+# tools that need no backend credential (echo-mcp's whoami/echo, or the MCP
+# session handshake which carries no tool) resolve to this path.
+vault kv put secret/mcp-tools/_default \
+  note="default tool-secret fallback for tools with no backend credential" >/dev/null
+for t in whoami echo; do
+  vault kv put "secret/mcp-tools/${t}" note="echo-mcp test tool — no backend credential" >/dev/null
+done
+
+# mcp-gateway client secret — ext-proc authenticates AS the mcp-gateway client
+# for the RFC 8693 exchange (Vault Agent injects it to ext-proc at field `secret`).
+# Fetched live from the Keycloak admin API so the bootstrap is self-contained.
+log "Fetching mcp-gateway client secret from Keycloak and storing in Vault..."
+OC="${OC:-oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify}"
+KC_URL="${KEYCLOAK_URL:-https://keycloak.apps.anaeem.na-launch.com}"
+if KC_ADMIN_PW="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)" && [ -n "$KC_ADMIN_PW" ]; then
+  KC_ADMIN_USER="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.username}' | base64 -d)"
+  KC_TOK="$(curl -sk -d client_id=admin-cli -d "username=${KC_ADMIN_USER}" --data-urlencode "password=${KC_ADMIN_PW}" -d grant_type=password "${KC_URL}/realms/master/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+  MCPGW_SECRET="$(curl -sk -H "Authorization: Bearer ${KC_TOK}" "${KC_URL}/admin/realms/agentic/clients?clientId=mcp-gateway" | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c[0].get("secret","") if c else "")')"
+  if [ -n "$MCPGW_SECRET" ]; then
+    vault kv put secret/mcp-gateway/keycloak-client-secret secret="${MCPGW_SECRET}" client_secret="${MCPGW_SECRET}" >/dev/null
+    log "Stored secret/mcp-gateway/keycloak-client-secret"
+  else
+    warn "could not fetch mcp-gateway client secret — set secret/mcp-gateway/keycloak-client-secret manually"
+  fi
+else
+  warn "keycloak-initial-admin not readable — skipping mcp-gateway client secret fetch"
+fi
+
+# jit-approver static secrets (UC2). GITEA_TOKEN from environment/.env (a real
+# Forgejo PAT); webhook secret and RS256 signing key generated here if absent.
+log "Writing jit-approver secrets..."
+vault kv put secret/jit-approver/gitea-token token="${GITEA_TOKEN:-REPLACE-WITH-REAL-FORGEJO-PAT}" >/dev/null
+if ! vault kv get -field=secret secret/jit-approver/webhook-secret >/dev/null 2>&1; then
+  vault kv put secret/jit-approver/webhook-secret secret="$(openssl rand -hex 24)" >/dev/null
+fi
+if ! vault kv get -field=pem secret/jit-approver/jit-signing-key >/dev/null 2>&1; then
+  vault kv put secret/jit-approver/jit-signing-key pem="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)" >/dev/null
+fi
+
+log "Secrets written: mcp-tools/{pfsense,mcp-tokens,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*"
 
 # ── 7. Completion ─────────────────────────────────────────────────────────────
 log ""
