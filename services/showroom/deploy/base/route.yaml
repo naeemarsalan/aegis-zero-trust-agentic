@@ -6,7 +6,7 @@ metadata:
   labels:
     app: showroom
 spec:
-  host: showroom.apps.virt.na-launch.com
+  host: aegis.apps.virt.na-launch.com
   to:
     kind: Service
     name: showroom

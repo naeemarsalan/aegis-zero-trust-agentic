@@ -1,7 +1,7 @@
 ---
 site:
   title: Aegis — Zero-Trust Identity for Agentic AI
-  url: https://showroom.apps.virt.na-launch.com
+  url: https://aegis.apps.virt.na-launch.com
   start_page: modules::index.adoc
 
 content:
@@ -14,6 +14,7 @@ ui:
   bundle:
     url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/v0.0.1/ui-bundle.zip
     snapshot: true
+  supplemental_files: ./content/supplemental-ui
 
 asciidoc:
   extensions:

@@ -1,0 +1,27 @@
+<header class="header">
+  <nav class="navbar">
+    <div class="navbar-brand">
+      <a class="navbar-item" href="{{{or site.url (or siteRootUrl siteRootPath)}}}" style="margin-left: 5%;">
+        <span style="font-family: 'RedHatDisplay', 'Overpass', overpass, helvetica, arial, sans-serif; font-weight: 700; font-size: 1.6rem; color: #fff;">&#x1F6E1; Aegis</span>
+      </a>
+      <a class="navbar-item site-title" target="__blank" style="color: #fff !important;" href="{{{or site.url (or siteRootUrl siteRootPath)}}}">Zero-Trust Identity for Agentic AI</a>
+    </div>
+    <div id="topbar-nav" class="navbar-menu">
+      <div class="navbar-end">
+        {{#if page.attributes.links}}
+        <div class="navbar-item navbar-item-right-dropdown has-dropdown is-hoverable">
+          <a class="navbar-link" href="#">Links</a>
+          <div class="navbar-dropdown navbar-dropdown-right">
+            {{#each page.attributes.links}}
+            <a class="navbar-item navbar-item-right-content" href="{{this.url}}" target="_blank">{{this.text}}</a>
+            {{/each}}
+          </div>
+        </div>
+        {{/if}}
+        {{#if page.attributes.user}}
+        <div class="navbar-item">You are {{page.attributes.user}}</div>
+        {{/if}}
+      </div>
+    </div>
+  </nav>
+</header>
