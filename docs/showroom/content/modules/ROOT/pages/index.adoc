@@ -8,6 +8,18 @@ Aegis is a proof-of-concept that shows AI agents can call downstream tools
 approval -- with every action attributable to an identity and an approval,
 and every grant auto-revoked by construction.
 
+== The platform at a glance
+
+excalidraw::partial$aegis-arch.excalidraw[svg,target=aegis-architecture]
+
+An AI agent runs in a Kata/CoCo-isolated pod holding nothing but a SPIFFE
+identity. Every tool call crosses the gateway, where Kyverno authorizes the
+specific tool and the delegation service swaps the agent's identity for the
+*user's* — so the downstream MCP server (and the pfSense firewall behind it)
+sees a real person. Privileged escalation detours through a Gitea PR that a
+human merges, minting a Vault-leased ephemeral identity that deletes itself.
+Everything emits audit to Loki, and alerts can drive AAP/EDA remediation.
+
 NOTE: *PoC status.* The platform runs end-to-end on a Single-Node OpenShift
 cluster (`anaeem`, OCP 4.20.11) managed by ACM GitOps from the `virt` hub.
 All design invariants are specified and provable; several sign-off gate items
