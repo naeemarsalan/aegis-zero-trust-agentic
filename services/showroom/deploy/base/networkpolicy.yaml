@@ -5,7 +5,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: showroom-deny-all
-  namespace: showroom
+  namespace: rhoai-agentic
 spec:
   podSelector:
     matchLabels:
@@ -19,7 +19,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: showroom-ingress-router
-  namespace: showroom
+  namespace: rhoai-agentic
 spec:
   podSelector:
     matchLabels:

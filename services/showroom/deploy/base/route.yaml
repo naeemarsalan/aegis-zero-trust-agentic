@@ -2,11 +2,11 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: showroom
-  namespace: showroom
+  namespace: rhoai-agentic
   labels:
     app: showroom
 spec:
-  host: showroom.apps.anaeem.na-launch.com
+  host: showroom.apps.virt.na-launch.com
   to:
     kind: Service
     name: showroom

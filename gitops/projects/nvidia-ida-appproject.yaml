@@ -49,6 +49,9 @@ spec:
     # --- virt hub cluster: ArgoCD self-management ---
     - server: https://kubernetes.default.svc
       namespace: openshift-gitops
+    # showroom docs site runs on the hub in the rhoai-agentic project
+    - server: https://kubernetes.default.svc
+      namespace: rhoai-agentic
 
   clusterResourceWhitelist:
     - group: "*"

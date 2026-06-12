@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: showroom
-  namespace: showroom
+  namespace: rhoai-agentic
   labels:
     app: showroom
 spec:

@@ -11,11 +11,12 @@ spec:
   source:
     repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
     targetRevision: main
-    path: services/showroom/deploy/overlays/anaeem
+    path: services/showroom/deploy/overlays/virt
 
   destination:
-    server: https://api.anaeem.na-launch.com:6443
-    namespace: showroom
+    # Docs site runs on the virt hub itself, alongside RHOAI demo assets
+    server: https://kubernetes.default.svc
+    namespace: rhoai-agentic
 
   syncPolicy:
     automated:
