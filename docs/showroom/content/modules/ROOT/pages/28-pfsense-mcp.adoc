@@ -1,0 +1,131 @@
+= pfsense-mcp — Demo Downstream MCP Server
+:navtitle: pfsense-mcp
+
+[.lead]
+`pfsense-mcp` is the demo MCP server that exposes pfSense firewall operations — firewall rule management, IP blocking, DHCP lease queries — as MCP tools callable by AI agents.
+It demonstrates the **end-to-end zero-trust tool-call path**:
+
+[source]
+----
+agent → agentgateway → Kyverno ext_authz → ext-proc-delegation → pfsense-mcp → pfSense API
+----
+
+Critically, `pfsense-mcp` sees the **user's** identity in every request — never the agent's service account.
+This is the downstream proof of the UC1 no-credential-passing invariant.
+
+`pfsense-mcp` also serves as the **reference implementation** for how custom MCP servers are onboarded to the Aegis platform: SPIFFE identity, Vault-injected API keys, user-identity header validation, and jit-required tagging for destructive tools.
+
+== Placement
+
+[cols="1,2",options="header"]
+|===
+| Property | Value
+
+| Cluster
+| `anaeem` (SNO, OCP 4.20.11)
+
+| Namespace
+| `agentic-mcp` (RHOAI Data Science Project)
+
+| Image
+| `oci.arsalan.io/nvidia-ida/pfsense-mcp:dev`
+
+| Internal service
+| `pfsense-mcp.agentic-mcp.svc.cluster.local:8000` (StreamableHTTP `/mcp`)
+
+| External exposure
+| None — agentgateway proxies all access; not directly reachable by agents
+
+| pfSense API URL
+| Injected from Vault at runtime; not committed to git
+|===
+
+== User identity validation
+
+`pfsense-mcp` validates the incoming `X-Forwarded-User` header (set by `ext-proc-delegation` to the user's identity).
+Requests missing this header are **rejected** — the server will not process tool calls without a verified user attribution.
+This is the mechanism by which every pfSense operation is attributed to a human user in the audit trail.
+
+== Tool categories
+
+[cols="2,2,1",options="header"]
+|===
+| Category | Example tools | JIT required?
+
+| Read-only
+| `list_rules`, `get_dhcp_leases`, `get_arp_table`
+| No
+
+| Destructive
+| `block_ip`, `delete_rule`, `flush_rules`
+| **Yes**
+|===
+
+Destructive tools are tagged `jit-required: true` in the tool manifest.
+Kyverno policy causes `ext-proc-delegation` to route them through `jit-approver` before execution — an agent calling a destructive tool without a valid session-capability JWT receives a 403 from Kyverno.
+
+== Security posture
+
+* **SPIFFE ID:** `spiffe://anaeem.na-launch.com/ns/agentic-mcp/sa/pfsense-mcp`
+* **pfSense API key:** stored in Vault (`kv-v2/pfsense/api-key`); injected via Vault Agent Injector at `/run/secrets/pfsense/`; never in etcd, git, or environment variables
+* **Fail-mode:** if Vault Agent cannot inject the API key, the pod does not reach Ready; if pfSense API is unreachable, `pfsense-mcp` returns 503 with a structured MCP error
+
+*NetworkPolicy:* ingress on 8000 from `agentgateway` pod in `mcp-gateway` namespace only; egress to pfSense API (external, port 443/TCP) and to Vault on 8200; deny all other ingress/egress.
+
+== Interfaces
+
+[cols="2,1,2,2",options="header"]
+|===
+| Peer | Direction | Port / Protocol | Purpose
+
+| agentgateway
+| inbound
+| 8000 HTTP
+| MCP StreamableHTTP tool calls
+
+| pfSense API
+| outbound
+| 443 HTTPS
+| Firewall rule management
+
+| Vault Agent sidecar
+| inbound (localhost)
+| 8200 HTTPS
+| API key injection
+
+| OTel Collector
+| outbound
+| 4317 gRPC
+| Traces and structured tool-call logs
+|===
+
+== Verify
+
+[source,bash]
+----
+# 1. Check pfsense-mcp pod is Running
+oc get pods -n agentic-mcp -l app=pfsense-mcp
+
+# 2. Confirm the pfSense API key is Vault-injected (tmpfs) — not a Kubernetes Secret
+oc exec -n agentic-mcp deploy/pfsense-mcp -- ls /run/secrets/pfsense/
+
+# 3. Call the MCP list-tools endpoint through agentgateway (requires a valid Keycloak token)
+TOKEN=$(curl -s -X POST \
+  https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token \
+  -d "client_id=agent-cli&grant_type=password&username=operator&password=<pw>" \
+  | jq -r .access_token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  https://mcp-gateway.apps.anaeem.na-launch.com/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' | jq '.result.tools[].name'
+----
+
+== Maturity flags
+
+WARNING: The pfSense API URL is currently empty in `environment/clusters.yaml`.
+This component cannot function until the URL is provided and the API key is seeded into Vault.
+This is a configuration prerequisite, not a code gap.
+
+* `pfsense-mcp` is a custom `dev`-tagged component — no upstream project; tool schema may change
+* MCP StreamableHTTP transport is the target; confirm the agent SDK version supports it
+* The `X-Forwarded-User` header is a platform convention, not an MCP standard — document this for all future MCP server authors when onboarding new downstream servers

@@ -1,0 +1,52 @@
+= Who uses what
+:navtitle: Who uses what
+
+[.lead]
+Five roles touch the platform. Each sees a different surface, and none of
+them ever handles a downstream credential.
+
+== Agent developer
+
+Builds agents that run in the Kata-isolated `agent-sandbox` namespace. Their
+agent speaks plain MCP to the gateway and presents the SPIFFE SVID the
+platform injects -- no auth code, no secrets handling. When a call is denied,
+the SDK surfaces the JIT request flow instead of a dead end.
+
+*Touches:* agent code, MCP client config. *Never touches:* tokens, Vault,
+Keycloak.
+
+== Platform engineer
+
+Owns the GitOps repo. Deploys and upgrades the identity core (SPIRE,
+Keycloak, Vault, Kyverno, agentgateway) through ArgoCD sync waves, writes the
+NetworkPolicies, and curates which tools exist behind the gateway.
+
+*Touches:* this Git repository, ArgoCD, operator CRs.
+See xref:40-gitops.adoc[GitOps & bootstrap].
+
+== Approver / team lead
+
+Reviews JIT escalation requests as *Gitea pull requests*: the diff shows
+exactly which verbs, resources, namespace, and TTL the agent asked for.
+Merging is approving; closing is denying. No new console to learn.
+
+*Touches:* Gitea. See xref:05-uc2-jit-sub-identity.adoc[UC2 walkthrough].
+
+== Security / auditor
+
+Verifies invariants instead of trusting intentions: inspects agent pods for
+the absence of credentials, follows a downstream log entry back to a user,
+follows a `jit-*` ServiceAccount in Kube audit back to a merged PR and a
+Vault lease, and watches the lease expiry delete the identity.
+
+*Touches:* Kube audit, Vault lease history, Loki/Grafana, Gitea history.
+See xref:11-security-model.adoc[Security model].
+
+== Downstream tool owner
+
+Runs an MCP server (the PoC ships `pfsense-mcp`) and sees ordinary
+authenticated requests from *users* -- not from a shared agent identity.
+Existing per-user RBAC, quotas, and logging keep working unchanged.
+
+*Touches:* their own service. *Never sees:* the agent.
+See xref:28-pfsense-mcp.adoc[pfsense-mcp].

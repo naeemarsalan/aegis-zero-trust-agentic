@@ -1,0 +1,108 @@
+= Components
+:navtitle: Components
+
+[.lead]
+The Aegis platform is composed of one custom component and a set of vendor-supported components wired together.
+This page summarises each; click through to the per-component page for placement details, interfaces, verify commands, and maturity flags.
+
+== At a glance
+
+[cols="2,1,2,1,3",options="header"]
+|===
+| Component | Cluster | Namespace | Custom? | Key role
+
+| xref:21-spire.adoc[SPIRE / ZTWIM]
+| anaeem
+| `zero-trust-workload-identity-manager`
+| No — ZTWIM operator
+| Workload identity root; SVID issuance; OIDC discovery
+
+| xref:22-keycloak.adoc[Keycloak (RHBK)]
+| anaeem
+| `keycloak`
+| No — RHBK operator
+| User identity; RFC 7523 + RFC 8693 token federation
+
+| xref:23-vault.adoc[HashiCorp Vault]
+| anaeem
+| `vault`
+| No — Helm chart
+| Per-tool secrets; Kubernetes secrets engine for JIT
+
+| xref:24-agentgateway.adoc[agentgateway]
+| anaeem
+| `mcp-gateway`
+| No — LF project
+| JWT authn, ext_authz, ext_proc gateway
+
+| xref:25-ext-proc-delegation.adoc[**ext-proc-delegation**]
+| anaeem
+| `mcp-gateway`
+| **Yes — Go**
+| Token exchange + secret fetch + header inject + strip
+
+| xref:26-jit-approver.adoc[jit-approver]
+| anaeem
+| `mcp-gateway`
+| Yes — Python
+| JIT PR orchestration + HMAC webhook + Vault issuance
+
+| xref:27-kyverno.adoc[Kyverno]
+| anaeem
+| `kyverno`
+| No — upstream Helm
+| Tool RBAC (ext_authz) + admission guardrails
+
+| xref:28-pfsense-mcp.adoc[pfsense-mcp]
+| anaeem
+| `agentic-mcp`
+| Yes — Python
+| Demo downstream MCP server; sees user identity
+
+| xref:29-agent-sandbox.adoc[Agent Sandbox (Kata)]
+| anaeem
+| `agent-sandbox`
+| No — OSC operator
+| Kata-isolated agent workload namespace
+
+| xref:30-observability.adoc[Observability]
+| anaeem
+| `agentic-observability`
+| No
+| OTel → Loki; AlertManager → EDA
+
+| xref:31-eda-aap.adoc[EDA / AAP]
+| hammer
+| (config-only)
+| No
+| Self-healing remediation loop
+
+| xref:32-confidential-containers.adoc[Confidential Containers]
+| (future)
+| —
+| No
+| Production TEE isolation target; not applied in PoC
+|===
+
+== Dependency order
+
+The components must be available in this order; the ArgoCD sync waves enforce it automatically in the GitOps deployment.
+
+[source]
+----
+wave 0 — OLM operators (ZTWIM, RHBK, CNPG, sandboxed-containers)
+wave 1 — SPIRE / ZTWIM  ← identity root; everything depends on it
+wave 2 — Keycloak + Vault  ← Vault needs SPIRE OIDC; Keycloak needs CNPG
+wave 3 — Kyverno  ← needs to be running before any admission request
+wave 4 — agentgateway + ext-proc-delegation + jit-approver
+wave 5 — pfsense-mcp, agent-sandbox, observability, NetworkPolicies
+----
+
+== The one custom component
+
+`ext-proc-delegation` is the only code the team owns.
+It is a single static Go binary running as an Envoy ext_proc filter sidecar next to agentgateway.
+Every other component is a vendor-supported product, operator, or well-established open-source project.
+This shapes the supportability argument for a regulated environment: one binary to audit, one binary to maintain.
+
+See xref:50-adr-extproc-language-go.adoc[ADR 0001] for the language choice rationale.

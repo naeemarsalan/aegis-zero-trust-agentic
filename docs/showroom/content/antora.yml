@@ -1,0 +1,16 @@
+name: modules
+title: Aegis
+version: poc
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    release-version: poc
+    page-pagination: true
+    source-highlighter: rouge
+    icons: font
+    experimental: true
+    page-links:
+    - url: https://git.arsalan.io/anaeem/nvidia-ida
+      text: Source repository

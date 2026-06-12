@@ -1,0 +1,58 @@
+= Business outcomes
+:navtitle: Business outcomes
+
+[.lead]
+The platform converts "we can't let AI agents touch production" from a policy
+argument into a set of *mechanically enforced, individually auditable
+guarantees*.
+
+== What you can now sign off
+
+[cols="1,2"]
+|===
+|Outcome |Why it holds
+
+|Zero standing privilege for agents
+|An agent pod holds only its SPIFFE identity. Elevated access exists solely
+as a Vault lease created after a human approval, and dies with the lease.
+
+|Nothing to steal from a compromised agent
+|Pod inspection shows no tokens, keys, or passwords -- credentials exist only
+in the delegation service's memory for the duration of a single request.
+
+|Every action has a human behind it
+|Downstream services see the federated *user* identity; JIT actions run as a
+`jit-<agent>-<session>` ServiceAccount that Kube audit ties to a merged
+approval PR.
+
+|Revocation cannot be forgotten
+|Expiry is structural: Vault lease TTL deletes the ephemeral identity. There
+is no cron job, cleanup script, or checklist on the revocation path.
+
+|Approvals live in your existing review system
+|The approval channel is a Git pull request -- versioned, commented,
+attributable, and already covered by your change-management process.
+
+|Prompt injection does not escalate
+|A steered agent still holds nothing and still cannot pass Kyverno's
+per-tool authorization or skip the human approval gate.
+
+|Auditor-ready evidence
+|Kube audit, Vault lease history, Gitea PR history, and OTel/Loki traces form
+a complete chain: who asked, who approved, what ran, when access ended.
+|===
+
+== What it costs
+
+* *One custom component* to own (`ext-proc-delegation`, ~small Go service);
+  the rest of the stack is vendor-supported or LF-governed.
+* *Latency* of one token exchange + one Vault read per delegated tool call.
+* *Process change*: privileged agent actions wait for a PR merge -- that
+  delay is the control working as designed.
+
+== What it does not promise
+
+This is a PoC. Multi-cluster federation, HA Vault topology, and Confidential
+Containers attestation are designed but not deployed -- see
+xref:13-swot-signoff.adoc[SWOT & sign-off gate] for the honest list of what
+is proven versus pending.

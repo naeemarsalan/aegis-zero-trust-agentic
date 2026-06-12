@@ -1,0 +1,119 @@
+= SPIRE / ZTWIM — Workload Identity
+:navtitle: SPIRE / ZTWIM
+
+[.lead]
+SPIRE (SPIFFE Runtime Environment), deployed via the Red Hat Zero Trust Workload Identity Manager (ZTWIM) operator, is the cryptographic identity root for the entire Aegis platform.
+Every pod and platform component receives a **SPIFFE Verifiable Identity Document (SVID)** — a short-lived, automatically-rotated X.509 or JWT credential bound to the workload's Kubernetes identity (`ns/<namespace>/sa/<serviceaccount>`).
+
+SPIRE also exposes an **OIDC Discovery endpoint** so that Vault and Keycloak can accept SPIFFE-bound JWT tokens as first-class login methods — this is the trust chain that lets `ext-proc-delegation` authenticate to both IdPs using nothing but its own SVID.
+
+== Placement
+
+[cols="1,2",options="header"]
+|===
+| Property | Value
+
+| Cluster
+| `anaeem` (SNO, OCP 4.20.11)
+
+| Namespace
+| `zero-trust-workload-identity-manager`
+
+| Operator channel
+| `stable-v1` (GA on OCP 4.20)
+
+| SPIRE Server
+| Internal ClusterIP only — not exposed via Route
+
+| OIDC Discovery endpoint
+| `https://spire-oidc.apps.anaeem.na-launch.com`
+
+| Trust domain
+| `anaeem.na-launch.com` (immutable once bootstrapped)
+
+| Storage
+| `local-path` StorageClass (raft state)
+|===
+
+WARNING: Once the SPIRE Server is bootstrapped with trust domain `anaeem.na-launch.com`, this value cannot be changed without re-bootstrapping the server and re-issuing all SVIDs.
+Confirm before the first `oc apply`.
+
+== Identity format
+
+Every SVID issued by this SPIRE deployment follows the format:
+
+[source]
+----
+spiffe://anaeem.na-launch.com/ns/<namespace>/sa/<serviceaccount>
+----
+
+Example — the ext-proc-delegation service:
+
+[source]
+----
+spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/ext-proc-delegation
+----
+
+JWT-SVIDs are delivered to workloads via the **SPIFFE CSI Driver** (a `tmpfs` volume mount at `/run/spire/sockets/`).
+They are never written to etcd, never appear in Kubernetes Secrets.
+
+== Security posture
+
+* **Node attestation:** `k8s_psat` (projected service account token) — no host-level agent secrets
+* **Workload attestation:** Kubernetes pod selectors (namespace + SA + labels)
+* **SVIDs are short-lived** — automatic rotation by the SPIRE Agent; no manual renewal
+* **Fail-mode:** if the SPIRE Agent is unavailable, the CSI mount fails and the pod does not start — no fallback to static credentials
+
+*NetworkPolicy:*
+
+* SPIRE Agent pods reach the SPIRE Server on port `8081`
+* All other ingress to the Server is denied
+* OIDC Discovery Route accepts ingress from the OCP router only
+
+== How other components depend on SPIRE
+
+[cols="2,3",options="header"]
+|===
+| Component | How it uses SPIRE
+
+| agentgateway
+| Validates incoming agent JWT-SVIDs against SPIRE OIDC JWKS
+
+| ext-proc-delegation
+| Presents own SVID to Vault (jwt auth) and Keycloak (RFC 7523)
+
+| Vault
+| Trusts SPIRE OIDC as the JWKS source for `auth/jwt` mount
+
+| Keycloak
+| Trusts SPIRE OIDC for RFC 7523 JWT client assertion validation
+
+| jit-approver
+| Presents own SVID for SVID-mTLS channel to agent
+
+| All platform pods
+| Receive X.509 SVID for mTLS via SPIFFE CSI Driver
+|===
+
+== Verify
+
+[source,bash]
+----
+# 1. Check SPIRE Server and Agent pods are Running
+oc get pods -n zero-trust-workload-identity-manager
+
+# 2. Confirm OIDC Discovery endpoint returns a valid JWKS URI
+curl -s https://spire-oidc.apps.anaeem.na-launch.com/.well-known/openid-configuration \
+  | jq .jwks_uri
+
+# 3. Exec into a workload pod and fetch its SVID
+oc exec -n agentic-mcp deploy/pfsense-mcp -- \
+  /opt/spire/bin/spire-agent api fetch x509 \
+  -socketPath /run/spire/sockets/agent.sock
+----
+
+== Maturity flags
+
+* ZTWIM operator channel `stable-v1` reached GA with OCP 4.20 — production-ready for SNO topology
+* SPIFFE CSI Driver is upstream stable; in-cluster cert rotation is automatic
+* OIDC provider sidecar is a Red Hat supported component in this channel

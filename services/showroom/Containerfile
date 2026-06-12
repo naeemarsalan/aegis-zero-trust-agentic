@@ -1,15 +1,46 @@
-# showroom — static docs site (mkdocs-material) served by UBI nginx.
-# Build context is the REPO ROOT (needs mkdocs.yml + docs/site):
-#   podman build -f services/showroom/Containerfile -t oci.arsalan.io/nvidia-ida/showroom:dev .
+# showroom — Antora docs site (rhpds showroom theme) served by UBI nginx.
+# Build context is the REPO ROOT (needs docs/showroom/):
+#   make build-showroom
+#   # or: podman build -f services/showroom/Containerfile \
+#   #       --build-arg KROKI_URL=http://172.16.1.1:8000 -t oci.arsalan.io/nvidia-ida/showroom:dev .
 
-FROM registry.access.redhat.com/ubi9/python-312:latest AS build
-WORKDIR /opt/app-root/src
-COPY mkdocs.yml ./
-COPY docs/site/ docs/site/
-RUN pip install --no-cache-dir mkdocs-material && \
-    mkdocs build -d /tmp/site
+FROM docker.io/library/node:20-alpine AS build
+WORKDIR /site
+
+# Antora reads from git; install it alongside the toolchain.
+RUN apk add --no-cache git \
+ && npm install --global --no-fund --no-audit \
+      @antora/cli@3.1 \
+      @antora/site-generator@3.1 \
+      asciidoctor-kroki@0.18
+
+COPY docs/showroom/ /site/
+
+# Antora requires a git repo as its content source. Initialize one inside
+# the build stage so the copied tree looks like a single-commit worktree.
+RUN git init -q -b main \
+ && git config user.email build@local \
+ && git config user.name  build \
+ && git add -A \
+ && git commit -q -m "showroom build"
+
+# Kroki renders the mermaid diagrams to SVG at build time so the image is
+# self-contained at runtime. Default is the homelab Kroki server; override
+# with --build-arg KROKI_URL=https://kroki.io when off-net (rate-limited).
+ARG KROKI_URL=http://172.16.1.1:8000
+RUN antora \
+      --attribute "kroki-server-url=${KROKI_URL}" \
+      --attribute kroki-fetch-diagram=true \
+      --attribute kroki-http-method=post \
+      default-site.yml
+
+# ---
 
 FROM registry.access.redhat.com/ubi9/nginx-124:latest
-COPY --from=build /tmp/site/ /opt/app-root/src/
+
+# nginx-124 image runs as a non-root user (1001) by default. Listens on 8080.
+COPY --from=build /site/www /opt/app-root/src
+
+USER 1001
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

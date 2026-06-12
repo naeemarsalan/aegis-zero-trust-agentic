@@ -1,0 +1,121 @@
+= EDA / AAP — Self-Healing Remediation Loop
+:navtitle: EDA / AAP
+
+[.lead]
+Event-Driven Ansible (EDA) with Ansible Automation Platform (AAP) 2.6 provides the automated remediation backbone.
+EDA Rulebooks listen to alert events from the observability stack, match conditions (GPU health degradation, policy violations, anomalous agent behavior), and trigger AAP Job Templates that execute remediation playbooks — creating a closed-loop, human-in-the-loop response pipeline.
+
+The key property: **remediation lands as a Gitea PR, not as a direct privileged change**.
+A human must merge the PR before any destructive remediation executes.
+This is the same HITL gate as UC2.
+
+== Deployment model
+
+[NOTE]
+====
+AAP 2.6 **already exists** at `https://aap-aap.apps.hammer.na-launch.com` on the `hammer` cluster.
+This is a **config-only** integration — no new AAP operator or controller is deployed.
+All work consists of creating Event Streams, Rulebook Activations, Credential objects, and Job Templates in the existing AAP via its API.
+
+There are no Kubernetes manifests on the `anaeem` cluster for AAP itself.
+====
+
+== Placement
+
+[cols="1,2",options="header"]
+|===
+| Property | Value
+
+| AAP Controller
+| `https://aap-aap.apps.hammer.na-launch.com` (hammer cluster)
+
+| EDA Controller
+| Co-located with AAP on hammer
+
+| AAP version
+| 2.6 gateway (GA); Automation Controller 4.7.12
+
+| Integration point on `anaeem`
+| AlertManager webhook → EDA Event Stream
+|===
+
+== The self-healing loop
+
+[source]
+----
+Denial metric or alert fires in agentic-observability
+    ↓ AlertManager rule matches
+AlertManager fires HMAC-signed webhook to EDA Event Stream
+    ↓ HMAC authenticated
+EDA Rulebook Activation matches the alert
+    ↓
+EDA triggers AAP Job Template
+    ↓
+Job Template runs remediation playbook
+    ↓
+Playbook opens a Gitea PR carrying the remediation patch
+    ↓ human reviews and merges
+Merge webhook → jit-approver (if elevated access required)
+    ↓ OR → direct application via ArgoCD if the change is GitOps-managed
+Remediation applied
+----
+
+At no point does EDA or the job template make a direct privileged change.
+The PR is the boundary.
+
+== Security posture
+
+* **AAP API credentials:** stored in Vault (`kv-v2/aap/controller-token`); injected into the EDA webhook sender component via Vault Agent Injector; no hardcoded credentials in rulebook YAML
+* **EDA Rulebook Activations:** use Credentials of type `Red Hat Ansible Automation Platform` pointing at the Controller
+* **AlertManager → EDA:** HMAC-authenticated Event Stream; TLS transport
+* **Gitea PR-merge is the approval gate** for destructive remediations — same HITL as UC2
+* **Fail-mode:** if EDA cannot reach AAP Controller, Rulebook Activations enter `failed` state and alert; no silent failure
+
+== Interfaces
+
+[cols="2,2,2,2",options="header"]
+|===
+| Peer | Direction | Port / Protocol | Purpose
+
+| AlertManager (`agentic-observability`)
+| outbound → EDA Event Stream
+| 443 HTTPS
+| Alert events triggering Rulebook Activations
+
+| EDA Event Stream
+| outbound → AAP Controller
+| 443 HTTPS
+| Job Template launch requests
+
+| Gitea (`git.arsalan.io`)
+| outbound from EDA
+| 443 HTTPS
+| PR creation for remediation patches
+
+| jit-approver (anaeem)
+| outbound
+| 443 HTTPS
+| Pre-flight approval check before remediation
+|===
+
+== Verify
+
+[source,bash]
+----
+# 1. Confirm AAP Controller is reachable and authenticated
+curl -sk https://aap-aap.apps.hammer.na-launch.com/api/v2/ping/ | jq .version
+
+# 2. List active EDA Rulebook Activations
+curl -sk -H "Authorization: Bearer <token>" \
+  https://aap-aap.apps.hammer.na-launch.com/eda/api/v1/activations/ | jq '.[].name'
+
+# 3. Confirm an AlertManager alert reaches EDA (trigger a test alert)
+oc exec -n agentic-observability deploy/alertmanager -- \
+  amtool alert add alertname=test severity=warning
+----
+
+== Maturity flags
+
+* AAP 2.6 with gateway API is GA; EDA Event Streams (replacing legacy webhook receivers) is GA in AAP 2.6
+* The Gitea PR-merge-as-approval pattern is a custom integration — no upstream AAP feature
+* AAP Controller 4.7.12 — check Red Hat errata for any CVEs before connecting to the platform network

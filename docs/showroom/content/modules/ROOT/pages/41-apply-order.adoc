@@ -1,0 +1,120 @@
+= Apply Order
+:navtitle: Apply Order
+
+[.lead]
+The platform components have strict dependencies.
+The ArgoCD sync wave annotations enforce this order automatically in the GitOps
+deployment.
+For manual or emergency applies, use this order.
+
+== Dependency graph
+
+[mermaid,target=apply-order-dependency-graph,format=svg]
+....
+flowchart TD
+  OPS["wave 0\nOLM operators\n(ZTWIM, RHBK, CNPG, OSC)"]
+  SPIRE["wave 1\nSPIRE / ZTWIM\nTrust domain root"]
+  KC["wave 2a\nKeycloak + CNPG"]
+  VT["wave 2b\nVault (Helm)"]
+  KV["wave 3\nKyverno\n(admission + authz server)"]
+  GW["wave 4\nagentgateway + ext-proc-delegation + jit-approver"]
+  ISO["wave 5a\nKata sandbox"]
+  RHOAI["wave 5b\nRHOAI / agentic-mcp"]
+  OBS["wave 5c\nOTel + AlertManager"]
+  NP["wave 5d\nNetworkPolicies (default-deny)"]
+
+  OPS --> SPIRE
+  SPIRE --> KC
+  SPIRE --> VT
+  KC --> GW
+  VT --> GW
+  KV --> GW
+  GW --> ISO
+  GW --> RHOAI
+  GW --> OBS
+  GW --> NP
+....
+
+== Manual apply sequence
+
+If applying manually (e.g., for a partial re-deploy or disaster recovery):
+
+[source,bash]
+----
+# Wave 0 — OLM operators (must complete before any CR can be applied)
+oc apply -k platform/00-operators/overlays/anaeem/
+
+# Wave 1 — SPIRE / ZTWIM (trust domain foundation)
+oc apply -k platform/spire/overlays/anaeem/
+# Wait for SPIRE pods Running + OIDC endpoint responding
+oc wait --for=condition=Ready pod -n zero-trust-workload-identity-manager --all --timeout=5m
+curl -s https://spire-oidc.apps.anaeem.na-launch.com/.well-known/openid-configuration | jq .
+
+# Wave 2 — Keycloak + Vault (can run in parallel)
+oc apply -k platform/keycloak/overlays/anaeem/ &
+oc apply -k platform/vault/overlays/anaeem/   &
+wait
+oc wait --for=condition=Ready pod -n keycloak --all --timeout=10m
+oc exec -n vault vault-0 -- vault status
+
+# Wave 3 — Kyverno
+oc apply -k platform/kyverno/overlays/anaeem/
+oc wait --for=condition=Ready pod -n kyverno --all --timeout=5m
+
+# Wave 4 — Gateway layer
+oc apply -k platform/agentgateway/overlays/anaeem/
+oc wait --for=condition=Ready pod -n mcp-gateway --all --timeout=5m
+
+# Wave 5 — parallel
+oc apply -k platform/isolation/overlays/anaeem/
+oc apply -k platform/rhoai/overlays/anaeem/
+oc apply -k platform/observability/overlays/anaeem/
+oc apply -k platform/networkpolicies/overlays/anaeem/
+----
+
+== Why this order
+
+[cols="2,3",options="header"]
+|===
+| Dependency | Reason
+
+| OLM operators before CRs
+| Custom Resource types must exist before Custom Resource instances
+
+| SPIRE before Keycloak/Vault
+| Both need the SPIRE OIDC endpoint for trust configuration; Vault's `auth/jwt`
+mount and Keycloak's RFC 7523 trust both reference
+`spire-oidc.apps.anaeem.na-launch.com`
+
+| Keycloak + Vault before gateway
+| agentgateway validates tokens against Keycloak JWKS; ext-proc-delegation connects
+to both; jit-approver reads from Vault
+
+| Kyverno before gateway
+| The Kyverno admission webhook must be active before any new pods are created in
+`mcp-gateway` (otherwise the webhook target is absent)
+
+| Gateway before downstream
+| pfsense-mcp and agent-sandbox depend on the gateway being reachable
+
+| NetworkPolicies last
+| Applying default-deny before the gateway is running would block the gateway's own
+initialization egress to Keycloak/Vault; apply after all components are healthy
+|===
+
+== Render before apply
+
+Before applying any overlay manually, render it to inspect what will be applied:
+
+[source,bash]
+----
+make render
+# Outputs to rendered/<component>.yaml — review before applying
+----
+
+Validate all overlays with kubeconform:
+
+[source,bash]
+----
+make validate
+----

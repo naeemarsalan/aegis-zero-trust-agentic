@@ -1,0 +1,224 @@
+= UC2 — JIT Sub-Identity
+:navtitle: UC2 JIT Sub-Identity
+
+[.lead]
+When an agent is denied a privileged action, it can request **just-in-time, least-privilege, time-boxed Kubernetes access** through a human approval gate. The approval is a Gitea pull request merge — the act of merging _is_ the approval. The agent acts as a uniquely named ephemeral Kubernetes SA (`jit-<agent>-<session>`) for the approved window. When the Vault lease expires, the SA, Role, and RoleBinding are **automatically deleted** — no cron, no reconciler.
+
+This proves sign-off gate items 3 (auto-revoke), 4 (session attribution), and partially 6 (self-healing to PR).
+
+== Sequence
+
+[mermaid,target=uc2-sequence,format=svg]
+....
+sequenceDiagram
+    autonumber
+    participant Agent as Agent pod (Kata)
+    participant AGW as agentgateway / Kyverno
+    participant JIT as jit-approver :8080<br/>ns mcp-gateway
+    participant Gitea as Gitea (git.arsalan.io)
+    participant Human as Arsalan (approver)
+    participant Vault as Vault<br/>kubernetes secrets engine
+    participant Kube as Kube API + audit
+    participant Obs as Loki + OTel
+
+    Agent->>AGW: privileged action / tool call
+    AGW-->>Agent: DENY (fail closed)
+
+    Note over Agent: estimate scope<br/>{ns, verbs, resources, duration, justification}<br/>enforce scope CEILING locally
+
+    Agent->>JIT: POST /request {scope, session-id, justification}
+    Note over JIT: validate against ceiling —<br/>reject if over-ceiling
+
+    JIT->>Gitea: open PR — scoped grant manifest + estimate + paper trail
+    Gitea-->>Human: PR notification
+
+    Human->>Gitea: review + MERGE PR (the approval act)
+    Gitea->>JIT: merge webhook (HMAC-signed payload)
+
+    Note over JIT: verify HMAC + repo allowlist (anaeem/nvidia-ida) —<br/>re-read scope from committed manifest —<br/>re-validate ceiling — reject even if merged and over-ceiling
+
+    JIT->>Vault: write kubernetes/roles/jit-<session> (ephemeral role)
+    JIT->>Vault: read kubernetes/creds/jit-<session>
+    Note over Vault: created_role_rules = approved scope —<br/>allowed_kubernetes_namespaces = approved ns —<br/>token TTL = approval window
+
+    Vault->>Kube: create SA jit-<agent>-<session> + Role + RoleBinding
+    Vault-->>JIT: ephemeral SA token + lease-id (lease-bound)
+
+    JIT->>JIT: mint RS256 session-capability JWT<br/>claims: tool_scope, exp=window, aud=kyverno-authz
+    JIT->>Vault: write secret/data/jit/<session> {sa_token, session_jwt, expires_at}
+
+    JIT-->>Agent: GET /requests/{id}/status → {sa_token, session_jwt}
+
+    Agent->>Kube: perform approved actions (kubectl --token=sa_token)
+    Note over Kube: every call attributed to jit-<agent>-<session> in Kube audit
+
+    Agent->>AGW: dangerous MCP tool call<br/>+ X-JIT-Session-JWT: <session_jwt>
+    Note over AGW: Kyverno verifies session JWT (JWKS fetch) —<br/>tool in tool_scope claim → ALLOW
+
+    Note over Vault,Kube: lease TTL expires →<br/>Vault deletes SA + Role + RoleBinding (auto-revoke)<br/>Kyverno ClusterCleanupPolicy = backstop only
+
+    JIT->>Gitea: summary comment on PR<br/>(actions taken, audit refs, revoke confirmed)
+    JIT->>Obs: audit event + OTel span (request → approval → action → revoke)
+
+    Note over Agent: riskier follow-on = NEW request,<br/>never silent escalation
+....
+
+== Step-by-step explanation
+
+=== Step 1–2 — Denial
+
+The agent attempts a privileged action (e.g., calling a dangerous pfSense tool or a direct Kubernetes API call). Kyverno's ext_authz policy returns DENY. The gateway returns 403. The agent does **not** retry or find an alternative path — a denial is the signal to start the JIT flow.
+
+=== Step 3 — Scope estimation
+
+The agent computes the minimum scope it needs:
+
+* `namespace(s)` — the Kubernetes namespaces the action requires
+* `verbs` and `resources` — e.g., `["get", "list"]` on `["pods"]`
+* `duration` — the window in seconds/minutes
+* `justification` — free-text human-readable reason
+
+A **scope ceiling** is enforced locally before the request is even sent. The agent's skill definition includes a hardcoded ceiling; any request that would exceed it is rejected at the agent before it reaches `jit-approver`. This prevents a compromised agent from requesting unbounded access.
+
+=== Step 4 — Request to jit-approver
+
+The agent posts to `POST /request` on `jit-approver:8080` (internal only — not exposed externally). `jit-approver` re-validates the scope against the ceiling independently. An over-ceiling request is rejected immediately — the agent is told to reduce scope.
+
+=== Step 5–6 — Gitea PR
+
+`jit-approver` opens a pull request in `anaeem/nvidia-ida` on Gitea (`git.arsalan.io`). The PR body carries:
+
+* The **committed grant manifest** (the source of truth for what will be granted)
+* The scope estimate and justification
+* A session ID linking PR → audit trail
+
+The Gitea API token is injected from Vault via the Vault Agent Injector (tmpfs) — it is not in etcd or git.
+
+=== Step 7 — Human approval (PR merge)
+
+Arsalan reviews the PR. The scope is explicit in the committed manifest. **Merging the PR is the approval act.** The merge commit author and timestamp are the non-repudiable approval record. There is no approval without a merge, and no merge without an authenticated Gitea user performing it.
+
+=== Step 8 — Webhook (HMAC verified)
+
+Gitea fires a webhook to `jit-approver` on the OCP Route. `jit-approver` performs three checks before doing anything:
+
+. **HMAC signature verification** — the webhook HMAC secret is in Vault (tmpfs). An unsigned or incorrectly signed webhook → 401, no action.
+. **Repository allowlist** — only webhooks from `anaeem/nvidia-ida` are accepted.
+. **Event type** — only a merged PR event proceeds.
+
+The approved scope is **re-read from the committed PR manifest** (trusted git state), not from the webhook body. The webhook body signals only "this PR merged"; the scope comes from git. The scope is re-validated against the ceiling even at this stage — a human could theoretically merge an over-ceiling PR, but `jit-approver` rejects it anyway.
+
+=== Step 9–11 — Vault Kubernetes secrets engine
+
+`jit-approver` calls the Vault Kubernetes secrets engine in two steps:
+
+. **Write the ephemeral role** `kubernetes/roles/jit-<session>` with:
+** `generated_role_rules` = the approved verbs/resources/apiGroups
+** `allowed_kubernetes_namespaces` = the approved namespaces
+** `token_default_ttl` = the approved window duration
+
+. **Read credentials** `kubernetes/creds/jit-<session>`.
+
+On credential read, Vault:
+
+* Creates Kubernetes SA `jit-<agent>-<session>`
+* Creates a namespaced `Role` carrying exactly the approved rules
+* Creates a `RoleBinding` linking the SA to the Role
+* Returns a short-lived SA token as a **lease-owned object**
+
+Only `jit-approver`'s SPIFFE identity has `create`/`update` capability on `kubernetes/creds/jit-scoped` in Vault policy. The agent's SVID has no path to this endpoint (abuse case 2 prevention).
+
+=== Step 12 — Session-capability JWT
+
+`jit-approver` mints an RS256 JWT (ADR 0006) with claims:
+
+[source,json]
+----
+{
+  "iss": "https://jit-approver.mcp-gateway.svc.cluster.local:8080",
+  "aud": ["kyverno-authz"],
+  "sub": "<session_id>",
+  "tool_scope": ["pfsense.block_ip"],
+  "exp": <now + approved_window_seconds>
+}
+----
+
+This JWT is the agent's **scoped capability token** — it proves to Kyverno that a specific tool call was approved for this session. It does not carry any downstream service credential. Both the SA token and the session JWT are written to `secret/data/jit/<session>` in Vault KV.
+
+=== Step 13 — Credential delivery
+
+The agent polls `GET /requests/\{id}/status` on `jit-approver` over the SVID-mTLS channel. Once `state == issued`, the response body contains `sa_token` and `session_jwt`. No pod restart is needed; no Vault Agent Injector annotation is involved (the Vault Agent Injector cannot handle per-approval dynamic credentials, as the pod is already running — ADR 0006 §1).
+
+=== Step 14 — Agent acts
+
+The agent uses the `sa_token` for direct Kubernetes API calls (`kubectl --token=<sa_token>`). Every call is attributed to `jit-<agent>-<session>` in the Kubernetes audit log — a unique, session-specific identity.
+
+For dangerous MCP tool calls through the gateway, the agent adds `X-JIT-Session-JWT: <session_jwt>` to the request. Kyverno's ext_authz gate verifies the JWT (JWKS fetch from `jit-approver:8080/jwks`) and checks that the requested tool is in the `tool_scope` claim. This check is **stateless** — no live HTTP call to jit-approver at evaluation time.
+
+=== Step 15 — Auto-revoke
+
+When the Vault lease TTL expires:
+
+. Vault **deletes** `jit-<agent>-<session>` ServiceAccount
+. Vault **deletes** the associated Role
+. Vault **deletes** the RoleBinding
+
+The SA token becomes invalid immediately. Any Kubernetes API call using it returns 401. The session JWT also expires (`exp` claim) — the Kyverno gate rejects it without any state lookup.
+
+`jit-approver`'s background reaper also calls `vault delete kubernetes/roles/jit-<session>` to clean up the ephemeral Vault role (N3 fix from ADR 0006).
+
+A Kyverno `ClusterCleanupPolicy` targets objects labeled `app.kubernetes.io/managed-by=jit` as a backstop for any objects Vault failed to delete. If the backstop fires, an alert is raised — it indicates a Vault revoke miss.
+
+=== Step 16 — Audit close-out
+
+`jit-approver` posts a summary comment on the merged PR (actions taken, audit log references, revoke confirmation). An OTel span ties the full lifecycle: request → approval → action → revoke. The PR + merge commit + audit span together constitute the complete, non-repudiable record.
+
+== Security properties
+
+[cols="1,2",options="header"]
+|===
+| Property | Mechanism
+
+| Agent cannot self-issue access
+| Vault policy: only `jit-approver` SVID may call `kubernetes/creds/*`
+
+| Forged webhook cannot grant access
+| HMAC + repo allowlist + scope re-read from committed manifest
+
+| Over-ceiling grants rejected
+| Ceiling check at request time AND again on merge webhook
+
+| Stale grants auto-revoke
+| Vault lease TTL — structural, not procedural
+
+| Kube audit attribution
+| Every action uses `jit-<agent>-<session>` SA
+
+| Riskier follow-on requires new PR
+| New-request rule enforced at `jit-approver`; no in-place scope widening
+|===
+
+== Recurring grants → standing policy
+
+When the same agent repeatedly requests the same scope, that pattern is a signal that the access is no longer genuinely exceptional. `jit-approver` (or an audit review) can detect this and open a **standing-policy PR** proposing the access as a committed GitOps-managed Role/RoleBinding under `platform/`. Once merged and reconciled by ArgoCD, that access is standing (least-privilege, still attributable, no longer per-session JIT). The JIT path stops firing for it.
+
+== Verification commands
+
+[source,bash]
+----
+# 1. After a UC2 flow, confirm the ephemeral SA was created
+oc get sa -n <approved-ns> | grep jit-
+
+# 2. Confirm Kube audit attributes the action to the jit SA
+# (requires Kube audit policy enabled — check audit-policy ConfigMap)
+oc adm must-gather -- /usr/bin/gather_audit_logs
+grep "jit-" openshift-kube-apiserver/audit.log | jq .user.username
+
+# 3. After the window expires, confirm SA / Role / RoleBinding are gone
+oc get sa,role,rolebinding -n <approved-ns> | grep jit-
+# Expected: no output
+
+# 4. Confirm Kube API call with the expired SA token is rejected
+kubectl --token=<expired-sa-token> get pods -n <approved-ns>
+# Expected: Error from server (Unauthorized)
+----

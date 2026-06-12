@@ -1,0 +1,55 @@
+= ADR 0001 — ext_proc Delegation Service in Go
+:navtitle: ADR 0001: ext_proc Language (Go)
+
+[.lead]
+*Status: Accepted*
+
+== Context
+
+The `ext-proc-delegation` service is the *only* custom component in the platform.
+It runs as an Envoy/agentgateway ext_proc filter: a bidirectional gRPC stream that,
+per MCP request, parses claims from the gateway metadata, buffers and reads the MCP
+JSON-RPC body to extract the tool and args, performs Keycloak token exchange
+(RFC 7523 → RFC 8693) and a Vault login + per-tool secret fetch, injects the user's
+Authorization upstream, strips credential headers on the response, and emits a
+hashed-args audit event + OTel span — all fail-closed under latency pressure.
+
+This filter sits on the *hot path* of every MCP call.
+It must speak Envoy's ext_proc gRPC contract, fetch and present its own SPIFFE
+JWT-SVID via the SPIRE Workload API, and integrate cleanly with Vault and Keycloak
+SDKs.
+Candidate languages: Go, Rust, Python.
+
+== Decision
+
+Implement the service in *Go*.
+
+*Rationale:*
+
+* *First-class Envoy/ext_proc protos.* `go-control-plane` provides the canonical
+  ext_proc gRPC types; agentgateway and Envoy are Go/C++ ecosystems and the metadata
+  contract (`dev.agentgateway.jwt`) is exercised idiomatically from Go.
+* *Native SPIFFE support.* `go-spiffe` provides a mature Workload API client — the
+  cleanest path to "this service authenticates to Vault/Keycloak as its own SPIFFE
+  identity."
+* *Operational fit for a bank.* Single static binary, distroless non-root image,
+  small attack surface, predictable latency and GC behavior on a hot-path proxy filter.
+* *Vault/Keycloak clients.* First-party/well-maintained Go clients for both.
+* *Team/supportability.* Matches the surrounding OpenShift/operator ecosystem.
+
+Rust was a credible alternative (latency, memory safety) but loses the `go-spiffe` /
+`go-control-plane` ergonomics and adds build complexity for a PoC.
+Python was rejected for a latency-sensitive, concurrency-heavy proxy filter.
+
+== Consequences
+
+* The service ships as a Go module: `cmd/server`,
+  `internal/{extproc,claims,keycloak,vault,inject,audit,config}`, `pkg/spiffe`,
+  a distroless non-root Dockerfile, and tests (fake-Envoy stream + testcontainer
+  doubles for Keycloak/Vault).
+* Latency from request-body buffering is bounded by a configurable `maxRequestBytes`;
+  response body-processing is SKIP by default.
+* Go's static binary keeps the runtime image minimal, supporting the no-credential,
+  small-surface posture.
+* All other platform components remain vendor-supported; this single Go module is the
+  only code the team maintains.

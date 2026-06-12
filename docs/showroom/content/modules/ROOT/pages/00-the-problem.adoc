@@ -1,0 +1,46 @@
+= The problem
+:navtitle: The problem
+
+[.lead]
+Enterprises want AI agents that *act* -- change a firewall rule, open a
+ticket, run a remediation -- not just chat. But the moment an agent acts, it
+needs access, and the standard way to give software access is to hand it a
+credential. Handing a standing credential to a non-deterministic process is
+exactly what a regulated environment cannot sign off.
+
+== Why "give the agent an API key" fails review
+
+*Credential sprawl.* Agent frameworks read tokens from environment variables,
+pod specs, or config files. Every agent pod becomes a credential store; every
+prompt-injection or supply-chain compromise of the agent is a credential
+theft.
+
+*Standing privilege.* An agent's permissions get provisioned as the union of
+everything it might ever need, because re-provisioning is slow. The agent is
+maximally privileged at all times, even when idle.
+
+*Attribution loss.* Downstream services log "the agent did it." Which user
+asked? Under which approval? When the auditor asks who changed the firewall
+rule, a shared service identity is the wrong answer.
+
+*Revocation by procedure.* Access granted for an incident gets cleaned up by
+a script, a calendar reminder, or an off-boarding checklist. Every procedural
+revocation path eventually fails to run.
+
+*Prompt injection inherits privilege.* If an attacker can steer the agent's
+reasoning, the attacker holds whatever the agent holds. The blast radius of a
+jailbreak equals the agent's standing access.
+
+== The constraint that shapes everything
+
+In a zero-trust posture, the design target is not "protect the agent's
+credentials better." It is:
+
+[.lead]
+The agent must have *nothing to steal*, and elevated access must be
+*impossible to forget to revoke*.
+
+That constraint -- no credential in the agent, revocation by construction --
+cannot be retrofitted onto an agent framework. It has to live in the platform
+between the agent and every tool it calls. That platform is what this PoC
+builds. Continue to xref:01-the-solution.adoc[The solution].

@@ -1,0 +1,48 @@
+* xref:index.adoc[Welcome]
+
+* Overview (non-technical)
+** xref:00-the-problem.adoc[The problem]
+** xref:01-the-solution.adoc[The solution]
+** xref:02-business-outcomes.adoc[Business outcomes]
+** xref:03-who-uses-what.adoc[Who uses what]
+
+* Use-case walkthroughs
+** xref:04-uc1-credential-delegation.adoc[UC1 -- Delegated MCP tool call]
+** xref:05-uc2-jit-sub-identity.adoc[UC2 -- JIT sub-identity]
+
+* Architecture
+** xref:09-platform-overview.adoc[Platform overview]
+** xref:10-architecture.adoc[Architecture]
+** xref:11-security-model.adoc[Security model]
+** xref:12-reference.adoc[Identity & endpoint reference]
+** xref:13-swot-signoff.adoc[SWOT & sign-off gate]
+
+* Components
+** xref:20-components.adoc[Component overview]
+** xref:21-spire.adoc[SPIRE / ZTWIM]
+** xref:22-keycloak.adoc[Keycloak (RHBK)]
+** xref:23-vault.adoc[HashiCorp Vault]
+** xref:24-agentgateway.adoc[agentgateway]
+** xref:25-ext-proc-delegation.adoc[ext-proc-delegation]
+** xref:26-jit-approver.adoc[jit-approver]
+** xref:27-kyverno.adoc[Kyverno]
+** xref:28-pfsense-mcp.adoc[pfsense-mcp]
+** xref:29-agent-sandbox.adoc[Agent sandbox (Kata)]
+** xref:30-observability.adoc[Observability]
+** xref:31-eda-aap.adoc[EDA / AAP]
+** xref:32-confidential-containers.adoc[Confidential Containers (roadmap)]
+
+* Deployment
+** xref:40-gitops.adoc[GitOps & bootstrap]
+** xref:41-apply-order.adoc[Apply order]
+
+* Decisions (ADRs)
+** xref:50-adr-extproc-language-go.adoc[ADR 0001 -- ext_proc in Go]
+** xref:51-adr-jit-grant-vault-k8s-engine.adoc[ADR 0002 -- JIT via Vault k8s engine]
+** xref:52-adr-keycloak-token-exchange-strategy.adoc[ADR 0003 -- Keycloak token exchange]
+** xref:53-adr-extproc-vs-extauthz-split.adoc[ADR 0004 -- ext_proc vs ext_authz split]
+** xref:54-adr-no-slack-gitea-pr-approval.adoc[ADR 0005 -- Gitea PR approval gate]
+** xref:55-adr-jit-session-capability-jwt.adoc[ADR 0006 -- JIT session-capability JWT]
+
+* Reference
+** xref:60-glossary.adoc[Glossary]
