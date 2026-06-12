@@ -45,8 +45,13 @@ spec:
       key: password
 
   hostname:
+    # Fixes the public frontend hostname (token `iss` stays the route URL) but
+    # strict: false accepts in-cluster backchannel Hosts too, so
+    # ext-proc-delegation can run RFC 8693 token exchange against the in-cluster
+    # Service without a Host-mismatch 400 ("Invalid token"). strict: true with a
+    # host-only hostname rejected those backchannel calls.
     hostname: keycloak.apps.anaeem.na-launch.com
-    strict: true                  # reject requests with wrong Host header
+    strict: false
 
   http:
     tlsSecret: keycloak-tls       # secret injected by service-ca or cert-manager

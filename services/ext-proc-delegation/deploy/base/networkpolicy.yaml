@@ -50,15 +50,27 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Keycloak HTTPS
+    # Keycloak — in-cluster HTTP (8080) for JWKS + token exchange (the route
+    # serves an untrusted service-ca cert), plus 443/8443 kept for completeness.
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: keycloak
       ports:
+        - port: 8080
+          protocol: TCP
         - port: 443
           protocol: TCP
         - port: 8443
+          protocol: TCP
+    # OpenShift router (hostNetwork) for the Keycloak public route — the token
+    # exchange must hit the route so the issuer matches. ipBlock because a
+    # namespaceSelector can't match a hostNetwork router pod.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
           protocol: TCP
     # Vault HTTPS
     - to:

@@ -53,6 +53,11 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: agentic-mcp
       ports:
+        # OVN evaluates egress after Service DNAT, so the effective dest port is
+        # the backend pod's container port (3000 for pfsense-mcp), not the
+        # Service port (8000). Allow both — 8000 also covers echo-mcp.
+        - protocol: TCP
+          port: 3000
         - protocol: TCP
           port: 8000
 

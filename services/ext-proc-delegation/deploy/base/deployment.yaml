@@ -14,6 +14,13 @@ spec:
     metadata:
       labels:
         app: ext-proc-delegation
+        # MUST be on the pod (not just the Deployment): the NetworkPolicies
+        # (gateway<->ext-proc on 9000) and the SPIRE ClusterSPIFFEID podSelector
+        # both target app.kubernetes.io/name. The kustomize labels transformer
+        # uses includeSelectors:false and does not reach the pod template, so set
+        # it here. Without it the dataplane cannot open the ext_proc stream
+        # (10s timeout, "no more response messages") and the pod gets no SVID.
+        app.kubernetes.io/name: ext-proc-delegation
       annotations:
         # Vault Agent Injector: inject client-secret onto tmpfs, never in etcd.
         vault.hashicorp.com/agent-inject: "true"
@@ -59,11 +66,21 @@ spec:
               protocol: TCP
           env:
             - name: KEYCLOAK_TOKEN_URL
+              # The PUBLIC route, not the in-cluster Service: the token exchange
+              # validates the subject token's iss, which is the route URL. The
+              # in-cluster endpoint derives a different issuer and rejects it.
               value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
+            - name: KEYCLOAK_TLS_INSECURE
+              # The route serves the service-ca cert (wrong SAN); skip verify (PoC).
+              value: "true"
             - name: EXCHANGE_MODE
               value: "standard"
             - name: EXCHANGE_CLIENT_ID
-              value: "ext-proc-delegation"
+              # Must be the Keycloak client whose secret is injected below
+              # (secret/mcp-gateway/keycloak-client-secret). There is no
+              # "ext-proc-delegation" OIDC client; ext-proc exchanges AS the
+              # mcp-gateway confidential client (realm-import documents this).
+              value: "mcp-gateway"
             - name: EXCHANGE_SECRET_FILE
               value: "/vault/secrets/client-secret"
             - name: DOWNSTREAM_AUDIENCE
@@ -72,13 +89,16 @@ spec:
             # caller token (signature/iss/aud/exp) against Keycloak JWKS rather
             # than trusting the gateway (defense in depth).
             - name: KEYCLOAK_JWKS_URL
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs"
+              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/agentic/protocol/openid-connect/certs"
             - name: KEYCLOAK_ISSUER
               value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
             - name: EXPECTED_AUDIENCE
               value: "mcp-gateway"
             - name: VAULT_ADDR
               value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_SKIP_VERIFY
+              # Vault route cert is not in ext-proc's trust store (PoC).
+              value: "true"
             - name: VAULT_JWT_ROLE
               value: "ext-proc-delegation"
             - name: VAULT_JWT_AUDIENCE

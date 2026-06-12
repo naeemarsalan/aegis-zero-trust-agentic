@@ -6,11 +6,13 @@ package vault
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -55,15 +57,23 @@ type kvResponse struct {
 	} `json:"data"`
 }
 
-// NewClient creates a Vault client.
+// NewClient creates a Vault client. The Vault route is edge-terminated with a
+// cert ext-proc does not trust; set VAULT_SKIP_VERIFY=true to skip TLS
+// verification of that hop (PoC — the SVID-based auth is unaffected).
 func NewClient(cfg *config.Config, jwtSource JWTSourcer) *Client {
+	hc := &http.Client{Timeout: 5 * time.Second}
+	if os.Getenv("VAULT_SKIP_VERIFY") == "true" {
+		hc.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // PoC: Vault route cert not in trust store
+		}
+	}
 	return &Client{
-		addr:      cfg.VaultAddr,
-		jwtRole:   cfg.VaultJWTRole,
-		jwtAud:    cfg.VaultJWTAudience,
-		secretPfx: cfg.ToolSecretPathPrefix,
-		jwtSource: jwtSource,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		addr:       cfg.VaultAddr,
+		jwtRole:    cfg.VaultJWTRole,
+		jwtAud:     cfg.VaultJWTAudience,
+		secretPfx:  cfg.ToolSecretPathPrefix,
+		jwtSource:  jwtSource,
+		httpClient: hc,
 	}
 }
 

@@ -39,8 +39,14 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: mcp-gateway
       ports:
+        # NetworkPolicy ports match the POD port after Service DNAT, not the
+        # Service port. pfsense-mcp's Service is 8000 -> targetPort 3000, so the
+        # packet reaches the pod on 3000. Allowing only 8000 silently dropped
+        # the gateway's upstream connection ("Connect: deadline elapsed").
+        - port: 3000
+          protocol: TCP   # pfsense-mcp StreamableHTTP /mcp container port
         - port: 8000
-          protocol: TCP   # pfsense-mcp StreamableHTTP /mcp
+          protocol: TCP   # echo-mcp container port + Service-port parity
 
 ---
 # Allow egress to openshift-dns

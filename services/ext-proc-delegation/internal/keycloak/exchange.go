@@ -4,6 +4,7 @@ package keycloak
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -33,13 +34,25 @@ type tokenResponse struct {
 }
 
 // NewClient creates a new Keycloak token-exchange client.
+//
+// The token-exchange MUST hit Keycloak's public route so the request's issuer
+// context matches the subject token's `iss` (the in-cluster Service derives a
+// different issuer and rejects the token as "Invalid token"). The route serves
+// the OpenShift service-ca cert (wrong SAN for the public hostname), so set
+// KEYCLOAK_TLS_INSECURE=true to skip verification of that hop. PoC-only.
 func NewClient(cfg *config.Config) *Client {
+	hc := &http.Client{Timeout: 5 * time.Second}
+	if os.Getenv("KEYCLOAK_TLS_INSECURE") == "true" {
+		hc.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // PoC: route serves a mismatched service-ca cert
+		}
+	}
 	return &Client{
 		tokenURL:   cfg.KeycloakTokenURL,
 		mode:       cfg.ExchangeMode,
 		clientID:   cfg.ExchangeClientID,
 		secretFile: cfg.ExchangeSecretFile,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: hc,
 	}
 }
 

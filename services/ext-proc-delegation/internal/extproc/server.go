@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -89,9 +90,9 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			return nil
 		}
 		if err != nil {
+			slog.Error("ext_proc: recv error", "err", err)
 			return statuspb.Errorf(codes.Unavailable, "recv: %v", err)
 		}
-
 		switch msg := req.Request.(type) {
 		case *extprocv3.ProcessingRequest_RequestHeaders:
 			hdrs := msg.RequestHeaders.GetHeaders()
@@ -108,6 +109,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			// No verifiable token -> 401 deny.
 			id, idErr := claims.FromContext(ctx, authHeader, s.verifier)
 			if idErr != nil {
+				slog.Error("ext_proc: identity verification failed", "err", idErr.Error())
 				emitter := audit.NewEmitter(sessionID, traceID, spanID)
 				emitter.Emit(ctx, "deny", "no_identity", false, false)
 				return stream.Send(immediateResponse(http.StatusUnauthorized, "no identity"))
@@ -342,7 +344,13 @@ func headerValue(hdrs *corev3.HeaderMap, key string) string {
 	lkey := toLower(key)
 	for _, h := range hdrs.GetHeaders() {
 		if toLower(h.GetKey()) == lkey {
-			return h.GetValue()
+			// Envoy ext_proc puts the value in the string `value` field OR the
+			// bytes `raw_value` field. agentgateway uses raw_value, so fall back
+			// to it when value is empty — otherwise every header reads blank.
+			if v := h.GetValue(); v != "" {
+				return v
+			}
+			return string(h.GetRawValue())
 		}
 	}
 	return ""

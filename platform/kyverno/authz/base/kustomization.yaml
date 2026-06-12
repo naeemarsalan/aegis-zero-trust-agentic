@@ -13,9 +13,9 @@ resources:
   - networkpolicy.yaml
   - referencegrant.yaml
   - no-unauthenticated-calls.yaml
-  - tool-allowlist-mcp-users.yaml
-  - dangerous-tools-admins-only.yaml
-  - deny-restricted-group.yaml
+  # - tool-allowlist-mcp-users.yaml  # DISABLED: needs kyverno-envoy-plugin with the `mcp` CEL lib (v0.3.0 lacks mcp.Parse)
+  # - dangerous-tools-admins-only.yaml  # DISABLED: needs kyverno-envoy-plugin with the `mcp` CEL lib (v0.3.0 lacks mcp.Parse)
+  # - deny-restricted-group.yaml  # DISABLED: needs kyverno-envoy-plugin with the `mcp` CEL lib (v0.3.0 lacks mcp.Parse)
 
 labels:
   - pairs:
