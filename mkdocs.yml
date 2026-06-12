@@ -1,0 +1,91 @@
+site_name: nvidia-ida — Zero-Trust Agentic AI Platform
+site_description: A proof-of-concept zero-trust agentic AI platform on OpenShift — SPIFFE workload identity, delegated MCP tool calls, JIT human-approved escalation, and auto-revoking ephemeral identities.
+site_author: anaeem
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: green
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: green
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+docs_dir: docs/site
+
+nav:
+  - Home: index.md
+  - Platform:
+      - Overview: platform/index.md
+      - Architecture: platform/architecture.md
+      - Security Model: security/index.md
+  - Use Cases:
+      - UC1 — Delegated MCP Credential: use-cases/uc1-credential-delegation.md
+      - UC2 — JIT Sub-Identity: use-cases/uc2-jit-sub-identity.md
+  - Components:
+      - Overview: components/index.md
+      - SPIRE / ZTWIM: components/spire.md
+      - Keycloak (RHBK): components/keycloak.md
+      - HashiCorp Vault: components/vault.md
+      - agentgateway: components/agentgateway.md
+      - ext-proc-delegation: components/ext-proc-delegation.md
+      - jit-approver: components/jit-approver.md
+      - Kyverno: components/kyverno.md
+      - pfsense-mcp: components/pfsense-mcp.md
+      - Agent Sandbox (Kata): components/agent-sandbox.md
+      - Observability: components/observability.md
+      - EDA / AAP: components/eda-aap.md
+      - Confidential Containers (roadmap): components/confidential-containers.md
+  - Deployment:
+      - GitOps & Bootstrap: deployment/gitops.md
+      - Apply Order: deployment/apply-order.md
+  - Decisions:
+      - ADR 0001 — ext_proc in Go: decisions/0001-extproc-language-go.md
+      - ADR 0002 — JIT via Vault k8s engine: decisions/0002-jit-grant-vault-k8s-engine.md
+      - ADR 0003 — Keycloak token-exchange strategy: decisions/0003-keycloak-token-exchange-strategy.md
+      - ADR 0004 — extProc vs extAuthz split: decisions/0004-extproc-vs-extauthz-split.md
+      - ADR 0005 — Gitea PR approval gate: decisions/0005-no-slack-gitea-pr-approval.md
+      - ADR 0006 — JIT session-capability JWT: decisions/0006-jit-session-capability-jwt.md
+  - Reference:
+      - Identity & Endpoints: platform/reference.md
+      - SWOT & Sign-off Gate: platform/swot.md
+      - Glossary: platform/glossary.md

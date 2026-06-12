@@ -1,0 +1,78 @@
+# Identity & Endpoints Reference
+
+## Identity contract
+
+| Attribute | Value |
+|---|---|
+| SPIFFE trust domain | `anaeem.na-launch.com` (immutable) |
+| SVID format | `spiffe://anaeem.na-launch.com/ns/<namespace>/sa/<serviceaccount>` |
+| OIDC issuer | `https://spire-oidc.apps.anaeem.na-launch.com` |
+| Keycloak | `https://keycloak.apps.anaeem.na-launch.com` realm `agentic` |
+| Vault | `https://vault.apps.anaeem.na-launch.com` |
+| MCP gateway | `https://mcp-gateway.apps.anaeem.na-launch.com` |
+
+---
+
+## SPIFFE IDs by component
+
+| Component | SPIFFE ID |
+|---|---|
+| agentgateway | `spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/agentgateway` |
+| ext-proc-delegation | `spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/ext-proc-delegation` |
+| jit-approver | `spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/jit-approver` |
+| Keycloak | `spiffe://anaeem.na-launch.com/ns/keycloak/sa/keycloak` |
+| Vault | `spiffe://anaeem.na-launch.com/ns/vault/sa/vault` |
+| Kyverno authz server | `spiffe://anaeem.na-launch.com/ns/kyverno/sa/kyverno-authz-server` |
+| pfsense-mcp | `spiffe://anaeem.na-launch.com/ns/agentic-mcp/sa/pfsense-mcp` |
+| OTel collector | `spiffe://anaeem.na-launch.com/ns/agentic-observability/sa/otel-collector` |
+| Agent pods | `spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/<agent-sa>` |
+
+---
+
+## Internal service endpoints
+
+| Component | Service FQDN | Port | Protocol |
+|---|---|---|---|
+| agentgateway | `agentgateway.mcp-gateway.svc.cluster.local` | 8080 | HTTP/1.1 (MCP) |
+| ext-proc-delegation | `ext-proc-delegation.mcp-gateway.svc.cluster.local` | 9000 | gRPC ext_proc |
+| jit-approver | `jit-approver.mcp-gateway.svc.cluster.local` | 8080 | HTTP |
+| kyverno-authz-server | `kyverno-authz-server.kyverno.svc.cluster.local` | 9081 | gRPC ext_authz |
+| Vault | `vault.vault.svc.cluster.local` | 8200 | HTTPS |
+| OTel collector | `otel-collector.agentic-observability.svc.cluster.local` | 4317 / 4318 | gRPC / HTTP |
+| AlertManager | `alertmanager.agentic-observability.svc.cluster.local` | 9093 | HTTP |
+| pfsense-mcp | `pfsense-mcp.agentic-mcp.svc.cluster.local` | 8000 | HTTP (MCP) |
+
+---
+
+## External endpoints
+
+| Service | URL | Owner |
+|---|---|---|
+| MCP gateway | `https://mcp-gateway.apps.anaeem.na-launch.com` | anaeem cluster |
+| Keycloak | `https://keycloak.apps.anaeem.na-launch.com` | anaeem cluster |
+| Vault | `https://vault.apps.anaeem.na-launch.com` | anaeem cluster |
+| SPIRE OIDC | `https://spire-oidc.apps.anaeem.na-launch.com` | anaeem cluster |
+| RHOAI Dashboard | `https://rhods-dashboard-redhat-ods-applications.apps.anaeem.na-launch.com` | anaeem cluster |
+| Loki push | `http://172.16.2.252:3100` | homelab infra |
+| Grafana | `http://172.16.2.252:3000` | homelab infra |
+| Gitea | `https://git.arsalan.io` | external |
+| Container registry | `oci.arsalan.io/nvidia-ida/<name>:dev` | external |
+| AAP Controller | `https://aap-aap.apps.hammer.na-launch.com` | hammer cluster |
+
+---
+
+## Vault secret paths
+
+| Path | Type | Consumer |
+|---|---|---|
+| `secret/data/pfsense/api-key` | KV v2 | pfsense-mcp (via Vault Agent Injector) |
+| `secret/data/gitea/jit-approver-token` | KV v2 | jit-approver (via Vault Agent Injector) |
+| `secret/data/jit/<session>` | KV v2 | jit-approver (write) → agent (read via /status) |
+| `database/creds/keycloak-db` | Dynamic | Keycloak (via Vault Agent Injector) |
+| `kubernetes/creds/jit-scoped` | Dynamic | jit-approver only (Vault policy) |
+
+---
+
+## Cluster inventory
+
+All cluster endpoints and configurable parameters live in `environment/clusters.yaml`. Credentials live in `environment/.env` (gitignored). See `environment/.env.example` for required variables.

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: showroom
+  namespace: showroom
+  labels:
+    app: showroom
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: showroom
+  template:
+    metadata:
+      labels:
+        app: showroom
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: showroom
+          image: oci.arsalan.io/nvidia-ida/showroom:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            # no runAsUser: restricted-v2 assigns the UID from the namespace
+            # range; a fixed 1001 is rejected by SCC admission
+            allowPrivilegeEscalation: false
+            # nginx writes pid/cache under /var/lib/nginx and /opt/app-root —
+            # readOnlyRootFilesystem would need a fan of emptyDir mounts
+            capabilities:
+              drop:
+                - ALL
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault

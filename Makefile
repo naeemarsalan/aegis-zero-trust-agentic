@@ -62,6 +62,10 @@ build-images: ## Build all service container images tagged $(REGISTRY)/<name>:de
 	done
 	@echo "Done building images."
 
+.PHONY: build-showroom
+build-showroom: ## Build the showroom docs-site image (repo-root context: needs mkdocs.yml + docs/site)
+	podman build -f services/showroom/Containerfile -t $(REGISTRY)/showroom:$(TAG) .
+
 # ─── convenience aliases ──────────────────────────────────────────────────────
 
 .PHONY: all

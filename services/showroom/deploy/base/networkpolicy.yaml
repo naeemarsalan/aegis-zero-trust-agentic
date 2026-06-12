@@ -1,0 +1,36 @@
+# Default-deny baseline: the docs site only needs ingress from the router.
+# No egress rules at all — a static site talks to nothing.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: showroom-deny-all
+  namespace: showroom
+spec:
+  podSelector:
+    matchLabels:
+      app: showroom
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow ingress from OpenShift Router only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: showroom-ingress-router
+  namespace: showroom
+spec:
+  podSelector:
+    matchLabels:
+      app: showroom
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8080
+          protocol: TCP

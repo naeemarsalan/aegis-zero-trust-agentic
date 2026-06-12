@@ -1,0 +1,89 @@
+# Keycloak (RHBK) — User Identity
+
+## Purpose
+
+Keycloak (Red Hat Build of Keycloak, RHBK) is the user-facing OIDC/OAuth2 identity broker for the `agentic` realm. It federates human operator logins, issues access tokens scoped to MCP tool permissions, and enforces the two-leg token exchange that `ext-proc-delegation` uses to turn an agent's SPIFFE JWT-SVID into a **user-scoped token** for a downstream MCP audience.
+
+- **RFC 7523 (JWT bearer grant):** agent SVID → Keycloak realm token. Uses a RHBK preview feature.
+- **RFC 8693 (OAuth 2.0 Token Exchange):** realm token → downstream-audience-scoped token. The downstream MCP server (`pfsense-mcp`) validates this token and sees the user — not the agent.
+
+---
+
+## Placement
+
+| Property | Value |
+|---|---|
+| Cluster | `anaeem` (SNO, OCP 4.20.11) |
+| Namespace | `keycloak` |
+| Operator channel | `stable-v26.4` (namespace-scoped; separate from the pre-existing `openshift-mta` RHBK instance) |
+| Route | `https://keycloak.apps.anaeem.na-launch.com` |
+| Realm | `agentic` |
+| Database | CNPG Postgres cluster in namespace `keycloak`, `storageClassName: local-path` |
+
+!!! warning "Do not touch the MTA instance"
+    A pre-existing RHBK instance (`mta-rhbk`) exists in namespace `openshift-mta` as an MTA dependency. This platform deploys its **own** separate Subscription + OperatorGroup + Keycloak CR in namespace `keycloak`. Never modify the MTA instance.
+
+---
+
+## Security posture
+
+- **SPIFFE ID:** `spiffe://anaeem.na-launch.com/ns/keycloak/sa/keycloak`
+- **Database credential:** Vault dynamic credential injected via Vault Agent Injector (tmpfs); never stored in a Kubernetes Secret or in etcd
+- **RFC 7523 preview:** agent service accounts authenticate with a SPIFFE JWT-SVID as client assertion; Keycloak validates against the SPIRE OIDC JWKS endpoint
+- **Fail-mode:** if CNPG cluster is unavailable, Keycloak refuses to start (fail-closed); if Vault Agent cannot inject DB credentials, pod does not reach Ready
+
+**NetworkPolicy:** ingress on 8443 from OCP router only; egress to CNPG on 5432 and to SPIRE OIDC endpoint on 443; deny all other ingress.
+
+---
+
+## Interfaces
+
+| Peer | Direction | Port / Protocol | Purpose |
+|---|---|---|---|
+| Browser / operators | inbound | 443 HTTPS (Route) | OAuth2 authorization code flow |
+| agentgateway | outbound from gateway | 443 HTTPS | Token introspection / JWKS endpoint |
+| Agent pods | inbound from agents | 443 HTTPS | RFC 7523 JWT assertion exchange |
+| CNPG Cluster | outbound | 5432 TCP | PostgreSQL session |
+| SPIRE OIDC | outbound | 443 HTTPS | JWKS for RFC 7523 client assertion validation |
+| Vault Agent sidecar | inbound (localhost) | 8200 HTTP | Dynamic DB credential delivery |
+
+---
+
+## The token exchange flow
+
+```
+Agent SVID (JWT)
+  → [RFC 7523 jwt-bearer, RHBK preview] →
+Keycloak realm token (user identity)
+  → [RFC 8693 token exchange] →
+Downstream-audience-scoped token (audience: pfsense-mcp)
+```
+
+The `mode` flag in `ext-proc-delegation` config selects between `standard` (full RFC 7523 + RFC 8693) and `legacy` (fallback path that avoids the preview leg). See [ADR 0003](../decisions/0003-keycloak-token-exchange-strategy.md).
+
+---
+
+## Verify
+
+```bash
+# 1. Check Keycloak pod and CNPG cluster are healthy
+oc get pods -n keycloak
+oc get cluster -n keycloak
+
+# 2. Confirm OIDC discovery for the agentic realm
+curl -s https://keycloak.apps.anaeem.na-launch.com/realms/agentic/.well-known/openid-configuration \
+  | jq '{issuer,jwks_uri,token_endpoint}'
+
+# 3. Verify DB credential is Vault-injected (tmpfs) and not a static Secret
+oc exec -n keycloak deploy/keycloak -- mount | grep tmpfs
+```
+
+---
+
+## Maturity flags
+
+!!! note "RFC 7523 is a preview feature"
+    RFC 7523 JWT client authentication for SPIFFE SVIDs is a **RHBK preview feature** in v26.4. Do not rely on it for production without Red Hat confirmation. The `legacy` mode in `ext-proc-delegation` is the documented escape hatch if this feature is unavailable or unstable on the deployed version.
+
+- RHBK `stable-v26.4` is production-supported
+- CNPG `stable-v1.29` is GA

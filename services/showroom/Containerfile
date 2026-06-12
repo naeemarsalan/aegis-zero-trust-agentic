@@ -1,0 +1,15 @@
+# showroom — static docs site (mkdocs-material) served by UBI nginx.
+# Build context is the REPO ROOT (needs mkdocs.yml + docs/site):
+#   podman build -f services/showroom/Containerfile -t oci.arsalan.io/nvidia-ida/showroom:dev .
+
+FROM registry.access.redhat.com/ubi9/python-312:latest AS build
+WORKDIR /opt/app-root/src
+COPY mkdocs.yml ./
+COPY docs/site/ docs/site/
+RUN pip install --no-cache-dir mkdocs-material && \
+    mkdocs build -d /tmp/site
+
+FROM registry.access.redhat.com/ubi9/nginx-124:latest
+COPY --from=build /tmp/site/ /opt/app-root/src/
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

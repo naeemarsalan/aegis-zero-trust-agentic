@@ -20,3 +20,4 @@ resources:
   - rhoai.yaml
   - observability.yaml
   - networkpolicies.yaml
+  - showroom.yaml

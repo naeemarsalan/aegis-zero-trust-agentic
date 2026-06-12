@@ -1,0 +1,17 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: showroom
+  namespace: showroom
+  labels:
+    app: showroom
+spec:
+  host: showroom.apps.anaeem.na-launch.com
+  to:
+    kind: Service
+    name: showroom
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

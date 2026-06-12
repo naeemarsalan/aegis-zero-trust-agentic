@@ -1,0 +1,93 @@
+# Kyverno — Policy Enforcement
+
+## Purpose
+
+Kyverno serves two distinct roles in this platform:
+
+1. **Kubernetes admission controller** — enforces baseline security invariants cluster-wide: no privileged containers, required SPIFFE labels, mandatory Kata runtimeClass in `agent-sandbox`, no `automountServiceAccountToken` on agent pods. `failurePolicy: Fail` on all webhooks — if Kyverno is down, new resource creation is blocked.
+
+2. **gRPC Authorization Server (ext_authz)** — provides real-time per-tool-call policy decisions to agentgateway via the Envoy ext_authz protocol. The `kyverno-authz-server` evaluates `ValidatingPolicy` CEL rules that say which tools a given agent SVID (or user) may call. This is the **allow/deny** layer in the gateway pipeline (ADR 0004).
+
+A third role — Kyverno `ClusterCleanupPolicy` — serves as the **backstop** for JIT grant revocation: if Vault fails to delete a `jit-<session>` SA/Role/RoleBinding, Kyverno will catch and delete it. This is defense-in-depth, not the primary revocation path.
+
+---
+
+## Placement
+
+| Property | Value |
+|---|---|
+| Cluster | `anaeem` (SNO, OCP 4.20.11) |
+| Namespace | `kyverno` |
+| Authz server service | `kyverno-authz-server.kyverno.svc.cluster.local:9081` (gRPC) |
+| Admission webhook | Cluster-scoped `ValidatingAdmissionWebhook` |
+| Deployment method | Upstream Helm chart (Red Hat does not ship a Kyverno operator) |
+
+---
+
+## Policy model
+
+MCP tool authorization policies are `ValidatingPolicy` resources in `platform/kyverno/authz/`. They are authored in CEL, stored in git, and reconciled by ArgoCD — **policy as code, reviewed via Gitea PR**.
+
+Example: the dangerous-tools gate uses the session-capability JWT to stateless-verify a UC2 approval before allowing a destructive tool call:
+
+```yaml
+- name: hasValidJitSession
+  expression: |
+    variables.jitSessionJwtString != "" &&
+    variables.decodedJitJwt.Valid &&
+    variables.decodedJitJwt.Claims["iss"] == "https://jit-approver.mcp-gateway.svc.cluster.local:8080" &&
+    variables.decodedJitJwt.Claims["tool_scope"].exists(s, s == variables.toolName)
+```
+
+!!! note "MCP CEL library"
+    Full tool-level RBAC with the `mcp` CEL library requires a Kyverno authz server build that includes the `mcp` CEL extension. The current PoC deployment uses CEL with standard JWT verification; the `mcp` library provides richer MCP-aware helpers when available.
+
+---
+
+## Security posture
+
+- **SPIFFE ID:** `spiffe://anaeem.na-launch.com/ns/kyverno/sa/kyverno-authz-server`
+- **mTLS to ext-proc-delegation:** SPIFFE X.509 SVIDs; no static certs
+- **Admission webhook TLS:** managed by Kyverno's built-in cert rotation (caBundle auto-injection)
+- **Fail-mode:** `failurePolicy: Fail` on all admission webhooks — if Kyverno crashes, new pod/resource creation is blocked cluster-wide (intentional fail-closed)
+- **Authz server fail-mode:** ext_proc returns DENY if authz server is unreachable (see agentgateway required-filter config)
+
+**NetworkPolicy:** ingress on 9081 from `mcp-gateway` namespace only; admission webhook receives calls from the API server; deny all other ingress.
+
+---
+
+## Interfaces
+
+| Peer | Direction | Port / Protocol | Purpose |
+|---|---|---|---|
+| Kubernetes API server | inbound | 9443 HTTPS | Admission webhook (ValidatingAdmissionWebhook) |
+| ext-proc-delegation | inbound | 9081 gRPC | MCP tool authorization decisions |
+| jit-approver JWKS | outbound | 8080 HTTP | Fetch JWKS to verify session-capability JWTs |
+| ArgoCD / kustomize | — | — | Policy CR reconciliation from git |
+
+---
+
+## Verify
+
+```bash
+# 1. Check Kyverno pods are Running
+oc get pods -n kyverno
+
+# 2. List ValidatingPolicies — confirm MCP tool authz policies are present
+oc get validatingpolicies | grep mcp
+
+# 3. Confirm authz server is healthy (from ext-proc-delegation pod)
+oc exec -n mcp-gateway deploy/ext-proc-delegation -- \
+  grpc_health_probe -addr=kyverno-authz-server.kyverno.svc.cluster.local:9081
+
+# 4. Run Kyverno CLI tests for all platform policies (requires kyverno CLI)
+make test-policies
+```
+
+---
+
+## Maturity flags
+
+- Kyverno 1.12+ with Authz Server (gRPC authorization API) is GA upstream
+- Red Hat does not ship Kyverno as an operator — deployed from upstream Helm chart or static manifests; not covered by Red Hat support
+- `failurePolicy: Fail` on the admission webhook will block the cluster if Kyverno crashes on SNO — ensure resource requests are appropriate for the SNO resource envelope and apply during a maintenance window

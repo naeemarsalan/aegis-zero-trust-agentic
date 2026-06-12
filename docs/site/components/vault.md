@@ -1,0 +1,110 @@
+# HashiCorp Vault — Secrets Engine
+
+## Purpose
+
+Vault is the secrets backbone for the platform. It stores and dynamically generates credentials so that no long-lived secret ever resides in etcd, git, or a pod's environment variables. It has two distinct roles in the platform:
+
+1. **UC1 — per-tool secrets:** `ext-proc-delegation` authenticates to Vault using its SPIFFE SVID and reads the pfSense API key for the duration of one request. The key lives only in ext-proc-delegation memory; it is never logged, never forwarded.
+
+2. **UC2 — JIT identity:** `jit-approver` calls the Vault Kubernetes secrets engine to mint an ephemeral SA + Role + RoleBinding. When the Vault lease expires, Vault deletes all three — **auto-revoke is structural**.
+
+---
+
+## Placement
+
+| Property | Value |
+|---|---|
+| Cluster | `anaeem` (SNO, OCP 4.20.11) |
+| Namespace | `vault` |
+| Deployment method | Helm chart v0.32.0 |
+| Topology | Single-replica Raft (SNO constraint) |
+| Route | `https://vault.apps.anaeem.na-launch.com` |
+| Raft storage | `storageClassName: local-path`, 10Gi minimum |
+
+!!! note "HA for production"
+    Single-replica Raft is the only viable topology on a Single-Node OpenShift cluster. For production, Vault HA (multi-replica Raft or Consul backend) is documented in the architecture but not applied in this PoC. A Vault outage is a hard stop on MCP traffic (fail-closed).
+
+---
+
+## Secret engines
+
+| Engine | Mount | Purpose |
+|---|---|---|
+| `kv-v2` | `secret/` | Per-tool API keys (e.g., pfSense API key at `secret/data/pfsense/api-key`); JIT session records at `secret/data/jit/<session>` |
+| `database` | `database/` | Dynamic PostgreSQL credentials for Keycloak CNPG cluster |
+| `pki` | `pki/` | Intermediate CA for mTLS between platform components |
+| `kubernetes` | `kubernetes/` | Kubernetes secrets engine — mints ephemeral SA + Role + RoleBinding for JIT (UC2) |
+| `auth/jwt` | `auth/jwt` | Authenticates SPIFFE JWT-SVIDs via SPIRE OIDC; maps SVID `sub` to Vault policy |
+
+---
+
+## SPIFFE authentication
+
+Every platform workload authenticates to Vault using its JWT-SVID and the `auth/jwt` mount:
+
+```
+SVID subject: spiffe://anaeem.na-launch.com/ns/<ns>/sa/<sa>
+    ↓  POST /v1/auth/jwt/login
+Vault validates JWKS from https://spire-oidc.apps.anaeem.na-launch.com
+    ↓
+Vault token with policy bound to that SVID's ns/sa
+```
+
+Policies are narrowly scoped — `ext-proc-delegation` can only read `secret/data/pfsense/*`; `jit-approver` can only write `kubernetes/creds/jit-scoped` and `secret/data/jit/*`; agent pods have no path to either.
+
+---
+
+## Vault Agent Injector
+
+The Vault Agent Injector delivers secrets to platform pods as **tmpfs volume mounts** via pod annotations. No Kubernetes Secret object is created. Secrets are delivered as files on a tmpfs filesystem; they vanish when the pod dies. If the injector cannot deliver credentials, the init container blocks and the pod never reaches Ready — fail-closed.
+
+---
+
+## Security posture
+
+- **SPIFFE ID:** `spiffe://anaeem.na-launch.com/ns/vault/sa/vault`
+- **Workload auth:** `auth/jwt` mount bound to SPIRE OIDC issuer
+- **No Vault Secrets Operator (VSO):** VSO creates Kubernetes Secret objects in etcd — this platform explicitly avoids it in favour of tmpfs injection
+- **Fail-mode:** if Vault is sealed or unreachable, Vault Agent Injector blocks the pod's init container — workload never starts without valid credentials
+
+**NetworkPolicy:** ingress on 8200 from `mcp-gateway`, `keycloak`, `agentic-mcp`, `agent-sandbox` namespaces; Route ingress for operator UI/CLI; deny all other ingress; egress to SPIRE OIDC on 443.
+
+---
+
+## Interfaces
+
+| Peer | Direction | Port / Protocol | Purpose |
+|---|---|---|---|
+| All platform workloads | inbound | 8200 HTTPS | Secret fetch / dynamic credential generation |
+| Vault Agent Injector | inbound (init container / sidecar) | 8200 HTTPS | Credential injection to pods |
+| SPIRE OIDC | outbound | 443 HTTPS | JWKS for `auth/jwt` mount validation |
+| CNPG Keycloak DB | outbound | 5432 TCP | Database secret engine lease management |
+| OCP Route | inbound from operators | 443 HTTPS | Vault UI and CLI access |
+
+---
+
+## Verify
+
+```bash
+# 1. Check Vault pod is Running and initialized/unsealed
+oc exec -n vault vault-0 -- vault status
+
+# 2. Confirm jwt auth mount is configured with SPIRE OIDC issuer
+oc exec -n vault vault-0 -- vault auth list | grep jwt
+
+# 3. Test that a workload SVID can authenticate (from a pod with SPIFFE CSI mount)
+SVID=$(cat /run/spire/sockets/svid.jwt)
+curl -s \
+  --request POST \
+  --data "{\"jwt\": \"$SVID\", \"role\": \"keycloak-db\"}" \
+  https://vault.apps.anaeem.na-launch.com/v1/auth/jwt/login | jq .auth.client_token
+```
+
+---
+
+## Maturity flags
+
+- Vault Helm chart 0.32.0 is GA; single-replica Raft is a supported topology
+- Vault Agent Injector annotation-based injection is stable
+- `auth/jwt` with OIDC discovery is a GA Vault feature (OSS)
+- OSS Vault has no namespaces and no native SPIFFE auth — `auth/jwt` bound to SPIRE OIDC + per-path policy isolation is the OSS-compatible design (noted in SWOT)
