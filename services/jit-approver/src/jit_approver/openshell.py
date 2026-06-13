@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 logger = logging.getLogger("jit_approver.openshell")
@@ -27,6 +29,103 @@ logger = logging.getLogger("jit_approver.openshell")
 # JIT-added network rules are namespaced with this prefix so revert is unambiguous
 # and a grant can never touch the baseline's own named rules.
 RULE_PREFIX = "jit-"
+
+# ---------------------------------------------------------------------------
+# OIDC token cache — module-level, protected by a lock so concurrent gRPC
+# calls don't each race to refresh.
+# ---------------------------------------------------------------------------
+_token_lock = threading.Lock()
+_cached_token: str | None = None
+_token_expires_at: float = 0.0   # epoch seconds; 0 == never fetched / expired
+
+
+def _auth_metadata() -> list[tuple[str, str]]:
+    """Return gRPC call metadata carrying an OIDC Bearer token, or [] when OIDC
+    is not configured (the gateway is operating in unauthenticated mode).
+
+    Token acquisition is fail-soft: any fetch error produces [] so that callers
+    can still attempt the RPC (the gateway will reject it with UNAUTHENTICATED if
+    a token really was required — we log a warning either way).
+
+    Environment variables consumed:
+      OPENSHELL_OIDC_TOKEN_URL        — full Keycloak token endpoint URL
+      OPENSHELL_OIDC_CLIENT_ID        — defaults to "openshell-admin"
+      OPENSHELL_OIDC_CLIENT_SECRET    — client secret as a plain string
+      OPENSHELL_OIDC_CLIENT_SECRET_FILE — path to a file containing the secret
+                                          (preferred; takes priority over the env var)
+      OPENSHELL_OIDC_CA               — CA bundle for TLS verification of the token
+                                        endpoint (default "/etc/openshell-oidc-ca/ca.crt")
+      OPENSHELL_OIDC_INSECURE         — set "true" to skip TLS verification
+    """
+    global _cached_token, _token_expires_at
+
+    token_url = os.environ.get("OPENSHELL_OIDC_TOKEN_URL", "").strip()
+    if not token_url:
+        return []
+
+    # Resolve client secret: file path wins over plain env var.
+    secret_file = os.environ.get("OPENSHELL_OIDC_CLIENT_SECRET_FILE", "").strip()
+    if secret_file:
+        try:
+            client_secret = open(secret_file).read().strip()
+        except OSError as exc:
+            logger.warning(
+                "openshell_oidc_secret_file_unreadable",
+                extra={"path": secret_file, "error": str(exc)},
+            )
+            return []
+    else:
+        client_secret = os.environ.get("OPENSHELL_OIDC_CLIENT_SECRET", "").strip()
+
+    if not client_secret:
+        return []
+
+    client_id = os.environ.get("OPENSHELL_OIDC_CLIENT_ID", "openshell-admin").strip()
+
+    # Fast path — return cached token if it is still valid (>60 s margin).
+    with _token_lock:
+        if _cached_token and time.monotonic() < (_token_expires_at - 60.0):
+            return [("authorization", f"Bearer {_cached_token}")]
+
+        # Lazy import: keeps module import cheap when OIDC is not used.
+        import httpx  # noqa: PLC0415
+
+        insecure = os.environ.get("OPENSHELL_OIDC_INSECURE", "").strip().lower() == "true"
+        if insecure:
+            verify: bool | str = False
+        else:
+            ca_path = os.environ.get(
+                "OPENSHELL_OIDC_CA", "/etc/openshell-oidc-ca/ca.crt"
+            ).strip()
+            verify = ca_path if os.path.exists(ca_path) else True
+
+        try:
+            with httpx.Client(verify=verify, timeout=10) as http:
+                resp = http.post(
+                    token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                    },
+                )
+            resp.raise_for_status()
+            payload = resp.json()
+            token = payload["access_token"]
+            expires_in = int(payload.get("expires_in", 300))
+            _cached_token = token
+            _token_expires_at = time.monotonic() + expires_in
+            logger.debug(
+                "openshell_oidc_token_refreshed",
+                extra={"client_id": client_id, "expires_in": expires_in},
+            )
+            return [("authorization", f"Bearer {token}")]
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "openshell_oidc_token_fetch_failed",
+                extra={"token_url": token_url, "error": str(exc)},
+            )
+            return []
 
 
 def _config() -> dict[str, str] | None:
@@ -102,7 +201,7 @@ def widen_network(session_id: str, sandbox: str, endpoints: list[dict[str, Any]]
     req = ph.UpdateConfigRequest(name=sandbox, merge_operations=[op])
     stub, channel = _stub_and_channel()
     try:
-        stub.UpdateConfig(req, timeout=30)
+        stub.UpdateConfig(req, timeout=30, metadata=_auth_metadata())
         logger.info("openshell_widen_ok", extra={
             "session_id": session_id, "sandbox": sandbox, "rule": rule_name,
             "endpoints": [f"{e['host']}:{e['port']}" for e in endpoints]})
@@ -167,7 +266,7 @@ def create_sandbox(name: str, policy_doc: dict[str, Any], image: str = "",
     spec = ph.SandboxSpec(policy=_yaml_to_policy(policy_doc), template=tmpl)
     stub, channel = _stub_and_channel()
     try:
-        resp = stub.CreateSandbox(ph.CreateSandboxRequest(name=name, spec=spec), timeout=120)
+        resp = stub.CreateSandbox(ph.CreateSandboxRequest(name=name, spec=spec), timeout=120, metadata=_auth_metadata())
         logger.info("openshell_sandbox_created", extra={"name": name})
         return resp
     finally:
@@ -183,7 +282,7 @@ def network_rule_names(sandbox: str) -> list[str]:
 
     stub, channel = _stub_and_channel()
     try:
-        resp = stub.GetSandbox(ph.GetSandboxRequest(name=sandbox), timeout=15)
+        resp = stub.GetSandbox(ph.GetSandboxRequest(name=sandbox), timeout=15, metadata=_auth_metadata())
         return list(resp.sandbox.spec.policy.network_policies.keys())
     finally:
         channel.close()
@@ -202,7 +301,7 @@ def revert_network(session_id: str, sandbox: str) -> bool:
     req = ph.UpdateConfigRequest(name=sandbox, merge_operations=[op])
     stub, channel = _stub_and_channel()
     try:
-        stub.UpdateConfig(req, timeout=30)
+        stub.UpdateConfig(req, timeout=30, metadata=_auth_metadata())
         logger.info("openshell_revert_ok", extra={
             "session_id": session_id, "sandbox": sandbox, "rule": rule_name})
         return True
