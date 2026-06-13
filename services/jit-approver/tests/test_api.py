@@ -644,8 +644,13 @@ class TestIssueFromReviewedArtifact:
         # broad in-memory request.
         assert role_create.called
         sent = json.loads(role_create.calls.last.request.content)
-        rules = sent["generated_role_rules"]
-        assert rules == [{"apiGroups": [""], "verbs": ["get"], "resources": ["pods"]}]
+        # vault.py sends generated_role_rules as a JSON STRING (not a raw array)
+        # because Vault's kubernetes secrets engine requires the field to be a
+        # JSON-encoded string wrapping {"rules": [...]}.  Decode it before
+        # asserting the rule content so we validate the NARROWED scope was used.
+        rules_str = sent["generated_role_rules"]
+        rules_obj = json.loads(rules_str)
+        assert rules_obj["rules"] == [{"apiGroups": [""], "verbs": ["get"], "resources": ["pods"]}]
         assert sent["allowed_kubernetes_namespaces"] == ["agent-sandbox"]
         assert sent["token_max_ttl"] == "10m"
 

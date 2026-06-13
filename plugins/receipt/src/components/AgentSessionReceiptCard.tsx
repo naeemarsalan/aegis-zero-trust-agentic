@@ -236,35 +236,47 @@ export const AgentSessionReceiptCardComponent = () => {
   // credentials: forward.
   const fetchApi = useApi(fetchApiRef);
 
-  // The panel requires the session_id to query. In the current data model
-  // the session_id is not stored in any Sandbox CR annotation or entity field.
-  // TODO: once TODO-B2 is implemented (GET /requests?sandbox=<name>), look up
-  // the session_id from that list endpoint. For now, read from a hypothetical
-  // annotation that the agent could set on the Sandbox CR.
-  const sessionId: string | null =
+  // Session discovery: prefer an explicit Sandbox-CR annotation, otherwise look
+  // the session up by sandbox name via the live GET /requests?sandbox= list
+  // endpoint and use the most recent one.
+  const annotationSessionId: string | null =
     entity.metadata.annotations?.['nvidia-ida/jit-session-id'] ?? null;
+  const sandboxName = entity.metadata.name;
 
   const [status, setStatus] = useState<SessionStatus | null>(null);
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The session id actually used (annotation hint, or discovered via the list
+  // endpoint) — exposed at component scope so the render guards can use it.
+  const [resolvedSessionId, setResolvedSessionId] = useState<string | null>(annotationSessionId);
 
   useEffect(() => {
-    if (!sessionId) {
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
 
     const fetchData = async () => {
       try {
         const proxyBase = await discoveryApi.getBaseUrl('proxy');
 
+        // 0. Resolve the session id — annotation hint, else discover by sandbox.
+        let sessionId = annotationSessionId;
+        if (!sessionId) {
+          const listResp = await fetchApi.fetch(
+            `${proxyBase}/jit-approver/requests?sandbox=${encodeURIComponent(sandboxName)}`,
+          );
+          if (listResp.ok) {
+            const list: SessionStatus[] = await listResp.json();
+            // most recent session for this sandbox (last wins)
+            sessionId = list.length ? list[list.length - 1].id : null;
+          }
+        }
+        if (!cancelled) setResolvedSessionId(sessionId);
+        if (!sessionId) {
+          if (!cancelled) setLoading(false);
+          return;
+        }
+
         // 1. GET /requests/{id}/status — REAL endpoint.
-        //    fetchApi.fetch() attaches the Backstage user JWT so the proxy
-        //    (credentials: forward) forwards it upstream. A raw fetch() here
-        //    would return 401 once the proxy is wired.
         const statusResp = await fetchApi.fetch(
           `${proxyBase}/jit-approver/requests/${sessionId}/status`,
         );
@@ -273,9 +285,8 @@ export const AgentSessionReceiptCardComponent = () => {
         }
         const statusData: SessionStatus | null = statusResp.ok ? await statusResp.json() : null;
 
-        // 2. GET /requests/{id}/summary — TODO-C1: does not exist yet.
-        //    Returns 404 until jit-approver exposes this endpoint.
-        //    Also uses fetchApi.fetch() for consistency.
+        // 2. GET /requests/{id}/summary — REAL endpoint (the agent's post-session
+        //    summary; 404 until the agent has posted one).
         let summaryData: SessionSummary | null = null;
         try {
           const summaryResp = await fetchApi.fetch(
@@ -284,7 +295,7 @@ export const AgentSessionReceiptCardComponent = () => {
           if (summaryResp.ok) {
             summaryData = await summaryResp.json();
           }
-          // 404 is expected until TODO-C1 is implemented — silently ignore.
+          // 404 means the agent has not posted a summary yet — expected.
         } catch {
           // best-effort; summary is optional
         }
@@ -304,18 +315,18 @@ export const AgentSessionReceiptCardComponent = () => {
 
     fetchData();
     return () => { cancelled = true; };
-  }, [sessionId, discoveryApi, fetchApi]);
+  }, [annotationSessionId, sandboxName, discoveryApi, fetchApi]);
 
   if (loading) {
     return <InfoCard title="Session Receipt"><em>Loading…</em></InfoCard>;
   }
 
-  if (!sessionId) {
+  if (!resolvedSessionId) {
     return (
       <InfoCard title="Session Receipt">
         <EmptyState
-          title="No JIT session recorded"
-          description="The Sandbox CR has no nvidia-ida/jit-session-id annotation. The receipt card requires TODO-B2 (GET /requests?sandbox=<name>) to look up the session without a hardcoded ID."
+          title="No JIT session for this sandbox"
+          description="No grant session was found for this sandbox (looked up via GET /requests?sandbox=<name>). Sessions appear here once a JIT escalation has been requested."
           missing="data"
         />
       </InfoCard>
@@ -351,7 +362,7 @@ export const AgentSessionReceiptCardComponent = () => {
         )}
       </section>
 
-      {/* Allowed actions from agent-posted summary (TODO-C1) */}
+      {/* Allowed actions from the agent-posted summary (GET /requests/{id}/summary) */}
       <section style={{ marginTop: 12 }}>
         <strong>Actions taken</strong>
         {summary ? (
@@ -363,9 +374,8 @@ export const AgentSessionReceiptCardComponent = () => {
             </ul>
           ) : <p style={{ color: '#6b7280', fontSize: '0.85rem' }}>None recorded</p>
         ) : (
-          <p style={{ color: '#f59e0b', fontSize: '0.85rem' }}>
-            Not available yet — requires TODO-C1:
-            GET /requests/{sessionId}/summary on jit-approver.
+          <p style={{ color: '#6b7280', fontSize: '0.85rem' }}>
+            The agent has not posted a session summary yet.
           </p>
         )}
       </section>

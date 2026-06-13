@@ -273,8 +273,6 @@ export const JitApprovalsPanelCardComponent = () => {
 
   const sandboxName = entity.metadata.name;
 
-  // TODO-B2: replace stub with real fetch to GET /api/proxy/jit-approver/requests?sandbox=<name>
-  // once that endpoint is added to services/jit-approver/src/jit_approver/api.py.
   const [sessions, setSessions] = useState<SessionStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -284,21 +282,21 @@ export const JitApprovalsPanelCardComponent = () => {
 
     const fetchSessions = async () => {
       try {
-        // TODO-B2: replace with real endpoint once api.py adds:
-        //   GET /requests?sandbox=<sandboxName>
-        // When wiring, use fetchApi.fetch() (NOT the raw browser fetch) so the
-        // Backstage user JWT is forwarded through the proxy:
-        //   const proxyBase = await discoveryApi.getBaseUrl('proxy');
-        //   const resp = await fetchApi.fetch(
-        //     `${proxyBase}/jit-approver/requests?sandbox=${sandboxName}`,
-        //   );
-        //   if (resp.ok) setSessions(await resp.json());
-        //
-        // Stub: resolve the proxyBase so discoveryApi errors are surfaced, but
-        // return empty sessions until TODO-B2 endpoint is implemented.
-        await discoveryApi.getBaseUrl('proxy');
+        // Live: jit-approver exposes GET /requests?sandbox=<name> (credential-free
+        // list of this sandbox's grant sessions). Reached through the RHDH
+        // /jit-approver proxy; fetchApi.fetch() attaches the Backstage user JWT so
+        // credentials: forward can relay the user identity.
+        const proxyBase = await discoveryApi.getBaseUrl('proxy');
+        const resp = await fetchApi.fetch(
+          `${proxyBase}/jit-approver/requests?sandbox=${encodeURIComponent(sandboxName)}`,
+        );
+        if (!resp.ok) {
+          throw new Error(`jit-approver returned ${resp.status}`);
+        }
+        const data: SessionStatus[] = await resp.json();
         if (!cancelled) {
-          setSessions([]);
+          setSessions(data);
+          setError(null);
           setLoading(false);
         }
       } catch (e: unknown) {
