@@ -55,6 +55,7 @@ func okVerifier(sub string) *stubVerifier {
 		Sub:               sub,
 		PreferredUsername: "alice",
 		Issuer:            "https://kc/realms/agentic",
+		Groups:            []string{"mcp-admins", "mcp-users"},
 	}}
 }
 
@@ -74,6 +75,11 @@ func testConfig() *config.Config {
 		VaultJWTRole:         "ext-proc-delegation",
 		VaultJWTAudience:     "vault",
 		ToolSecretPathPrefix: "secret/data/mcp-tools/",
+		ReadOnlyToolPrefixes:  []string{"get_", "list_", "search_"},
+		DangerousToolPrefixes: []string{"add_", "set_", "delete_", "create_", "update_", "remove_"},
+		RestrictedGroup:       "restricted",
+		AdminGroup:            "mcp-admins",
+		UserGroup:             "mcp-users",
 		FailMode:             "closed",
 		MaxBodyBytes:         262144,
 		GRPCAddr:             ":9000",
@@ -85,7 +91,7 @@ func testConfig() *config.Config {
 func startServer(t *testing.T, cfg *config.Config, kc extproc.Exchanger, v extproc.VaultClient, ver *stubVerifier) extprocv3.ExternalProcessorClient {
 	t.Helper()
 	srv := grpc.NewServer()
-	extprocv3.RegisterExternalProcessorServer(srv, extproc.NewServer(cfg, kc, v, ver))
+	extprocv3.RegisterExternalProcessorServer(srv, extproc.NewServer(cfg, kc, v, ver, nil))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
