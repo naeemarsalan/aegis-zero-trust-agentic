@@ -497,3 +497,14 @@ def test_template_shaped_body_binds():
     assert b.ttl_minutes == 120
     assert b.scope is LaunchScope.read_write
     assert b.confirmed is True
+
+
+def test_sanitize_label_value():
+    """Backstage entity refs / emails must become valid k8s label values
+    (the gateway rejects ':' and '/' with INVALID_ARGUMENT)."""
+    from sandbox_launcher.openshell import _sanitize_label_value as s
+    assert s("user:default/arsalan") == "user-default-arsalan"
+    assert s("a@b.com") == "a-b.com"
+    assert s("::weird//") == "weird"
+    assert s("") == "unknown"
+    assert len(s("x" * 100)) <= 63

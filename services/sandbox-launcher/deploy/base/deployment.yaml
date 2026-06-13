@@ -39,16 +39,6 @@ spec:
       # needs it for Kubernetes auth.
       automountServiceAccountToken: true
       volumes:
-        # SPIFFE CSI volume — injects SVID at /var/run/secrets/spiffe.io/
-        - name: spiffe-csi
-          csi:
-            driver: csi.spiffe.io
-            readOnly: true
-        # Shared tmpfs where the svid-writer sidecar keeps a fresh JWT-SVID
-        # (audience=vault) that the app reads to authenticate the Vault JWT auth path.
-        - name: svid-jwt
-          emptyDir:
-            medium: Memory
         # TLS client certificate for mTLS gRPC calls to the OpenShell gateway.
         # Secret is created out-of-band (ExternalSecret or manual) in mcp-gateway.
         - name: openshell-client-tls
@@ -75,16 +65,6 @@ spec:
               name: http
               protocol: TCP
           env:
-            - name: VAULT_ADDR
-              value: "https://vault.apps.anaeem.na-launch.com"
-            - name: VAULT_JWT_ROLE
-              value: "sandbox-launcher"
-            - name: VAULT_JWT_AUTH_PATH
-              value: "jwt"
-            - name: VAULT_SKIP_VERIFY
-              value: "true"  # Vault route uses the router wildcard cert (PoC)
-            - name: SVID_JWT_PATH
-              value: "/svid/svid.jwt"
             - name: OPENSHELL_GATEWAY_ADDR
               value: "openshell.openshell.svc:8080"
             - name: OPENSHELL_CLIENT_TLS_DIR
@@ -92,9 +72,13 @@ spec:
             # Launcher's OWN OIDC client-credentials for the OpenShell gateway
             # (LAUNCHER_OIDC_* — distinct from caller identity; no-credential-passing invariant).
             - name: LAUNCHER_OIDC_TOKEN_URL
-              value: "http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token"
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
             - name: LAUNCHER_OIDC_CLIENT_ID
               value: "sandbox-launcher"
+            # Route uses the ingress wildcard cert; skip verify (PoC, matches ext-proc KEYCLOAK_TLS_INSECURE).
+            # Token MUST be minted via the route so iss matches the gateway-configured issuer (keycloak.apps...).
+            - name: LAUNCHER_OIDC_INSECURE
+              value: "true"
             # File path wins over LAUNCHER_OIDC_CLIENT_SECRET (Vault Agent Injector pattern).
             - name: LAUNCHER_OIDC_CLIENT_SECRET_FILE
               value: "/vault/secrets/launcher-oidc-secret"
@@ -122,12 +106,6 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
           volumeMounts:
-            - name: spiffe-csi
-              mountPath: /var/run/secrets/spiffe.io
-              readOnly: true
-            - name: svid-jwt
-              mountPath: /svid
-              readOnly: true
             - name: openshell-client-tls
               mountPath: /etc/openshell-client-tls
               readOnly: true
@@ -162,40 +140,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-
-        # Sidecar: keeps a fresh JWT-SVID (audience=vault) at /svid/svid.jwt so the
-        # launcher app can authenticate the Vault JWT auth path by identity rather than
-        # a static token. Same pattern as jit-approver.
-        - name: svid-writer
-          image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
-          imagePullPolicy: Always
-          env:
-            - name: WRITE_SVID_PATH
-              value: "/svid/svid.jwt"
-            - name: SPIFFE_ENDPOINT_SOCKET
-              value: "unix:///var/run/secrets/spiffe.io/spire-agent.sock"
-            - name: VAULT_JWT_AUDIENCE
-              value: "vault"
-          volumeMounts:
-            - name: spiffe-csi
-              mountPath: /var/run/secrets/spiffe.io
-              readOnly: true
-            - name: svid-jwt
-              mountPath: /svid
-          securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
-          resources:
-            requests:
-              cpu: 10m
-              memory: 32Mi
-            limits:
-              cpu: 100m
-              memory: 64Mi
 
       securityContext:
         seccompProfile:

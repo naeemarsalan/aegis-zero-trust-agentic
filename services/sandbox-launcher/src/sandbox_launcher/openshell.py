@@ -250,6 +250,21 @@ def _load_baseline_policy() -> dict[str, Any]:
     )
 
 
+def _sanitize_label_value(value: str) -> str:
+    """Coerce an arbitrary string into a valid Kubernetes label value.
+
+    Label values must be empty or match [A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?
+    and be <=63 chars. Any other char (e.g. ':' '/' '@' in a Backstage entity ref
+    or email) becomes '-'; leading/trailing non-alphanumerics are trimmed.
+    """
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", value or "")[:63]
+    cleaned = re.sub(r"^[^A-Za-z0-9]+", "", cleaned)
+    cleaned = re.sub(r"[^A-Za-z0-9]+$", "", cleaned)
+    return cleaned or "unknown"
+
+
 def phase_name(phase_int: int) -> str:
     """Map a SandboxPhase enum int to its display name, derived from the proto.
 
@@ -314,16 +329,20 @@ def create_sandbox(
 
     spec = ph.SandboxSpec(policy=_yaml_to_policy(baseline_doc), template=tmpl)
 
-    # Owner labels — user identity goes ONLY into labels, not into authz decisions
+    # Owner labels — user identity goes ONLY into labels, not into authz decisions.
+    # A Backstage entity ref like "user:default/arsalan" contains ':' and '/' which
+    # are illegal in a label VALUE (must be alphanumeric / '-' / '_' / '.', and begin
+    # and end with an alphanumeric, <=63 chars). Sanitise so the gateway accepts it
+    # while still recording who launched the sandbox.
     labels: dict[str, str] = {
-        "nvidia-ida/owner": owner_entity_ref,
+        "nvidia-ida/owner": _sanitize_label_value(owner_entity_ref),
         "nvidia-ida/purpose": "packaged-agent",
         "backstage.io/kubernetes-id": "sandbox-launcher",
     }
     if owner_email:
-        labels["nvidia-ida/owner-email"] = owner_email
+        labels["nvidia-ida/owner-email"] = _sanitize_label_value(owner_email)
     if extra_labels:
-        labels.update(extra_labels)
+        labels.update({k: _sanitize_label_value(v) for k, v in extra_labels.items()})
 
     req = ph.CreateSandboxRequest(name=name, spec=spec, labels=labels)
 

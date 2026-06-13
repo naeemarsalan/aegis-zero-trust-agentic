@@ -217,3 +217,32 @@ spec:
       ports:
         - port: 6443
           protocol: TCP
+---
+# Egress to the Keycloak Route (keycloak.apps.anaeem.na-launch.com:443).
+# The launcher MUST mint its OIDC client-credentials token via the ROUTE so the
+# token's iss == the gateway-configured issuer (https://keycloak.apps.../realms/
+# agentic). The in-cluster keycloak-service derives iss=<svc>.svc -> the gateway
+# rejects it (InvalidIssuer). The OpenShift router is hostNetwork, so a
+# namespaceSelector can NEVER match it (same SNO lesson as vault/ext-proc) — an
+# ipBlock to the router node IP is required. Mirrors ext-proc-delegation-egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-keycloak-route
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.2.52/32   # SNO router/node IP that fronts *.apps.anaeem routes
+      ports:
+        - port: 443
+          protocol: TCP

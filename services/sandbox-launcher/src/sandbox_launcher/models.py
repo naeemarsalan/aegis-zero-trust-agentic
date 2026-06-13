@@ -13,7 +13,7 @@ Request validation enforces:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, List
+from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -58,8 +58,10 @@ class LaunchRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    goal: Annotated[str, Field(min_length=1, max_length=500)] = Field(
+    goal: str = Field(
         ...,
+        min_length=1,
+        max_length=500,
         description="Natural-language goal for the packaged agent (max 500 chars)",
     )
     capabilities: List[str] = Field(
@@ -91,8 +93,10 @@ class LaunchRequest(BaseModel):
         description="Must be exactly true — prevents accidental scaffolder dry-runs from launching sandboxes. "
         "The template always sends it (templated from the _confirm review step).",
     )
-    ttl_minutes: Annotated[int, Field(ge=5, le=480)] = Field(
+    ttl_minutes: int = Field(
         default=60,
+        ge=5,
+        le=480,
         alias="ttlMinutes",
         description="Sandbox lifetime in minutes (5–480). Sent by the template as 'ttlMinutes'.",
     )

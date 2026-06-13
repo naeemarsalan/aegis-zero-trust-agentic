@@ -10,16 +10,6 @@ spec:
       containers:
         - name: sandbox-launcher
           env:
-            - name: VAULT_ADDR
-              value: "https://vault.apps.anaeem.na-launch.com"
-            - name: VAULT_JWT_ROLE
-              value: "sandbox-launcher"
-            - name: VAULT_JWT_AUTH_PATH
-              value: "jwt"
-            - name: VAULT_SKIP_VERIFY
-              value: "true"
-            - name: SVID_JWT_PATH
-              value: "/svid/svid.jwt"
             # OpenShell gateway mTLS gRPC address and cert dir
             - name: OPENSHELL_GATEWAY_ADDR
               value: "openshell.openshell.svc:8080"
@@ -28,9 +18,13 @@ spec:
             # Launcher's OWN OIDC client-credentials for the OpenShell gateway.
             # NEVER the caller's/user's token — see no-credential-passing invariant.
             - name: LAUNCHER_OIDC_TOKEN_URL
-              value: "http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token"
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
             - name: LAUNCHER_OIDC_CLIENT_ID
               value: "sandbox-launcher"
+            # Route uses the ingress wildcard cert; skip verify (PoC, matches ext-proc KEYCLOAK_TLS_INSECURE).
+            # Token MUST be minted via the route so iss matches the gateway-configured issuer (keycloak.apps...).
+            - name: LAUNCHER_OIDC_INSECURE
+              value: "true"
             # Secret injected by Vault agent at /vault/secrets/launcher-oidc-secret.
             # File path wins over the plain env var (openshell.py pattern).
             - name: LAUNCHER_OIDC_CLIENT_SECRET_FILE
