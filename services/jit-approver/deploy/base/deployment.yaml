@@ -94,6 +94,8 @@ spec:
               value: "jit-approver"
             - name: VAULT_JWT_AUTH_PATH
               value: "jwt"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"  # Vault route uses the router wildcard cert (PoC)
             - name: JIT_ALLOWED_NAMESPACES
               value: "agent-sandbox,agentic-mcp"
             # File paths for secrets injected by Vault agent

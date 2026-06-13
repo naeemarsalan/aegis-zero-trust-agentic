@@ -283,7 +283,16 @@ async def issue_credentials(
     if http is not None:
         await _run(http)
     else:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Vault's public route is served by the OpenShift router's wildcard cert,
+        # which jit-approver's trust store does not include. VAULT_SKIP_VERIFY=true
+        # (PoC) or VAULT_CACERT=<path> selects how the channel is trusted; the SVID
+        # login is the security boundary, not the channel cert. Matches ext-proc.
+        verify: bool | str = True
+        if os.environ.get("VAULT_SKIP_VERIFY", "").lower() == "true":
+            verify = False
+        elif os.environ.get("VAULT_CACERT"):
+            verify = os.environ["VAULT_CACERT"]
+        async with httpx.AsyncClient(timeout=30.0, verify=verify) as client:
             await _run(client)
 
 
