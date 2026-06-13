@@ -246,3 +246,30 @@ spec:
       ports:
         - port: 443
           protocol: TCP
+---
+# Allow ingress on :8080 from the RHDH (developer-hub) namespace.
+# The RHDH scaffolder proxy (/api/proxy/mcp-launcher) calls the launcher in-cluster
+# at http://sandbox-launcher.mcp-gateway.svc:8080 — a pod-to-pod, cross-namespace
+# path that the default-deny policy would otherwise block.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-ingress-rhdh
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: rhdh
+      ports:
+        - port: 8080
+          protocol: TCP
