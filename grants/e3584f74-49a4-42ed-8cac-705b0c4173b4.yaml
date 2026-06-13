@@ -1,0 +1,31 @@
+apiVersion: jit.anaeem.na-launch.com/v1alpha1
+kind: JITGrant
+metadata:
+  name: jit-e3584f74-49a4-42ed-8cac-705b0c4173b4
+  creationTimestamp: '2026-06-13T01:23:11.208482+00:00'
+spec:
+  sessionId: e3584f74-49a4-42ed-8cac-705b0c4173b4
+  requesterSub: arsalan
+  agentSpiffeId: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/openshell-agent
+  justification: 'UC2 full transport end to end: ephemeral Vault creds + session JWT
+    via merged PR.'
+  requestedScope:
+    namespace: agent-sandbox
+    durationMinutes: 15
+    rules:
+    - verbs:
+      - get
+      - list
+      resources:
+      - pods
+  vaultRoleCaps:
+    role: jit-<sessionId> (ephemeral, created per approval)
+    allowedNamespaces:
+    - agent-sandbox
+    ttlMax: 15m
+    permissionsGranted: single-namespace SA token via kubernetes/creds/jit-<sessionId>;
+      generated_role_rules == the reviewed verbs/resources above
+    credentialDelivery: "stored in Vault KV secret/data/jit/<sessionId>; agent reads\
+      \ via injector template \u2014 never returned over HTTP"
+    cleanupBackstop: the expiry reaper MUST delete kubernetes/roles/jit-<sessionId>
+      in addition to revoking the lease and the KV entry
