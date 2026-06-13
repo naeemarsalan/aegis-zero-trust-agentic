@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: openshell-agent-kata
+  namespace: agent-sandbox
+  labels: {app: openshell-agent-kata}
+spec:
+  runtimeClassName: kata
+  shareProcessNamespace: true
+  serviceAccountName: openshell-agent
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  initContainers:
+    - name: nested-spire-agent
+      image: registry.redhat.io/zero-trust-workload-identity-manager/spiffe-spire-agent-rhel9@sha256:7a5f16d95fa266ba3469ee243c52353d9598d8071bfbddadeadef547f7c3ac01
+      restartPolicy: Always
+      command: ["/spire-agent","run","-config","/run/spire/config/agent.conf","-joinToken","__JOIN_TOKEN__"]
+      securityContext:
+        runAsUser: 1001020000
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: spire-config, mountPath: /run/spire/config, readOnly: true}
+        - {name: spire-bundle, mountPath: /run/spire/bundle, readOnly: true}
+        - {name: spire-sockets, mountPath: /run/spire/sockets}
+        - {name: spire-data, mountPath: /run/spire/data}
+    - name: svid-vault-fetch
+      image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
+      command: ["/svid-vault-fetch"]
+      env:
+        - {name: SPIFFE_ENDPOINT_SOCKET, value: "unix:///run/spire/sockets/agent.sock"}
+        - {name: VAULT_ADDR, value: "https://vault.apps.anaeem.na-launch.com"}
+        - {name: VAULT_JWT_ROLE, value: "openshell-agent"}
+        - {name: VAULT_SECRET_PATH, value: "secret/data/agent-sandbox/inference"}
+        - {name: OUTPUT_DIR, value: "/vault/secrets"}
+      securityContext:
+        runAsUser: 1001020000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: spire-sockets, mountPath: /run/spire/sockets, readOnly: true}
+        - {name: vault-secrets, mountPath: /vault/secrets}
+  containers:
+    - name: agent
+      image: registry.redhat.io/ubi9/ubi-minimal:latest
+      command: ["/bin/sh","-c"]
+      args:
+        - |
+          echo "=== KATA+SVID PROOF ===";
+          echo "guest kernel: $(uname -r)";
+          echo "inference endpoint: $(cat /vault/secrets/inference.endpoint 2>/dev/null)";
+          echo "inference model:    $(cat /vault/secrets/inference.model 2>/dev/null)";
+          echo "api_key:            $([ -s /vault/secrets/inference.api_key ] && echo present || echo MISSING)";
+          sleep 3600
+      securityContext:
+        runAsUser: 1001020000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: vault-secrets, mountPath: /vault/secrets, readOnly: true}
+  volumes:
+    - {name: spire-config, configMap: {name: nested-spire-agent-config}}
+    - {name: spire-bundle, configMap: {name: spire-bundle}}
+    - {name: spire-sockets, emptyDir: {medium: Memory}}
+    - {name: spire-data, emptyDir: {medium: Memory}}
+    - {name: vault-secrets, emptyDir: {medium: Memory}}

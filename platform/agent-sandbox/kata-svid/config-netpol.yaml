@@ -1,0 +1,59 @@
+---
+# Config for the nested SPIRE agent that runs inside the Kata micro-VM.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nested-spire-agent-config
+  namespace: agent-sandbox
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire/data"
+      log_level = "DEBUG"
+      server_address = "spire-server.zero-trust-workload-identity-manager"
+      server_port = "443"
+      socket_path = "/run/spire/sockets/agent.sock"
+      trust_bundle_path = "/run/spire/bundle/bundle.crt"
+      trust_domain = "anaeem.na-launch.com"
+    }
+    plugins {
+      KeyManager "memory" {}
+      NodeAttestor "join_token" {}
+      WorkloadAttestor "unix" {}
+    }
+---
+# The nested agent reaches the SPIRE server over the pod network. NB: the
+# spire-server Service port 443 DNATs to containerPort 8081 — NetworkPolicies
+# match the POD port after DNAT, so 8081 must be allowed (not 443).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-spire-server-nested
+  namespace: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: openshell-agent-kata
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: zero-trust-workload-identity-manager
+      ports:
+        - {port: 443, protocol: TCP}
+        - {port: 8081, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - {port: 8200, protocol: TCP}
+        - {port: 443, protocol: TCP}
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0}
+      ports:
+        - {port: 443, protocol: TCP}
+    - ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
