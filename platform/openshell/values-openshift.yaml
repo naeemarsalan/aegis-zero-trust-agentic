@@ -9,3 +9,33 @@ securityContext:
 sandbox:
   sandboxNamespace: openshell
   runtimeClassName: kata   # sandboxes can run as Kata micro-VMs
+
+# --- Gateway authentication (OIDC + mTLS) -----------------------------------
+# The management gRPC API is secured with OIDC bearer auth (on top of mTLS).
+# allowUnauthenticatedUsers MUST stay false in any non-dev deployment — with it
+# true the gateway accepts unauthenticated management RPCs (CreateSandbox,
+# UpdateConfig, …), bypassing OIDC entirely.
+#
+# OIDC issuer = the Keycloak `agentic` realm on its PUBLIC route. That route is
+# EDGE-terminated (see platform/keycloak/base/keycloak-cr.yaml — tlsSecret is
+# omitted on purpose), so the OpenShift router presents the ingress wildcard
+# cert (*.apps.anaeem.na-launch.com) which the gateway can verify. The gateway
+# validates the issuer's TLS against caConfigMapName (openshell-oidc-ca), which
+# MUST contain the ingress-operator router-CA — populate it from
+# openshift-config-managed/default-ingress-cert (key ca-bundle.crt). The chart
+# sets SSL_CERT_FILE=/etc/openshell-tls/oidc-ca/ca.crt from that ConfigMap and
+# the Rust gateway honours it (verified: JWKS loads over strict TLS).
+#
+# Keycloak client `openshell-admin` (confidential, client-credentials) carries
+# an audience mapper -> openshell-gateway and the realm role openshell-admin, so
+# a minted token has aud:[openshell-gateway] and realm_access.roles:[openshell-admin].
+server:
+  auth:
+    allowUnauthenticatedUsers: false
+  oidc:
+    issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+    audience: openshell-gateway
+    caConfigMapName: openshell-oidc-ca
+    rolesClaim: realm_access.roles
+    adminRole: openshell-admin
+    userRole: openshell-user
