@@ -229,8 +229,14 @@ vault kv put secret/mcp-tools/pfsense \
 vault kv put secret/pfsense/credentials \
   username="${PFSENSE_USERNAME}" \
   password="${PFSENSE_PASSWORD}"
+# mcp-tokens carries BOTH: `tokens` is the comma-separated MCP_API_KEY list the
+# pfsense-mcp server validates against, and a per-user field (keyed by Keycloak
+# preferred_username) that ext-proc looks up to inject the CALLER's static token
+# for the /mcp (static-bearer) path. For the PoC the demo user's token == the
+# single MCP_API_TOKENS value, so the lists trivially match.
 vault kv put secret/mcp-tools/mcp-tokens \
-  tokens="${MCP_API_TOKENS}"
+  tokens="${MCP_API_TOKENS}" \
+  "${DEMO_USER:-arsalan}=${MCP_API_TOKENS}"
 
 # _default fallback: ext-proc fetches a per-tool secret on every MCP tool call;
 # tools that need no backend credential (echo-mcp's whoami/echo, or the MCP

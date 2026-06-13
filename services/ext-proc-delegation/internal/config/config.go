@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // ExchangeMode controls RFC8693 vs legacy token-exchange semantics.
@@ -35,6 +36,15 @@ type Config struct {
 	VaultJWTAudience   string
 	ToolSecretPathPrefix string
 
+	// Downstream credential injection. Requests whose :path begins with one of
+	// StaticAuthPaths get the caller's PRE-PROVISIONED static token injected
+	// (read from the StaticTokenSecret KV by preferred_username) instead of the
+	// RFC 8693 exchanged JWT — for off-the-shelf MCP servers (e.g. pfsense-mcp)
+	// that validate a static bearer list, not JWTs. The exchange still runs for
+	// audit. JWT-aware downstreams (echo-mcp on /echo) get the exchanged token.
+	StaticAuthPaths   []string
+	StaticTokenSecret string // KV tool name holding per-user tokens (default "mcp-tokens")
+
 	// Safety invariant — only valid value is "closed".
 	FailMode string
 
@@ -64,6 +74,8 @@ func Load() (*Config, error) {
 		VaultJWTRole:         getEnv("VAULT_JWT_ROLE", "ext-proc-delegation"),
 		VaultJWTAudience:     getEnv("VAULT_JWT_AUDIENCE", "vault"),
 		ToolSecretPathPrefix: getEnv("TOOL_SECRET_PATH_PREFIX", "secret/data/mcp-tools/"),
+		StaticAuthPaths:      splitNonEmpty(getEnv("STATIC_AUTH_PATHS", "/mcp")),
+		StaticTokenSecret:    getEnv("STATIC_TOKEN_SECRET", "mcp-tokens"),
 		FailMode:             getEnv("FAIL_MODE", "closed"),
 		GRPCAddr:             getEnv("GRPC_ADDR", ":9000"),
 		MetricsAddr:          getEnv("METRICS_ADDR", ":9090"),
@@ -112,4 +124,25 @@ func getEnv(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func splitNonEmpty(csv string) []string {
+	var out []string
+	for _, p := range strings.Split(csv, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// IsStaticAuthPath reports whether reqPath should use per-user static-token
+// injection (matched by prefix against StaticAuthPaths).
+func (c *Config) IsStaticAuthPath(reqPath string) bool {
+	for _, p := range c.StaticAuthPaths {
+		if strings.HasPrefix(reqPath, p) {
+			return true
+		}
+	}
+	return false
 }

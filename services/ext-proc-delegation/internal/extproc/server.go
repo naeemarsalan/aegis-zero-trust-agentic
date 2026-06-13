@@ -75,6 +75,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 	var (
 		identity       *claims.Identity
 		authHeader     string
+		reqPath        string
 		sessionID      string
 		traceID        string
 		spanID         string
@@ -97,6 +98,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		case *extprocv3.ProcessingRequest_RequestHeaders:
 			hdrs := msg.RequestHeaders.GetHeaders()
 			authHeader = headerValue(hdrs, "authorization")
+			reqPath = headerValue(hdrs, ":path")
 			sessionID = headerValue(hdrs, "x-jit-session")
 			if sessionID == "" {
 				sessionID = uuid.New().String()
@@ -201,6 +203,15 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				}
 				secretPath := s.cfg.ToolSecretPathPrefix + vaultTool
 				_, err := s.vault.FetchToolSecret(egCtx, vaultTool)
+				// Fall back to the _default secret when a tool has no dedicated
+				// KV entry (e.g. pfsense_* tools, echo-mcp tools): the Vault SVID
+				// auth still ran, we just have no per-tool backend credential.
+				if err != nil && vaultTool != "_default" {
+					if _, derr := s.vault.FetchToolSecret(egCtx, "_default"); derr == nil {
+						secretPath = s.cfg.ToolSecretPathPrefix + "_default"
+						err = nil
+					}
+				}
 				if err != nil {
 					emitter.SetVault("error:"+err.Error(), secretPath, "error:"+err.Error())
 					vaultErr = err
@@ -228,6 +239,30 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			}
 
 			downToken = exchangedToken
+
+			// Static-bearer downstreams (e.g. pfsense-mcp on /mcp) validate a
+			// fixed per-user token list, not JWTs. For those paths, inject the
+			// caller's pre-provisioned static token (Vault KV keyed by username)
+			// instead of the exchanged JWT. The exchange above still ran for
+			// audit; it is the injected bearer that differs.
+			if s.cfg.IsStaticAuthPath(reqPath) {
+				m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
+				if ferr != nil {
+					emitter.Emit(ctx, "deny", "static_token_fetch_failed", false, false)
+					return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
+				}
+				userKey := ""
+				if identity != nil {
+					userKey = identity.PreferredUsername
+				}
+				ut, _ := m[userKey].(string)
+				if ut == "" {
+					emitter.Emit(ctx, "deny", "no_user_token", false, false)
+					return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
+				}
+				downToken = ut
+			}
+
 			delegationDone = true
 
 			// Inject the downstream token.
