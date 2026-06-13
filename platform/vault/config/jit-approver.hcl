@@ -47,9 +47,10 @@ path "kubernetes/roles/jit-scoped" {
 }
 
 # Mint short-lived Kubernetes SA tokens from a per-session role.
-# "read" maps to the vault read kubernetes/creds/jit-<session-id> call.
+# The creds call is a POST carrying kubernetes_namespace + ttl, which Vault maps
+# to create/update (a bare "read" returns 403). "read" kept for the no-param form.
 path "kubernetes/creds/jit-*" {
-  capabilities = ["read"]
+  capabilities = ["create", "update", "read"]
 }
 
 # Explicit deny for the former static credential endpoint.
