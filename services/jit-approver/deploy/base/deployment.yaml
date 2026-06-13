@@ -65,6 +65,11 @@ spec:
           csi:
             driver: csi.spiffe.io
             readOnly: true
+        # Shared tmpfs where the svid-writer sidecar keeps a fresh JWT-SVID
+        # (audience=vault) that vault.py reads to authenticate the mint path.
+        - name: svid-jwt
+          emptyDir:
+            medium: Memory
         # tmpfs for Vault-injected secrets (mounted by Vault agent sidecar)
         # vault-secrets volume/mount come from the Vault Agent injector —
         # pre-declaring them makes the mutated pod invalid (duplicate name).
@@ -96,9 +101,12 @@ spec:
               value: ""  # overridden by file fallback /vault/secrets/gitea-token
             - name: GITEA_WEBHOOK_SECRET
               value: ""  # overridden by file fallback /vault/secrets/webhook-secret
-            # SVID JWT path — written by SPIFFE workload API / CSI driver helper
+            # SVID JWT path — kept fresh by the svid-writer sidecar (below),
+            # which fetches a JWT-SVID (audience=vault) from the workload API and
+            # writes it here. vault.py reads it to log in to Vault auth/jwt for
+            # the kubernetes-secrets-engine mint (identity-based, no static token).
             - name: SVID_JWT_PATH
-              value: "/var/run/secrets/svid.jwt"
+              value: "/svid/svid.jwt"
             # N1: stable RS256 signing key for the session JWT (UC2). If the file
             # is absent an ephemeral key is generated (PoC). See /jwks + signing.py.
             - name: JIT_SIGNING_KEY_PATH
@@ -108,6 +116,9 @@ spec:
           volumeMounts:
             - name: spiffe-csi
               mountPath: /var/run/secrets/spiffe.io
+              readOnly: true
+            - name: svid-jwt
+              mountPath: /svid
               readOnly: true
           livenessProbe:
             httpGet:
@@ -137,6 +148,39 @@ spec:
             capabilities:
               drop:
                 - ALL
+        # Sidecar: keeps a fresh JWT-SVID (audience=vault) at /svid/svid.jwt so the
+        # jit-approver app can authenticate the Vault mint by identity rather than a
+        # static token. Reuses the agent-sandbox svid-vault-fetch image in writer mode.
+        - name: svid-writer
+          image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
+          imagePullPolicy: Always
+          env:
+            - name: WRITE_SVID_PATH
+              value: "/svid/svid.jwt"
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: "unix:///var/run/secrets/spiffe.io/spire-agent.sock"
+            - name: VAULT_JWT_AUDIENCE
+              value: "vault"
+          volumeMounts:
+            - name: spiffe-csi
+              mountPath: /var/run/secrets/spiffe.io
+              readOnly: true
+            - name: svid-jwt
+              mountPath: /svid
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       securityContext:
         seccompProfile:
           type: RuntimeDefault

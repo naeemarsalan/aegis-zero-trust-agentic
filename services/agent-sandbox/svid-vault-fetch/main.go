@@ -60,7 +60,16 @@ func run() error {
 		secretAPI = getenv("VAULT_SECRET_PATH", "secret/data/agent-sandbox/inference")
 		outDir    = getenv("OUTPUT_DIR", "/vault/secrets")
 		skipTLS   = getenv("VAULT_SKIP_VERIFY", "true") == "true"
+		// Daemon mode: when WRITE_SVID_PATH is set, run as a sidecar that keeps a
+		// fresh JWT-SVID (audience=vault) written to that file for another process
+		// in the pod to present to Vault (jit-approver's mint path reads it from
+		// SVID_JWT_PATH). No Vault calls in this mode — it only mints identity.
+		writeSVIDPath = os.Getenv("WRITE_SVID_PATH")
 	)
+
+	if writeSVIDPath != "" {
+		return runSVIDWriter(socket, audience, writeSVIDPath)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -121,6 +130,50 @@ func run() error {
 	}
 	slog.Info("inference credential materialized to tmpfs", "dir", outDir, "fields", written)
 	return nil
+}
+
+// runSVIDWriter runs as a long-lived sidecar: it keeps a current JWT-SVID
+// (audience=vault) written atomically to path, refreshing before each SVID
+// expires. The consumer (e.g. jit-approver vault.py) reads it from SVID_JWT_PATH
+// and presents it to Vault auth/jwt. This is how a non-SPIFFE-aware service still
+// authenticates to Vault by identity rather than a long-lived token.
+func runSVIDWriter(socket, audience, path string) error {
+	ctx := context.Background()
+	src, err := workloadapi.NewJWTSource(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socket)))
+	if err != nil {
+		return fmt.Errorf("workload API: %w", err)
+	}
+	defer src.Close()
+	slog.Info("svid-writer started", "path", path, "audience", audience)
+	for {
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		svid, err := src.FetchJWTSVID(fetchCtx, jwtsvid.Params{Audience: audience})
+		cancel()
+		if err != nil {
+			slog.Error("fetch JWT-SVID", "err", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, []byte(svid.Marshal()), 0o400); err != nil {
+			return fmt.Errorf("write %s: %w", tmp, err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return fmt.Errorf("rename %s: %w", path, err)
+		}
+		// Refresh at half the remaining lifetime (min 30s, cap 5m).
+		sleep := 5 * time.Minute
+		if exp := svid.Expiry; !exp.IsZero() {
+			if half := time.Until(exp) / 2; half > 0 && half < sleep {
+				sleep = half
+			}
+		}
+		if sleep < 30*time.Second {
+			sleep = 30 * time.Second
+		}
+		slog.Info("svid written", "spiffe_id", svid.ID.String(), "next_refresh_s", int(sleep.Seconds()))
+		time.Sleep(sleep)
+	}
 }
 
 func vaultLogin(ctx context.Context, c *http.Client, addr, role, jwt string) (string, error) {
