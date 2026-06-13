@@ -29,6 +29,7 @@ spec:
         - {name: spire-data, mountPath: /run/spire/data}
     - name: svid-vault-fetch
       image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
+      imagePullPolicy: Always
       command: ["/svid-vault-fetch"]
       env:
         - {name: SPIFFE_ENDPOINT_SOCKET, value: "unix:///run/spire/sockets/agent.sock"}
@@ -46,16 +47,12 @@ spec:
         - {name: vault-secrets, mountPath: /vault/secrets}
   containers:
     - name: agent
-      image: registry.redhat.io/ubi9/ubi-minimal:latest
-      command: ["/bin/sh","-c"]
-      args:
-        - |
-          echo "=== KATA+SVID PROOF ===";
-          echo "guest kernel: $(uname -r)";
-          echo "inference endpoint: $(cat /vault/secrets/inference.endpoint 2>/dev/null)";
-          echo "inference model:    $(cat /vault/secrets/inference.model 2>/dev/null)";
-          echo "api_key:            $([ -s /vault/secrets/inference.api_key ] && echo present || echo MISSING)";
-          sleep 3600
+      image: oci.arsalan.io/nvidia-ida/sandbox-agent:dev
+      imagePullPolicy: Always
+      env:
+        - {name: KEYCLOAK_REALM_URL, value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"}
+        - {name: MCP_GATEWAY_URL, value: "https://mcp-gateway.apps.anaeem.na-launch.com"}
+        - {name: ECHO_PATH, value: "/echo"}
       securityContext:
         runAsUser: 1001020000
         allowPrivilegeEscalation: false

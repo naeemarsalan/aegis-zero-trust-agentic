@@ -301,7 +301,9 @@ fi
 vault kv put secret/agent-sandbox/inference \
   api_key="${AGENT_INFERENCE_API_KEY:-REPLACE-WITH-REAL-INFERENCE-KEY}" \
   endpoint="${AGENT_INFERENCE_ENDPOINT:-https://api.anthropic.com}" \
-  model="${AGENT_INFERENCE_MODEL:-claude-fable-5}" >/dev/null
+  model="${AGENT_INFERENCE_MODEL:-claude-fable-5}" \
+  oidc_client_id="${AGENT_OIDC_CLIENT_ID:-agent-runtime}" \
+  oidc_client_secret="${AGENT_OIDC_CLIENT_SECRET:-REPLACE-WITH-AGENT-RUNTIME-CLIENT-SECRET}" >/dev/null
 
 log "Secrets written: mcp-tools/{pfsense,mcp-tokens,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*, agent-sandbox/inference"
 

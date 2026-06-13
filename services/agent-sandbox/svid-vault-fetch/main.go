@@ -114,8 +114,8 @@ func run() error {
 		return fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 	written := 0
-	for _, field := range []string{"api_key", "endpoint", "model"} {
-		v, ok := data[field].(string)
+	for field, raw := range data {
+		v, ok := raw.(string)
 		if !ok {
 			continue
 		}
@@ -126,7 +126,7 @@ func run() error {
 		written++
 	}
 	if written == 0 {
-		return fmt.Errorf("secret %s had none of api_key/endpoint/model", secretAPI)
+		return fmt.Errorf("secret %s had no string fields to materialize", secretAPI)
 	}
 	slog.Info("inference credential materialized to tmpfs", "dir", outDir, "fields", written)
 	return nil

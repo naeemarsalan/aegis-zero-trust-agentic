@@ -42,7 +42,7 @@ spec:
     clients:
 
       # agent-runtime: the agent's own client (client-credentials / machine-to-machine)
-      - clientId: agent-runtime
+      - clientId: agent-runtime  # device-flow enabled live + here
         name: "Agent Runtime"
         description: "Machine-to-machine client for the agentic runtime process"
         enabled: true
