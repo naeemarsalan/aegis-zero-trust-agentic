@@ -1,0 +1,143 @@
+---
+# ServiceAccount: openshell-agent
+# Its name is the tail of the agent's SPIFFE ID
+# (spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/openshell-agent), which the
+# Vault JWT role `openshell-agent` pins via bound_subject. No tokens are attached.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openshell-agent
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: openshell-agent
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: agent
+automountServiceAccountToken: false
+---
+# Deployment: openshell-agent (Phase 5 capstone runtime)
+#
+# Zero-trust invariants enforced here:
+#   1. runtimeClassName: kata        — hardware-isolated micro-VM (guest kernel
+#      differs from the host: proven by the kata-smoke test).
+#   2. automountServiceAccountToken: false — the pod has NO Kubernetes SA token.
+#      Its ONLY identity is the SPIRE JWT-SVID delivered over the csi.spiffe.io
+#      workload-API socket.
+#   3. The svid-vault-fetch init container presents that SVID (audience=vault) to
+#      Vault auth/jwt, reads ONLY secret/agent-sandbox/inference, and writes the
+#      inference credential to a tmpfs (memory) volume. The Vault token is held in
+#      memory and never written. => the agent is never handed a credential; it
+#      pulls its own using its identity.
+#
+# KNOWN LIMITATION (empirically confirmed 2026-06-13):
+#   The SPIFFE CSI driver delivers the workload-API SVID over a UNIX-domain socket
+#   bind-mounted from the host SPIRE agent. That socket does NOT traverse the Kata
+#   micro-VM boundary (virtio-fs cannot proxy a live socket), so inside Kata the
+#   SVID fetch blocks until timeout. The SVID->Vault->secret flow above is PROVEN
+#   end to end on this exact spec WITHOUT runtimeClassName (got SVID in ~1.6s,
+#   Vault login ok, credential on tmpfs, no token on disk). Composing Kata
+#   isolation WITH socket-based SVID delivery requires running a SPIRE agent
+#   inside the guest (nested) or vsock-based delivery — neither is deployed by the
+#   current ZTWIM/SPIRE install. Until then this manifest keeps the policy-required
+#   runtimeClassName: kata; the agent's SVID secret-pull is demonstrated on the
+#   non-Kata variant. Track: SPIRE-on-Kata SVID delivery.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshell-agent
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: openshell-agent
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openshell-agent
+  template:
+    metadata:
+      labels:
+        app: openshell-agent
+        app.kubernetes.io/name: openshell-agent
+        app.kubernetes.io/part-of: nvidia-ida
+        # Triggers SPIRE workload registration (agent-sandbox-workloads ClusterSPIFFEID).
+        spiffe.io/spire-managed-identity: "true"
+    spec:
+      runtimeClassName: kata
+      serviceAccountName: openshell-agent
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Zero-trust secret bootstrap: SVID -> Vault auth/jwt -> read inference cred.
+        - name: svid-vault-fetch
+          image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
+          imagePullPolicy: Always
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_JWT_ROLE
+              value: "openshell-agent"
+            - name: VAULT_JWT_AUDIENCE
+              value: "vault"
+            - name: VAULT_SECRET_PATH
+              value: "secret/data/agent-sandbox/inference"
+            - name: OUTPUT_DIR
+              value: "/vault/secrets"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+            - name: spire-svid
+              mountPath: /spiffe-workload-api
+              readOnly: true
+      containers:
+        # Placeholder agent runtime. Phase 5b replaces this with NVIDIA OpenShell;
+        # for now it proves the inference credential arrived and stays up for
+        # inspection (no shell secrets, no SA token, no Vault token on disk).
+        - name: agent
+          image: registry.redhat.io/ubi9/ubi-minimal:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "inference endpoint: $(cat /vault/secrets/inference.endpoint 2>/dev/null)";
+              echo "inference model:    $(cat /vault/secrets/inference.model 2>/dev/null)";
+              echo "api_key present:    $([ -s /vault/secrets/inference.api_key ] && echo yes || echo NO)";
+              echo "agent up; sleeping"; while true; do sleep 3600; done
+          env:
+            - name: MCP_GATEWAY_URL
+              value: "https://mcp-gateway.apps.anaeem.na-launch.com/mcp"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+            - name: spire-svid
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # tmpfs (memory) — inference credential never touches node disk or etcd.
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+        - name: spire-svid
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: tmp
+          emptyDir: {}

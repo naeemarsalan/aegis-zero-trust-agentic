@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Phase 5 capstone — the sandboxed agent runtime (Kata micro-VM) that pulls its
+# inference credential from Vault using its SPIRE JWT-SVID, then consumes the
+# platform MCP gateway. See openshell-agent.yaml for the zero-trust invariants
+# and the SPIRE-CSI-over-Kata limitation note.
+resources:
+  - openshell-agent.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: nvidia-ida
+      app.kubernetes.io/component: agent-sandbox

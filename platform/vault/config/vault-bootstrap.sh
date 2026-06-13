@@ -66,8 +66,9 @@ log "Writing policies..."
 vault policy write ext-proc       "${SCRIPT_DIR}/ext-proc.hcl"
 vault policy write jit-approver   "${SCRIPT_DIR}/jit-approver.hcl"
 vault policy write agent-deny     "${SCRIPT_DIR}/agent-deny.hcl"
+vault policy write agent-sandbox  "${SCRIPT_DIR}/agent-sandbox.hcl"
 
-log "Policies written: ext-proc, jit-approver, agent-deny"
+log "Policies written: ext-proc, jit-approver, agent-deny, agent-sandbox"
 
 # ── 4. JWT/OIDC auth (SPIRE OIDC issuer) ─────────────────────────────────────
 log "Enabling JWT auth engine..."
@@ -117,6 +118,21 @@ vault write auth/jwt/role/jit-approver \
   token_ttl="15m" \
   token_max_ttl="15m" \
   token_policies="jit-approver" \
+  bound_audiences="vault"
+
+# Role: openshell-agent (Phase 5 capstone). The sandboxed agent in agent-sandbox
+# authenticates with its SPIRE JWT-SVID to read ONLY its inference credential.
+# bound_subject pins the exact SPIFFE ID; bound_audiences="vault" means the SVID
+# must have been minted for Vault (the agent requests aud=vault from the workload
+# API). token_policies grants nothing but the single read path (agent-sandbox.hcl).
+log "Writing JWT role openshell-agent..."
+vault write auth/jwt/role/openshell-agent \
+  role_type="jwt" \
+  bound_subject="spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/openshell-agent" \
+  user_claim="sub" \
+  token_ttl="15m" \
+  token_max_ttl="15m" \
+  token_policies="agent-sandbox" \
   bound_audiences="vault"
 
 log "JWT roles created"
@@ -278,7 +294,16 @@ if ! vault kv get -field=pem secret/jit-approver/jit-signing-key >/dev/null 2>&1
   vault kv put secret/jit-approver/jit-signing-key pem="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)" >/dev/null
 fi
 
-log "Secrets written: mcp-tools/{pfsense,mcp-tokens,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*"
+# Phase 5 capstone — the sandboxed agent's inference credential. The agent reads
+# this via Vault auth/jwt using its SPIRE JWT-SVID (role openshell-agent), never
+# receiving a token directly. Supply the real key via AGENT_INFERENCE_API_KEY in
+# the environment; a placeholder is written otherwise so the path always exists.
+vault kv put secret/agent-sandbox/inference \
+  api_key="${AGENT_INFERENCE_API_KEY:-REPLACE-WITH-REAL-INFERENCE-KEY}" \
+  endpoint="${AGENT_INFERENCE_ENDPOINT:-https://api.anthropic.com}" \
+  model="${AGENT_INFERENCE_MODEL:-claude-fable-5}" >/dev/null
+
+log "Secrets written: mcp-tools/{pfsense,mcp-tokens,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*, agent-sandbox/inference"
 
 # ── 7. Completion ─────────────────────────────────────────────────────────────
 log ""

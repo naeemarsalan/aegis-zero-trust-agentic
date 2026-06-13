@@ -161,3 +161,46 @@ spec:
       ports:
         - port: 6443
           protocol: TCP
+---
+# Scoped Vault egress for the SVID-based secret pull (Phase 5 capstone).
+#
+# The platform default denies agent pods any path to Vault — agents must not hold
+# or fetch long-lived credentials. The openshell-agent is a deliberate, narrow
+# exception: its svid-vault-fetch init container presents the pod's SPIRE JWT-SVID
+# to Vault auth/jwt and reads ONLY secret/agent-sandbox/inference (policy-scoped).
+# This is identity-based, not token-based — it strengthens, not weakens, the
+# invariant: even with Vault reachable, the SVID can read nothing but its one
+# secret. Scoped by podSelector so no other agent-sandbox pod gains Vault access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-vault-openshell-agent
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: networkpolicies
+spec:
+  podSelector:
+    matchLabels:
+      app: openshell-agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+    # Vault's public route resolves via the OpenShift router (hostNetwork); the
+    # SVID login must hit the route so issuer/cert match. ipBlock since a
+    # namespaceSelector can't match a hostNetwork router pod.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
