@@ -54,11 +54,22 @@ spec:
     strict: false
 
   http:
-    tlsSecret: keycloak-tls       # secret injected by service-ca or cert-manager
-    # Plain-HTTP listener for IN-CLUSTER consumers that cannot speak TLS to
-    # the service-ca cert (the agentgateway controller fetches the realm JWKS
-    # over http; it got EOF talking plain HTTP to the 8443 TLS port). JWKS is
-    # public key material; the external Route remains TLS-only.
+    # tlsSecret intentionally OMITTED → RHBK operator switches the managed Route
+    # from passthrough to EDGE termination. Rationale: the service-ca cert in
+    # keycloak-tls only has SAN *.keycloak-serving-cert.keycloak.svc, which never
+    # matches the public route host keycloak.apps.anaeem.na-launch.com — so any
+    # strict-TLS OIDC client (the OpenShell gateway) fails hostname verification
+    # against the passthrough route. With edge termination the OpenShift router
+    # presents the ingress wildcard cert (*.apps.anaeem.na-launch.com, signed by
+    # the ingress-operator router-CA), which DOES match the route host. Keycloak
+    # keeps receiving plain HTTP on 8080 (httpEnabled below); proxy.headers
+    # xforwarded preserves the https:// iss claim. To revert to a publicly-trusted
+    # cert later, switch to cert-manager with a cert whose SAN includes the route
+    # host and re-add tlsSecret (see tls-certificate.yaml).
+    #
+    # Plain-HTTP listener for IN-CLUSTER consumers (the agentgateway controller
+    # fetches the realm JWKS over http). JWKS is public key material; the router
+    # now terminates TLS for the external Route.
     httpEnabled: true
 
   proxy:
