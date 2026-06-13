@@ -2,6 +2,19 @@
 # RHDH auth snippet — Keycloak "agentic" realm (OIDC)
 # ============================================================================
 #
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# WARNING: THIS CHANGES AUTH ON A SHARED RHDH INSTANCE
+#
+#   The `anaeem` RHDH instance ALSO hosts:
+#     - migration-catalog
+#     - ansible-collection-discovery
+#
+#   Those catalogs' users currently sign in via the Guest provider.
+#   DO NOT apply this snippet in a single step that removes Guest access.
+#
+#   APPLY IN TWO STEPS — see "Shared-instance safety" section below.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#
 # WHAT THIS IS
 #   A SNIPPET to be MERGED into the RHDH app-config (ConfigMap
 #   "developer-hub-app-config", data key "app-config.yaml" in namespace "rhdh").
@@ -16,79 +29,177 @@
 #   Keycloak users/groups (arsalan, mcp-admins, mcp-users) are ingested into the
 #   Backstage catalog so identity/governance flows downstream to launched agents.
 #
-# ----------------------------------------------------------------------------
+# ============================================================================
+# PREREQUISITE: Keycloak client "rhdh" in the "agentic" realm
+# ============================================================================
+#
+#   A confidential OIDC client named "rhdh" MUST EXIST in Keycloak before this
+#   config is applied. If it does not exist, RHDH will fail to start. Create it
+#   manually in the Keycloak admin console for realm "agentic":
+#
+#     - Client ID:          rhdh
+#     - Access Type:        confidential  (Keycloak 19+: Client authentication ON)
+#     - Standard Flow:      ON
+#     - Service Accounts:   ON  (required for catalog ingestion)
+#     - Valid redirect URI: https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/oidc/handler/frame
+#     - Web origin:         https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#     - Service-account roles (realm-management): query-groups, query-users, view-users
+#       (These three roles allow the keycloakOrg plugin to enumerate users/groups.)
+#
+#   After creation, copy the client secret from the client's "Credentials" tab
+#   and set it as KEYCLOAK_CLIENT_SECRET in the env Secret (step 1b below).
+#
+# ============================================================================
 # DYNAMIC PLUGINS TO ENABLE (separate ConfigMap: developer-hub-dynamic-plugins)
-# ----------------------------------------------------------------------------
-#   Add one entry to the `plugins:` list (bundled path — no external registry
-#   pull, safe for air-gapped SNO):
+# ============================================================================
+#
+#   The OIDC auth backend module is compiled INTO the RHDH core image — no
+#   dynamic-plugin entry is needed for auth itself.
+#
+#   Add ONE entry to the `plugins:` list in developer-hub-dynamic-plugins
+#   (bundled path — no external registry pull, safe for air-gapped SNO):
 #
 #     - disabled: false
 #       package: ./dynamic-plugins/dist/backstage-community-plugin-catalog-backend-module-keycloak-dynamic
 #
-#   No pluginConfig block is needed there with the bundled path — all config
-#   lives in this app-config snippet (the catalog.providers.keycloakOrg block).
-#   See dynamic-plugins-patch.yaml for the standalone delta.
+#   No pluginConfig block is needed for the bundled path — all config lives in
+#   the catalog.providers.keycloakOrg block in this snippet.
 #
-# ----------------------------------------------------------------------------
+# ============================================================================
 # ENV / SECRETS REQUIRED (mounted from a Secret, e.g. rhdh-keycloak-secret;
 #   see rhdh-keycloak-secret.yaml). These ${...} placeholders resolve from env:
-# ----------------------------------------------------------------------------
+# ============================================================================
+#
 #   AUTH_SESSION_SECRET    Random 32+ char string (openssl rand -hex 32)
+#                          Required for OIDC session cookies.
 #   KEYCLOAK_METADATA_URL  https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+#                          RHDH auto-appends /.well-known/openid-configuration — do
+#                          NOT append it manually.
 #   KEYCLOAK_BASE_URL      https://keycloak.apps.anaeem.na-launch.com
-#   KEYCLOAK_REALM         agentic            (realm to ingest users/groups from)
-#   KEYCLOAK_LOGIN_REALM   agentic            (realm the rhdh service account lives in)
-#   KEYCLOAK_CLIENT_ID     rhdh               (confidential OIDC client, create in KC)
-#   KEYCLOAK_CLIENT_SECRET <from Keycloak client "Credentials" tab>
+#   KEYCLOAK_REALM         agentic  (realm whose users/groups are ingested)
+#   KEYCLOAK_LOGIN_REALM   agentic  (realm the rhdh service account authenticates to)
+#   KEYCLOAK_CLIENT_ID     rhdh     (the confidential OIDC client — see PREREQUISITE)
+#   KEYCLOAK_CLIENT_SECRET <value from Keycloak client "Credentials" tab>
 #   RHDH_BASE_URL          https://developer-hub-rhdh.apps.anaeem.na-launch.com
 #
-#   Keycloak client "rhdh" (realm agentic) must be: confidential, Standard Flow
-#   ON, Service Accounts ON, redirect URI
-#     https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/oidc/handler/frame
-#   web origin https://developer-hub-rhdh.apps.anaeem.na-launch.com, and its
-#   service account must hold realm-management roles: query-groups, query-users,
-#   view-users (for catalog ingestion). See keycloak-rhdh-client-patch.yaml.
+# ============================================================================
+# SHARED-INSTANCE SAFETY — TWO-STEP APPLY
+# ============================================================================
 #
-# ----------------------------------------------------------------------------
-# APPLY ORDER (documented, do not run here)
-#   1. Create/patch the Secret (rhdh-keycloak-secret).
-#   2. Patch developer-hub-dynamic-plugins (add the keycloak plugin entry).
-#   3. Merge this snippet into developer-hub-app-config (app-config.yaml).
-#   4. oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
-#        rollout restart deployment/developer-hub -n rhdh
+#   STEP 1 (apply first — reversible):
+#     - Set auth.environment: production
+#     - Keep auth.providers.guest.dangerouslyAllowOutsideDevelopment: true
+#     - Add auth.providers.oidc.production block (this file, as-is)
+#     - Add signInPage: oidc
+#     - Restart RHDH; validate the full OIDC round-trip with your Keycloak account.
 #
-# WARNING: setting auth.environment to "production" REMOVES the Guest login
-#   button. Fully test the OIDC flow (and keep a Keycloak admin account) before
-#   applying — otherwise you can lock yourself out of Developer Hub.
+#     Effect: OIDC sign-in is live. The Guest button is HIDDEN by environment:
+#     production, BUT because dangerouslyAllowOutsideDevelopment: true remains on
+#     the guest provider, guest login still works via the direct URL
+#     (/api/auth/guest/refresh) and for any user who bookmarked it. Migration-catalog
+#     and ansible-collection-discovery users are not broken.
+#
+#   STEP 2 (separate change — once OIDC is validated):
+#     - Remove the `guest:` block entirely, OR
+#     - Remove the `dangerouslyAllowOutsideDevelopment: true` flag from it.
+#     - Restart RHDH.
+#
+#     Effect: Guest access is fully closed. All users must authenticate via OIDC.
+#     Other catalog content (migration-catalog, ansible-collection-discovery) is
+#     NOT affected — catalog rendering is independent of auth provider.
+#
+#   DO NOT skip Step 1 validation before applying Step 2. If OIDC is broken and
+#   guest is gone, you will need Keycloak admin access (or oc exec into the pod)
+#   to recover.
+#
 # ============================================================================
 
 # ── OIDC auth via Keycloak realm "agentic" ──────────────────────────────────
 auth:
-  environment: production            # hides the Guest login button
+  # "production" hides the Guest login button in the UI.
+  # Guest login still functions as a fallback ONLY because
+  # dangerouslyAllowOutsideDevelopment: true is set on the guest provider below.
+  # Remove that flag (or the guest block) in Step 2 after OIDC is validated.
+  environment: production
+
   session:
-    secret: ${AUTH_SESSION_SECRET}
+    secret: ${AUTH_SESSION_SECRET}   # required for OIDC session cookies (32+ chars)
+
   providers:
+    # ── Guest provider (PRESERVE — shared-instance safety) ──────────────────
+    # Keep this block through Step 1 so migration-catalog and
+    # ansible-collection-discovery users are not broken while OIDC is validated.
+    # Remove in Step 2 once OIDC sign-in is confirmed working for all users.
+    guest:
+      dangerouslyAllowOutsideDevelopment: true
+
+    # ── OIDC provider (Keycloak realm "agentic") ────────────────────────────
+    # The auth-backend-module-oidc-provider is compiled into the RHDH core image.
+    # No dynamic-plugin entry is needed here — only the keycloak catalog plugin
+    # (see DYNAMIC PLUGINS section above) requires a plugins: list entry.
     oidc:
       production:
-        metadataUrl: ${KEYCLOAK_METADATA_URL}   # discovery URL; provider appends /.well-known/...
+        # Discovery endpoint. RHDH appends /.well-known/openid-configuration.
+        # Do NOT manually append it — it will result in a double-path 404.
+        metadataUrl: ${KEYCLOAK_METADATA_URL}
+
         clientId: ${KEYCLOAK_CLIENT_ID}
         clientSecret: ${KEYCLOAK_CLIENT_SECRET}
+
+        # prompt: auto lets Keycloak decide SSO vs. login prompt. Use "login"
+        # to always force the Keycloak login screen.
         prompt: auto
+
+        # callbackUrl must exactly match the Valid Redirect URI in the Keycloak
+        # client config (see PREREQUISITE above). Must be https — the EDGE-terminated
+        # ingress on *.apps.anaeem.na-launch.com provides TLS.
         callbackUrl: ${RHDH_BASE_URL}/api/auth/oidc/handler/frame
+
         # NOTE: do NOT set `scope:` here — the OIDC provider rejects it.
+        # `additionalScopes` is available if extra claims beyond
+        # `openid profile email` are needed, but is not required for Keycloak.
+
         signIn:
           resolvers:
-            # First match wins. preferredUsername works on cold start (before the
-            # catalog sync); oidcSubClaimMatchingKeycloakUserId is the recommended
-            # RHBK resolver (immutable sub claim) once keycloakOrg has synced.
+            # First match wins. Resolvers are tried in order.
+            #
+            # Resolver 1: preferred_username → catalog User metadata.name
+            #   Works on cold start, BEFORE keycloakOrg has completed its first
+            #   sync. Keycloak's preferred_username (e.g. "arsalan") must match
+            #   the User entity's metadata.name. This is safe as the initial
+            #   resolver for both Day 1 and warm catalog states.
             - resolver: preferredUsernameMatchingUserEntityName
-            - resolver: oidcSubClaimMatchingKeycloakUserId
+
+            # Resolver 2: email claim → catalog User spec.profile.email
+            #   Fallback if preferred_username does not match a catalog User
+            #   (e.g. during the first sync window, or for users whose KC username
+            #   was changed). Requires the keycloakOrg plugin to have ingested the
+            #   User entity at least once with a profile.email set.
+            - resolver: emailMatchingUserEntityProfileEmail
+
+            # Resolver 3 (COMMENTED OUT — enable after keycloakOrg sync verified):
+            #   oidcSubClaimMatchingKeycloakUserId is RHDH-specific (not in
+            #   upstream Backstage). It matches the OIDC `sub` claim (which is the
+            #   immutable Keycloak user UUID) to the keycloak annotation on a catalog
+            #   User entity. It is the most stable long-term resolver but requires
+            #   the keycloakOrg plugin to have completed at least one full sync first.
+            #   Add it as the FIRST resolver (replacing preferredUsername) once you
+            #   confirm entities appear in the catalog with the correct KC annotation.
+            #   NOTE: changed behaviour from RHDH 1.5 — use with caution on pre-1.5.
+            # - resolver: oidcSubClaimMatchingKeycloakUserId
 
 # `signInPage` is a TOP-LEVEL key (NOT nested under auth:) — confirmed against
-# the upstream rhdh-test-instance YAML. It switches the frontend to OIDC login.
+# the RHDH engineering CI fixture (rhdh-deployment.ts). It switches the frontend
+# sign-in page to OIDC. The string form is confirmed working in RHDH CI tests.
+# Do NOT use the array form (`signInPage: [guest, oidc]`) — it is documented in
+# upstream auth.md but is not tested in RHDH CI and may not be supported in all
+# RHDH 1.x versions.
 signInPage: oidc
 
 # ── Keycloak org ingestion (users + groups → Backstage catalog) ─────────────
+# Requires the keycloak-dynamic plugin to be enabled (see DYNAMIC PLUGINS above).
+# The service account for the rhdh client must hold the realm-management roles
+# query-groups, query-users, view-users (see PREREQUISITE above).
 catalog:
   providers:
     keycloakOrg:

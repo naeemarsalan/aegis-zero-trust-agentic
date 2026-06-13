@@ -17,3 +17,5 @@ spec:
     - ./system-agentic-platform.yaml
     - ./pfsense.yaml
     - ./echo.yaml
+    # Scaffolder template — spawns a personal agent sandbox via the launcher API.
+    - ../templates/run-agent/template.yaml

@@ -1,5 +1,12 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
+# ------------------------------------------------------------------ #
+# Run-an-Agent template                                               #
+# Loads into RHDH via the Location entry in catalog/all.yaml.         #
+# Action used: http:backstage:request                                 #
+#   Plugin: roadiehq-scaffolder-backend-module-http-request-dynamic  #
+#   (ships in the RHDH image; must be enabled — see OPERATOR WIRING) #
+# ------------------------------------------------------------------ #
 metadata:
   name: run-agent
   title: Run an Agent
@@ -19,13 +26,19 @@ spec:
   owner: group:default/mcp-admins
   type: agent-sandbox
 
+  # ================================================================ #
+  # PARAMETERS — rendered as a two-page wizard in the RHDH UI       #
+  # ================================================================ #
   parameters:
+    # ── Page 1: Agent objective ──────────────────────────────────── #
     - title: What should the agent do?
       required:
         - goal
         - scope
-        - kind
+        - mode
+        - capabilities
       properties:
+
         goal:
           title: Agent goal
           type: string
@@ -42,9 +55,11 @@ spec:
           title: Capability scope
           type: string
           description: >
-            The set of MCP tools the agent may request. Read-only tools run
-            without approval; privileged tools always require Just-In-Time
-            approval from mcp-admins, regardless of scope.
+            The permission tier this agent operates at. Read-only tools
+            (get_/search_/list_/diagnose_) never require approval.
+            Read-write and admin tools trigger a JIT approval pop-up
+            addressed to group:default/mcp-admins before each privileged
+            call proceeds.
           default: read-only
           enum:
             - read-only
@@ -53,14 +68,15 @@ spec:
           enumNames:
             - "Read-only — get_/search_/list_/diagnose_ tools, no approval needed"
             - "Read-write — adds create_/update_ tools (JIT approval required)"
-            - "Admin — adds delete_/add_/apply_ tools (JIT approval + manager co-sign)"
+            - "Admin — adds delete_/apply_ tools (JIT approval + manager co-sign)"
 
-        kind:
-          title: Run kind
+        mode:
+          title: Run mode
           type: string
           description: >
             A task is a short-lived, single-objective run. A project is a
-            longer-lived sandbox you can return to and that allows a higher TTL.
+            longer-lived sandbox you can return to; it allows a higher TTL
+            and retains its workspace between sessions.
           default: task
           enum:
             - task
@@ -69,71 +85,134 @@ spec:
             - "Task — one objective, short TTL, tear down when done"
             - "Project — persistent workspace, higher TTL, resumable"
 
+        # ── capabilities ─────────────────────────────────────────── #
+        # Implemented as a static enum + checkboxes widget.
+        #
+        # WHY NOT MultiEntityPicker?
+        #   MultiEntityPicker (ui:field) has a confirmed regression in
+        #   Backstage plugin-scaffolder v1.26.0–1.26.1 (issue #27315,
+        #   closed without fix, "priority:contrib-needed"). RHDH 1.3 ships
+        #   Backstage 1.32.x which falls in the affected version range.
+        #   Until the regression is resolved and RHDH ships the fix, the
+        #   safe choice is the static enum below.
+        #
+        #   When the regression is fixed, replace this block with:
+        #
+        #     capabilities:
+        #       title: MCP capabilities
+        #       type: array
+        #       description: >
+        #         Which downstream MCP servers this agent may reach.
+        #         Backed by catalog Resources with spec.type=mcp-server.
+        #       ui:field: MultiEntityPicker
+        #       ui:options:
+        #         catalogFilter:
+        #           - kind: Resource
+        #             spec.type: mcp-server
+        #         defaultKind: Resource
+        #         defaultNamespace: default
+        #         allowArbitraryValues: false
+        #
+        #   When using MultiEntityPicker, output is string[] of entity refs
+        #   (e.g. "resource:default/mcp-pfsense"). The launcher must resolve
+        #   refs to gateway paths via the nvidia-ida/mcp-gateway-path
+        #   annotation on the catalog entity.
+        #
+        # Items are keyed by catalog entity name (metadata.name in
+        # catalog/pfsense.yaml, catalog/echo.yaml, etc.). The launcher
+        # maps these to gateway paths via its internal registry.
         capabilities:
           title: MCP capabilities
           type: array
           description: >
             Which downstream MCP servers this agent may reach through the
-            gateway. Leave empty to grant the gateway default for your scope.
+            gateway. The launcher resolves these names to gateway paths
+            (nvidia-ida/mcp-gateway-path annotation). Leave the default
+            selection unless you know you need specific servers.
           ui:widget: checkboxes
           default:
-            - pfsense
+            - mcp-echo
           items:
             type: string
             enum:
-              - pfsense
-              - echo
-              - k8s
-              - dns
+              - mcp-pfsense
+              - mcp-echo
+              # Aspirational — add catalog entity + gateway route before enabling:
+              # - mcp-k8s
+              # - mcp-dns
+            enumNames:
+              - "mcp-pfsense — pfSense firewall (327 tools; privileged tools need JIT)"
+              - "mcp-echo — identity oracle (read-only, no JIT required)"
           uniqueItems: true
 
+    # ── Page 2: Lifetime & confirmation ─────────────────────────── #
     - title: Lifetime & confirmation
       required:
         - ttlMinutes
+        - _confirm
       properties:
+
         ttlMinutes:
           title: Sandbox TTL (minutes)
           type: integer
           description: >
-            The sandbox auto-terminates after this many minutes. Tasks cap at
-            120; projects may run up to 480.
+            The sandbox auto-terminates after this many minutes.
+            Tasks cap at 120; projects may run up to 480.
           default: 60
           minimum: 5
           maximum: 480
 
-        _review:
+        _confirm:
           title: Acknowledgement
           type: boolean
           description: >
-            I understand the sandbox is created in namespace `agent-sandboxes`
-            with a SPIFFE identity scoped to my Keycloak user, that all
-            privileged tool calls require JIT approval, and that the sandbox
-            and its workspace are destroyed on expiry.
+            I understand that the sandbox is created in namespace
+            `agent-sandboxes` with a SPIFFE identity scoped to my
+            Keycloak user, that privileged tool calls require JIT
+            approval from mcp-admins, and that the sandbox and its
+            workspace are destroyed on expiry.
           default: false
+          # Note: Backstage does not enforce boolean=true via JSON Schema
+          # `const: true` in the frontend form. This field is a UI prompt
+          # only; enforcement is on the launcher side (body._confirm must
+          # be true or the launcher rejects the request with 400).
 
+  # ================================================================ #
+  # STEPS                                                            #
+  # ================================================================ #
   steps:
-    # ------------------------------------------------------------------
-    # Step 1 — call the sandbox launcher.
-    #
-    # The launcher endpoint is a PLACEHOLDER cluster-internal Service URL:
-    #     http://sandbox-launcher.mcp-gateway.svc:8080/launch
-    #
-    # http:backstage:request CANNOT call arbitrary external/internal URLs
-    # directly — it can only reach hosts registered as RHDH proxy endpoints.
-    # So this step targets the RHDH proxy path `/proxy/mcp-launcher/launch`,
-    # and a human operator must register the launcher in the live
-    # `developer-hub-app-config` ConfigMap under proxy.endpoints (see the
-    # "Operator wiring" block at the bottom of this file). The proxy entry's
-    # `target` is the placeholder URL above.
-    #
-    # The roadiehq-scaffolder-backend-module-http-request-dynamic plugin
-    # (already enabled on the anaeem cluster) provides http:backstage:request.
-    #
-    # NOTE: http:backstage:request injects only a Backstage-internal OBO token,
-    # not the user's raw Keycloak JWT. We therefore pass the user's entity name
-    # explicitly in the body; the launcher trusts it because the proxy endpoint
-    # is configured with `credentials: require` (no unauthenticated calls).
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------- #
+    # Step 1 — POST to the sandbox launcher through the RHDH proxy.   #
+    #                                                                  #
+    # Action: http:backstage:request                                   #
+    # Plugin: roadiehq-scaffolder-backend-module-http-request-dynamic  #
+    #   - Ships in the RHDH image at:                                  #
+    #       dynamic-plugins/dist/roadiehq-scaffolder-backend-module-   #
+    #       http-request-dynamic                                        #
+    #   - Must be explicitly enabled (see OPERATOR WIRING section).    #
+    #   - Verify it is live: GET /api/scaffolder/v2/actions (backend    #
+    #     REST endpoint), grep http:backstage. The UI route            #
+    #     /create/actions renders HTML — do not curl it.              #
+    #                                                                  #
+    # Path: /proxy/mcp-launcher/launch                                #
+    #   - Routes through the RHDH proxy entry registered under         #
+    #     proxy.endpoints./mcp-launcher (see OPERATOR WIRING).         #
+    #   - The proxy's target is the placeholder cluster Service:        #
+    #       http://sandbox-launcher.mcp-gateway.svc:8080               #
+    #   - http:backstage:request cannot target arbitrary URLs;          #
+    #     it MUST go through a named proxy entry.                      #
+    #                                                                  #
+    # Identity: user.ref (e.g. "user:default/arsalan")                #
+    #   - Preferred over user.entity.metadata.name because user.ref    #
+    #     is always populated from the session token, whereas           #
+    #     user.entity requires a matching User entity in the catalog   #
+    #     (keycloakOrg ingestion must have run at least once).         #
+    #   - The scaffolder runs server-side. RHDH forwards the caller's   #
+    #     Backstage credentials as an X-Backstage-User-Info header;    #
+    #     the launcher MUST authenticate using that header.            #
+    #     The `userRef` body field is client-supplied (templated from  #
+    #     user.ref) and must be treated as advisory, not authoritative.#
+    # ---------------------------------------------------------------- #
     - id: launchSandbox
       name: Launch sandbox via launcher API
       action: http:backstage:request
@@ -143,17 +222,26 @@ spec:
         headers:
           content-type: application/json
         body:
-          userRef: ${{ user.entity.metadata.name }}
+          # Stable entity ref from the signed-in session — always present.
+          # Format: "user:default/<catalog-username>"
+          userRef: ${{ user.ref }}
           goal: ${{ parameters.goal }}
           scope: ${{ parameters.scope }}
-          kind: ${{ parameters.kind }}
+          mode: ${{ parameters.mode }}
+          # Array of catalog entity names; launcher resolves to gateway paths.
           capabilities: ${{ parameters.capabilities }}
           ttlMinutes: ${{ parameters.ttlMinutes }}
+          # Acknowledgement forwarded so the launcher can enforce it server-side.
+          confirmed: ${{ parameters._confirm }}
 
-    # ------------------------------------------------------------------
-    # Step 2 — surface a launcher error if it returned a non-2xx status.
-    # Uses camelCase step id so the expression doesn't mis-parse as subtraction.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------- #
+    # Step 2 — Emit a visible error log if the launcher returned       #
+    # a non-2xx status code.                                           #
+    #                                                                  #
+    # Uses built-in action debug:log (no plugin required).            #
+    # Bracket notation required: step id "launchSandbox" is camelCase  #
+    # and safe, but bracket form is used consistently for clarity.     #
+    # ---------------------------------------------------------------- #
     - id: checkLaunch
       name: Verify launcher response
       action: debug:log
@@ -161,72 +249,114 @@ spec:
       input:
         message: >
           Launcher returned HTTP ${{ steps['launchSandbox'].output.code }}.
-          Body: ${{ steps['launchSandbox'].output.body }}
+          Response body: ${{ steps['launchSandbox'].output.body }}
+          Check that: (1) http:backstage:request plugin is enabled,
+          (2) the proxy entry /mcp-launcher is registered in app-config,
+          (3) the sandbox-launcher Service is running in mcp-gateway namespace.
         listWorkspace: false
 
-    # ------------------------------------------------------------------
-    # Step 3 (deferred) — register the running sandbox as a transient catalog
-    # entity once the launcher emits a catalog-info.yaml URL. Kept commented
-    # until the launcher returns `catalogInfoUrl` in its response body.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------- #
+    # Step 3 (DEFERRED — uncomment when launcher emits catalogInfoUrl) #
+    # Register the running sandbox as a transient catalog entity.      #
+    # Action: catalog:register (built-in, no plugin required).         #
+    # ---------------------------------------------------------------- #
     # - id: registerSandbox
     #   name: Register sandbox in catalog
     #   action: catalog:register
+    #   if: ${{ steps['launchSandbox'].output.code < 300 }}
     #   input:
     #     catalogInfoUrl: ${{ steps['launchSandbox'].output.body.catalogInfoUrl }}
+    #     optional: true
 
+  # ================================================================ #
+  # OUTPUT — shown on the success page after all steps complete      #
+  # ================================================================ #
   output:
     links:
       - title: Open agent conversation
+        # conversationUrl is set by the launcher in its JSON response body.
         url: ${{ steps['launchSandbox'].output.body.conversationUrl }}
         icon: chat
       - title: View sandbox in cluster
+        # sandboxName is set by the launcher; links to the OpenShift console.
         url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandboxName }}
         icon: kubernetes
     text:
       - title: Sandbox details
         content: |
           **Sandbox name:** `${{ steps['launchSandbox'].output.body.sandboxName }}`
-          **Run kind:** `${{ parameters.kind }}`
+          **Run mode:** `${{ parameters.mode }}`
           **Scope:** `${{ parameters.scope }}`
           **Capabilities:** `${{ parameters.capabilities }}`
           **TTL:** ${{ parameters.ttlMinutes }} minutes
+          **Submitted by:** `${{ user.ref }}`
           **Goal:** ${{ parameters.goal }}
 
           Privileged tool calls still require JIT approval from
-          `group:default/mcp-admins`.
+          `group:default/mcp-admins` regardless of scope.
 
 # ====================================================================
-# OPERATOR WIRING (do NOT apply automatically — merge by hand)
+# OPERATOR WIRING — do NOT apply automatically; merge by hand
+# ====================================================================
 #
-# 1. Register this template with the catalog. Add a Location entity (or extend
-#    the existing one) pointing at this file, e.g.:
+# 1. ENABLE THE PLUGIN
+#    Verify http:backstage:request is available on the live cluster:
+#      curl -H "Authorization: Bearer <token>" \
+#           https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/scaffolder/v2/actions \
+#        | python3 -m json.tool | grep 'http:backstage'
 #
-#      apiVersion: backstage.io/v1alpha1
-#      kind: Location
-#      metadata:
-#        name: run-agent-template
-#      spec:
-#        type: url
-#        targets:
-#          - https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/templates/run-agent/template.yaml
+#    If absent, patch the developer-hub-dynamic-plugins ConfigMap to add:
+#      - disabled: false
+#        package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-module-http-request-dynamic
 #
-# 2. Register the launcher as a proxy endpoint so http:backstage:request can
-#    reach it. MERGE into the live `developer-hub-app-config` ConfigMap under
-#    data.app-config.yaml — do NOT apply directly:
+# 2. REGISTER THE PROXY ENDPOINT
+#    MERGE (do not replace) into the live developer-hub-app-config ConfigMap
+#    under data.app-config.yaml:
 #
 #      proxy:
 #        endpoints:
 #          /mcp-launcher:
 #            target: http://sandbox-launcher.mcp-gateway.svc:8080   # PLACEHOLDER
 #            changeOrigin: true
-#            credentials: require        # RHDH rejects unauthenticated calls
+#            credentials: require        # RHDH refuses to proxy when no Backstage
+#                                         # credentials are present; it forwards the
+#                                         # caller's token upstream but does NOT
+#                                         # validate end-user identity itself
 #            allowedHeaders:
 #              - Content-Type
 #            pathRewrite:
 #              '^/api/proxy/mcp-launcher/': '/'
 #
-#    The launcher then validates the caller via the X-Backstage-User-Info
-#    header RHDH forwards, and trusts the `userRef` body claim because no
-#    unauthenticated request can reach it.
+#    The launcher MUST authenticate the caller using the X-Backstage-User-Info
+#    header that RHDH forwards. The `userRef` body field is client-supplied
+#    (templated from user.ref by the scaffolder) and must be treated as
+#    advisory metadata, not as an authoritative identity claim.
+#
+# 3. REGISTER THIS TEMPLATE IN THE CATALOG
+#    The catalog/all.yaml Location already includes this file (target added).
+#    If registering standalone, create a Location entity pointing to:
+#      url: https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/templates/run-agent/template.yaml
+#
+# 4. LAUNCHER CONTRACT
+#    The launcher receives a JSON POST body:
+#      {
+#        "userRef":      "user:default/<username>",   // catalog entity ref
+#        "goal":         "<string>",
+#        "scope":        "read-only|read-write|admin",
+#        "mode":         "task|project",
+#        "capabilities": ["mcp-pfsense", "mcp-echo"], // catalog entity names
+#        "ttlMinutes":   60,
+#        "confirmed":    true
+#      }
+#    ENFORCEMENT: the launcher MUST reject the request with HTTP 400 when
+#    `confirmed` is not exactly boolean true. Backstage cannot enforce this
+#    constraint in the frontend form (JSON Schema `const: true` has no effect
+#    on form submission); the rejection must happen server-side here.
+#
+#    It must respond with 200–299 and a JSON body containing at minimum:
+#      {
+#        "sandboxName":     "<string>",  // used in output links
+#        "conversationUrl": "<url>"      // used in output links
+#      }
+#    Optionally include "catalogInfoUrl" to enable Step 3 (catalog:register).
 # ====================================================================

@@ -1,0 +1,85 @@
+# ============================================================================
+# RHDH Kubernetes plugin snippet — anaeem cluster + OpenShell Sandbox CR
+# ============================================================================
+#
+# WHAT THIS IS
+#   A SNIPPET to be MERGED into the RHDH app-config (ConfigMap
+#   "developer-hub-app-config", data key "app-config.yaml" in namespace "rhdh").
+#   This is NOT a standalone manifest and is NOT meant to be applied with
+#   `oc apply` directly.  Merge the keys below into the existing app-config,
+#   preserving all keys already present.
+#
+# WHY
+#   The Kubernetes backend plugin already knows about the `anaeem` cluster but
+#   has no `customResources` entry, so the Sandbox CR
+#   (agents.x-k8s.io/v1alpha1/Sandbox, plural: sandboxes) never appears on the
+#   entity page Kubernetes tab.  This snippet adds that entry and documents the
+#   complete cluster stanza for reference.
+#
+# APPLY COMMAND (edit in place — do NOT replace the whole ConfigMap)
+#
+#   oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#     -n rhdh edit configmap developer-hub-app-config
+#
+#   Then restart RHDH:
+#   oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#     rollout restart deployment/developer-hub -n rhdh
+#
+# PREREQUISITE — env Secret
+#   The value ${K8S_ANAEEM_TOKEN} must be available to the developer-hub
+#   Deployment as an environment variable.  Create or patch the env Secret
+#   (e.g. rhdh-k8s-secret in namespace rhdh) with key K8S_ANAEEM_TOKEN set
+#   to a long-lived token for the ServiceAccount bound to
+#   rhdh-kubernetes-sandbox-reader (see k8s-plugin.md § 2).
+#   Wire the Secret into the Deployment's envFrom or env block.
+#
+# ============================================================================
+# SHARED-INSTANCE SAFETY
+#   This RHDH also hosts migration-catalog and ansible-collection-discovery.
+#   The `kubernetes:` stanza is backend-only and does not affect other catalogs'
+#   rendering.  Adding `customResources` only teaches the plugin about a new CRD
+#   type; it has no effect on entities that do not carry the
+#   backstage.io/kubernetes-id annotation.  Safe to apply without coordination.
+# ============================================================================
+
+# ---- MERGE this block into the top-level of data.app-config.yaml ----
+# If a `kubernetes:` key already exists, keep its existing content and add
+# only the `customResources` array (marked below).  If the full stanza is
+# absent, paste the entire block.
+
+kubernetes:
+  serviceLocatorMethod:
+    type: multiTenant       # look up resources across all configured clusters
+
+  clusterLocatorMethods:
+    - type: config
+      clusters:
+        - name: anaeem
+          url: https://api.anaeem.na-launch.com:6443
+          authProvider: serviceAccount
+          # Token for the ServiceAccount whose ClusterRoleBinding grants
+          # get/list/watch on sandboxes.agents.x-k8s.io (see k8s-plugin.md § 2).
+          serviceAccountToken: ${K8S_ANAEEM_TOKEN}
+          # Self-signed cert on SNO — skip TLS verification.
+          skipTLSVerify: true
+          # SNO does not run metrics-server; suppress the 401 noise.
+          skipMetricsLookup: true
+
+  # ---- ADD THIS BLOCK if not already present -------------------------
+  # Teaches the plugin to list Sandbox CRs on the Kubernetes tab.
+  #
+  # CRITICAL: `apiVersion` is the VERSION ONLY ("v1alpha1").
+  # Do NOT use the fully-qualified form "agents.x-k8s.io/v1alpha1" here —
+  # that silently breaks CRD listing without any error in the UI or logs.
+  customResources:
+    - group: agents.x-k8s.io
+      apiVersion: v1alpha1
+      plural: sandboxes
+    # JIT grant CRD — uncomment and adjust once the real grant CRD group is
+    # finalised.  The grant object must carry the same
+    # backstage.io/kubernetes-id label as the Sandbox so both appear on the
+    # same entity's Kubernetes tab.
+    #
+    # - group: agentic.io          # replace with the real JIT grant CRD group
+    #   apiVersion: v1alpha1
+    #   plural: grants
