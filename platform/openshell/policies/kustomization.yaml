@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The OpenShell baseline policy as a ConfigMap — the single GitOps-reconciled
+# floor that the launcher (hack/launch-sandbox.sh) and jit-approver both read.
+# Stable name (no hash suffix) so those consumers can reference it directly.
+namespace: openshell
+
+configMapGenerator:
+  - name: openshell-baseline-policy
+    files:
+      - baseline.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: openshell-policy

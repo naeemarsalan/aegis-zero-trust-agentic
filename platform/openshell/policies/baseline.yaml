@@ -1,0 +1,84 @@
+# OpenShell baseline sandbox policy — the GLOBAL FLOOR we control centrally.
+#
+# This is the deny-by-default standing policy applied to EVERY OpenShell sandbox
+# at launch (see hack/launch-sandbox.sh). A sandboxed agent may reach ONLY the
+# platform's own surfaces — the MCP gateway, Keycloak (device-flow / token),
+# Vault, and the inference endpoint — and nothing else on the network. Everything
+# outside this allowlist is denied (OpenShell: "if no rule matches, deny").
+#
+# When this floor isn't enough, the agent does NOT get more by default — it must
+# request a time-boxed, approved widening through the JIT flow (UC2), which merges
+# an approved delta onto this baseline via `openshell policy set` and reverts to
+# this exact document on expiry. So this file is the single authoritative floor;
+# change it here (git → ConfigMap → reconcile) to change every agent's baseline.
+#
+# Note: `openshell policy set` REPLACES the whole policy, so the static
+# filesystem/process sections are required here and are carried verbatim into any
+# elevated policy; only network_policies / inference are widened by a grant.
+version: 1
+
+# Static (locked at sandbox creation): the agent reads its workdir, /tmp, and the
+# inference credential delivered to /vault/secrets by the svid-vault-fetch init
+# (via the agent's SVID — never a token on disk). Everything else is read-only.
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+# Dynamic (hot-reloadable, and what a JIT grant widens): deny-by-default allowlist.
+# Only the platform's own endpoints. No catch-all.
+network_policies:
+  mcp_gateway:
+    name: platform-mcp-gateway
+    endpoints:
+      - host: mcp-gateway.apps.anaeem.na-launch.com
+        port: 443
+        protocol: rest
+        tls: terminate
+        enforcement: enforce
+        access: full        # the agent POSTs MCP tool calls (not read-only)
+    binaries:
+      - { path: /sandbox-agent }
+      - { path: /usr/bin/curl }
+  keycloak:
+    name: platform-keycloak
+    endpoints:
+      - host: keycloak.apps.anaeem.na-launch.com
+        port: 443
+        protocol: rest
+        tls: terminate
+        enforcement: enforce
+        access: full        # device-flow auth + token endpoints
+    binaries:
+      - { path: /sandbox-agent }
+      - { path: /usr/bin/curl }
+  vault:
+    name: platform-vault
+    endpoints:
+      - host: vault.apps.anaeem.na-launch.com
+        port: 443
+        protocol: rest
+        tls: terminate
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: /sandbox-agent }
+      - { path: /usr/bin/curl }
+  inference:
+    name: platform-inference
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        tls: terminate
+        enforcement: enforce
+        access: full        # model API calls
+    binaries:
+      - { path: /sandbox-agent }
+      - { path: /usr/bin/python3 }
+      - { path: /usr/bin/node }
