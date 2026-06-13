@@ -1,0 +1,232 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: run-agent
+  title: Run an Agent
+  description: |
+    Spawn a personal, sandboxed AI agent connected to the zero-trust MCP
+    gateway. The agent runs as YOU — your Keycloak identity flows end-to-end,
+    every privileged MCP tool call is JIT-gated, and the sandbox auto-expires.
+    Pick a goal, a capability scope, and whether this is a quick task or a
+    longer-lived project.
+  tags:
+    - ai
+    - agent
+    - zero-trust
+    - mcp
+    - sandbox
+spec:
+  owner: group:default/mcp-admins
+  type: agent-sandbox
+
+  parameters:
+    - title: What should the agent do?
+      required:
+        - goal
+        - scope
+        - kind
+      properties:
+        goal:
+          title: Agent goal
+          type: string
+          description: >
+            One sentence describing what you want the agent to accomplish.
+            This seeds the agent's system prompt. Be specific — e.g.
+            "Audit the WAN firewall rules and report any any-any allows."
+          ui:autofocus: true
+          ui:options:
+            rows: 3
+          maxLength: 500
+
+        scope:
+          title: Capability scope
+          type: string
+          description: >
+            The set of MCP tools the agent may request. Read-only tools run
+            without approval; privileged tools always require Just-In-Time
+            approval from mcp-admins, regardless of scope.
+          default: read-only
+          enum:
+            - read-only
+            - read-write
+            - admin
+          enumNames:
+            - "Read-only — get_/search_/list_/diagnose_ tools, no approval needed"
+            - "Read-write — adds create_/update_ tools (JIT approval required)"
+            - "Admin — adds delete_/add_/apply_ tools (JIT approval + manager co-sign)"
+
+        kind:
+          title: Run kind
+          type: string
+          description: >
+            A task is a short-lived, single-objective run. A project is a
+            longer-lived sandbox you can return to and that allows a higher TTL.
+          default: task
+          enum:
+            - task
+            - project
+          enumNames:
+            - "Task — one objective, short TTL, tear down when done"
+            - "Project — persistent workspace, higher TTL, resumable"
+
+        capabilities:
+          title: MCP capabilities
+          type: array
+          description: >
+            Which downstream MCP servers this agent may reach through the
+            gateway. Leave empty to grant the gateway default for your scope.
+          ui:widget: checkboxes
+          default:
+            - pfsense
+          items:
+            type: string
+            enum:
+              - pfsense
+              - echo
+              - k8s
+              - dns
+          uniqueItems: true
+
+    - title: Lifetime & confirmation
+      required:
+        - ttlMinutes
+      properties:
+        ttlMinutes:
+          title: Sandbox TTL (minutes)
+          type: integer
+          description: >
+            The sandbox auto-terminates after this many minutes. Tasks cap at
+            120; projects may run up to 480.
+          default: 60
+          minimum: 5
+          maximum: 480
+
+        _review:
+          title: Acknowledgement
+          type: boolean
+          description: >
+            I understand the sandbox is created in namespace `agent-sandboxes`
+            with a SPIFFE identity scoped to my Keycloak user, that all
+            privileged tool calls require JIT approval, and that the sandbox
+            and its workspace are destroyed on expiry.
+          default: false
+
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1 — call the sandbox launcher.
+    #
+    # The launcher endpoint is a PLACEHOLDER cluster-internal Service URL:
+    #     http://sandbox-launcher.mcp-gateway.svc:8080/launch
+    #
+    # http:backstage:request CANNOT call arbitrary external/internal URLs
+    # directly — it can only reach hosts registered as RHDH proxy endpoints.
+    # So this step targets the RHDH proxy path `/proxy/mcp-launcher/launch`,
+    # and a human operator must register the launcher in the live
+    # `developer-hub-app-config` ConfigMap under proxy.endpoints (see the
+    # "Operator wiring" block at the bottom of this file). The proxy entry's
+    # `target` is the placeholder URL above.
+    #
+    # The roadiehq-scaffolder-backend-module-http-request-dynamic plugin
+    # (already enabled on the anaeem cluster) provides http:backstage:request.
+    #
+    # NOTE: http:backstage:request injects only a Backstage-internal OBO token,
+    # not the user's raw Keycloak JWT. We therefore pass the user's entity name
+    # explicitly in the body; the launcher trusts it because the proxy endpoint
+    # is configured with `credentials: require` (no unauthenticated calls).
+    # ------------------------------------------------------------------
+    - id: launchSandbox
+      name: Launch sandbox via launcher API
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/mcp-launcher/launch
+        headers:
+          content-type: application/json
+        body:
+          userRef: ${{ user.entity.metadata.name }}
+          goal: ${{ parameters.goal }}
+          scope: ${{ parameters.scope }}
+          kind: ${{ parameters.kind }}
+          capabilities: ${{ parameters.capabilities }}
+          ttlMinutes: ${{ parameters.ttlMinutes }}
+
+    # ------------------------------------------------------------------
+    # Step 2 — surface a launcher error if it returned a non-2xx status.
+    # Uses camelCase step id so the expression doesn't mis-parse as subtraction.
+    # ------------------------------------------------------------------
+    - id: checkLaunch
+      name: Verify launcher response
+      action: debug:log
+      if: ${{ steps['launchSandbox'].output.code >= 300 }}
+      input:
+        message: >
+          Launcher returned HTTP ${{ steps['launchSandbox'].output.code }}.
+          Body: ${{ steps['launchSandbox'].output.body }}
+        listWorkspace: false
+
+    # ------------------------------------------------------------------
+    # Step 3 (deferred) — register the running sandbox as a transient catalog
+    # entity once the launcher emits a catalog-info.yaml URL. Kept commented
+    # until the launcher returns `catalogInfoUrl` in its response body.
+    # ------------------------------------------------------------------
+    # - id: registerSandbox
+    #   name: Register sandbox in catalog
+    #   action: catalog:register
+    #   input:
+    #     catalogInfoUrl: ${{ steps['launchSandbox'].output.body.catalogInfoUrl }}
+
+  output:
+    links:
+      - title: Open agent conversation
+        url: ${{ steps['launchSandbox'].output.body.conversationUrl }}
+        icon: chat
+      - title: View sandbox in cluster
+        url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandboxName }}
+        icon: kubernetes
+    text:
+      - title: Sandbox details
+        content: |
+          **Sandbox name:** `${{ steps['launchSandbox'].output.body.sandboxName }}`
+          **Run kind:** `${{ parameters.kind }}`
+          **Scope:** `${{ parameters.scope }}`
+          **Capabilities:** `${{ parameters.capabilities }}`
+          **TTL:** ${{ parameters.ttlMinutes }} minutes
+          **Goal:** ${{ parameters.goal }}
+
+          Privileged tool calls still require JIT approval from
+          `group:default/mcp-admins`.
+
+# ====================================================================
+# OPERATOR WIRING (do NOT apply automatically — merge by hand)
+#
+# 1. Register this template with the catalog. Add a Location entity (or extend
+#    the existing one) pointing at this file, e.g.:
+#
+#      apiVersion: backstage.io/v1alpha1
+#      kind: Location
+#      metadata:
+#        name: run-agent-template
+#      spec:
+#        type: url
+#        targets:
+#          - https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/templates/run-agent/template.yaml
+#
+# 2. Register the launcher as a proxy endpoint so http:backstage:request can
+#    reach it. MERGE into the live `developer-hub-app-config` ConfigMap under
+#    data.app-config.yaml — do NOT apply directly:
+#
+#      proxy:
+#        endpoints:
+#          /mcp-launcher:
+#            target: http://sandbox-launcher.mcp-gateway.svc:8080   # PLACEHOLDER
+#            changeOrigin: true
+#            credentials: require        # RHDH rejects unauthenticated calls
+#            allowedHeaders:
+#              - Content-Type
+#            pathRewrite:
+#              '^/api/proxy/mcp-launcher/': '/'
+#
+#    The launcher then validates the caller via the X-Backstage-User-Info
+#    header RHDH forwards, and trusts the `userRef` body claim because no
+#    unauthenticated request can reach it.
+# ====================================================================

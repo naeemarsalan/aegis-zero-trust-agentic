@@ -1,0 +1,53 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: mcp-pfsense
+  namespace: default
+  title: pfSense MCP Tool Server
+  description: >
+    327-tool MCP server exposing pfSense firewall and network operations,
+    fronted by the mcp-gateway agentgateway proxy. Read-only tools
+    (get_/search_/list_/diagnose_/find_/analyze_) are available to any
+    authenticated mcp-user. Privileged tools (create_/update_/delete_/apply_/
+    bulk_/control_/reboot_/halt_) mutate firewall state and require JIT
+    approval (Kyverno ext_authz + KEDA pop-up) before they are permitted.
+  tags:
+    - mcp-server
+    - network
+    - firewall
+    - pfsense
+    - jit-required
+    - read-write
+  labels:
+    nvidia-ida/capability-tier: privileged
+    nvidia-ida/jit-required: "true"
+    nvidia-ida/transport: streamable-http
+    nvidia-ida/trust-domain: anaeem.na-launch.com
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/pfsense.yaml
+    # MCP gateway path this capability maps to (see agentgateway httproute-mcp.yaml: /mcp -> pfsense-mcp)
+    nvidia-ida/mcp-endpoint: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+    nvidia-ida/mcp-gateway-path: /mcp
+    nvidia-ida/mcp-backend: pfsense-mcp.agentic-mcp.svc.cluster.local:8000
+    # Tool classification: which verb prefixes are read-only vs privileged (JIT).
+    # Read-only tools are callable by group:default/mcp-users without escalation.
+    nvidia-ida/tools-read-only: "get_*, search_*, list_*, diagnose_*, find_*, analyze_*, compare_*, system_status, test_*"
+    # Privileged tools mutate state and require JIT approval; restricted to group:default/mcp-admins.
+    nvidia-ida/tools-privileged: "create_*, update_*, delete_*, apply_*, bulk_*, control_service, reboot_system, halt_system, restore_*, move_*, manage_*, generate_*, issue_*, renew_*, register_*, export_*, disconnect_*, send_wake_on_lan"
+  links:
+    - url: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+      title: Live MCP endpoint (/mcp)
+      icon: web
+    - url: https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/platform/agentgateway/base/backend-pfsense-mcp.yaml
+      title: agentgateway backend config
+      icon: github
+    - url: https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/platform/agentgateway/base/policy.yaml
+      title: gateway authz / JIT policy
+      icon: github
+spec:
+  type: mcp-server
+  lifecycle: experimental
+  owner: group:default/mcp-admins
+  system: system:default/agentic-platform
+  dependsOn:
+    - resource:default/mcp-echo

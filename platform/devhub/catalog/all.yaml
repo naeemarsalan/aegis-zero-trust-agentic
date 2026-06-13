@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: nvidia-ida-capabilities
+  namespace: default
+  description: >
+    Aggregating Location entity for all agentic platform MCP capabilities and
+    their supporting catalog entities (System, Groups). Register THIS file's
+    raw URL in developer-hub-app-config under catalog.locations; it pulls in
+    every per-capability descriptor by relative path.
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/all.yaml
+spec:
+  type: url
+  targets:
+    - ./groups.yaml
+    - ./system-agentic-platform.yaml
+    - ./pfsense.yaml
+    - ./echo.yaml

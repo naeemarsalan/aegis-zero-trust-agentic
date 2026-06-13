@@ -1,0 +1,23 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: agentic-platform
+  namespace: default
+  title: Zero-Trust Agentic AI Platform
+  description: >
+    The agentic AI platform on the "anaeem" OpenShift cluster. Users discover
+    MCP capabilities here, launch a sandboxed agent as themselves, and govern
+    it. The MCP gateway (agentgateway) fronts all downstream MCP tool servers
+    and enforces Keycloak JWT authn, ext_authz (Kyverno), identity delegation,
+    and CEL RBAC so downstream servers see the user identity, never the agent.
+  links:
+    - url: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+      title: MCP Gateway endpoint
+      icon: web
+    - url: https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+      title: Keycloak agentic realm
+      icon: dashboard
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/system-agentic-platform.yaml
+spec:
+  owner: group:default/mcp-admins

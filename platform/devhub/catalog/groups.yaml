@@ -1,0 +1,33 @@
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: mcp-admins
+  namespace: default
+  title: MCP Admins
+  description: >
+    Platform owners of the agentic MCP capabilities. Mirrors the Keycloak
+    "agentic" realm group /mcp-admins. Members may invoke privileged
+    (create_/delete_/update_/apply_) MCP tools, subject to JIT approval.
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/groups.yaml
+spec:
+  type: team
+  children: []
+  members:
+    - arsalan
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: mcp-users
+  namespace: default
+  title: MCP Users
+  description: >
+    Standard consumers of the agentic MCP capabilities. Mirrors the Keycloak
+    "agentic" realm group /mcp-users. Members may invoke read-only
+    (get_/search_/list_/diagnose_) MCP tools without JIT.
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/groups.yaml
+spec:
+  type: team
+  children: []
