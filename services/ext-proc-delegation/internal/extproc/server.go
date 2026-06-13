@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -39,7 +40,9 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/claims"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/config"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/inject"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/jwks"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/mcp"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/rbac"
 )
 
 // Exchanger is the interface for the Keycloak token exchange leg.
@@ -52,6 +55,11 @@ type VaultClient interface {
 	FetchToolSecret(ctx context.Context, tool string) (map[string]interface{}, error)
 }
 
+// JITVerifier verifies a jit-approver session JWT and returns its tool_scope.
+type JITVerifier interface {
+	Verify(ctx context.Context, raw string) (*jwks.VerifiedToken, error)
+}
+
 // Server implements extprocv3.ExternalProcessorServer.
 type Server struct {
 	extprocv3.UnimplementedExternalProcessorServer
@@ -59,12 +67,24 @@ type Server struct {
 	kc       Exchanger
 	vault    VaultClient
 	verifier claims.Verifier
+	jit      JITVerifier
+	policy   rbac.Policy
 }
 
 // NewServer creates a new ext_proc server. verifier independently verifies the
-// caller's JWT (defense in depth — the gateway is not trusted).
-func NewServer(cfg *config.Config, kc Exchanger, vault VaultClient, verifier claims.Verifier) *Server {
-	return &Server{cfg: cfg, kc: kc, vault: vault, verifier: verifier}
+// caller's JWT (defense in depth — the gateway is not trusted). jit may be nil
+// (JIT gate disabled — dangerous tools then require admin only).
+func NewServer(cfg *config.Config, kc Exchanger, vault VaultClient, verifier claims.Verifier, jit JITVerifier) *Server {
+	return &Server{
+		cfg: cfg, kc: kc, vault: vault, verifier: verifier, jit: jit,
+		policy: rbac.Policy{
+			ReadOnlyPrefixes:  cfg.ReadOnlyToolPrefixes,
+			DangerousPrefixes: cfg.DangerousToolPrefixes,
+			RestrictedGroup:   cfg.RestrictedGroup,
+			AdminGroup:        cfg.AdminGroup,
+			UserGroup:         cfg.UserGroup,
+		},
+	}
 }
 
 // Process handles a single bidirectional gRPC stream from Envoy.
@@ -76,6 +96,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		identity       *claims.Identity
 		authHeader     string
 		reqPath        string
+		jitJWT         string
 		sessionID      string
 		traceID        string
 		spanID         string
@@ -99,6 +120,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			hdrs := msg.RequestHeaders.GetHeaders()
 			authHeader = headerValue(hdrs, "authorization")
 			reqPath = headerValue(hdrs, ":path")
+			jitJWT = strings.TrimSpace(headerValue(hdrs, "x-jit-session-jwt"))
 			sessionID = headerValue(hdrs, "x-jit-session")
 			if sessionID == "" {
 				sessionID = uuid.New().String()
@@ -176,6 +198,30 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				argsHash = mcpReq.ArgsHash
 			}
 			emitter.SetMCP("", tool, argsHash)
+
+			// Tool-level RBAC: enforce the kyverno authz policies here (the
+			// gateway forwards no claims to ext_authz, and the deployed
+			// kyverno-envoy-plugin lacks the mcp CEL lib). For dangerous tools,
+			// verify the jit-approver session JWT (X-JIT-Session-JWT) and require
+			// the tool in its tool_scope.
+			{
+				var groups []string
+				if identity != nil {
+					groups = identity.Groups
+				}
+				jitValid := false
+				var jitScope []string
+				if tool != "" && jitJWT != "" && s.jit != nil {
+					if vt, jerr := s.jit.Verify(ctx, jitJWT); jerr == nil {
+						jitValid = true
+						jitScope = vt.ToolScope
+					}
+				}
+				if reason, allow := s.policy.Decide(groups, tool, jitValid, jitScope); !allow {
+					emitter.Emit(ctx, "deny", reason, false, false)
+					return stream.Send(immediateResponse(http.StatusForbidden, reason))
+				}
+			}
 
 			// Run Keycloak exchange and Vault secret fetch concurrently.
 			var exchangedToken string

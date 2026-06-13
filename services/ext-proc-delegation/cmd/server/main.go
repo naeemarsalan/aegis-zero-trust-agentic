@@ -82,13 +82,29 @@ func run() error {
 		return fmt.Errorf("jwks verifier: %w", err)
 	}
 
+	// jit-approver session-JWT verifier (gates dangerous tools, UC2). Optional:
+	// if it can't be built the JIT gate is disabled (dangerous tools require
+	// admin only). Verification is lazy, so a down jit-approver at startup is OK.
+	var jitVerifier *jwks.Verifier
+	if cfg.JITJWKSURL != "" {
+		if jv, jerr := jwks.New(jwks.Config{
+			JWKSURL:          cfg.JITJWKSURL,
+			Issuer:           cfg.JITIssuer,
+			ExpectedAudience: cfg.JITAudience,
+		}); jerr != nil {
+			slog.Warn("jit verifier disabled", "err", jerr)
+		} else {
+			jitVerifier = jv
+		}
+	}
+
 	// Build downstream clients.
 	kcClient := keycloak.NewClient(cfg)
 	vaultClient := vault.NewClient(cfg, jwtSource)
 
 	// Build gRPC server.
 	srv := grpc.NewServer()
-	extprocSrv := extproc.NewServer(cfg, kcClient, vaultClient, verifier)
+	extprocSrv := extproc.NewServer(cfg, kcClient, vaultClient, verifier, jitVerifier)
 	extprocv3.RegisterExternalProcessorServer(srv, extprocSrv)
 
 	healthSrv := health.NewServer()

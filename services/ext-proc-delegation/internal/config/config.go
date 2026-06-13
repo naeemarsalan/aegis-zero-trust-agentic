@@ -45,6 +45,19 @@ type Config struct {
 	StaticAuthPaths   []string
 	StaticTokenSecret string // KV tool name holding per-user tokens (default "mcp-tokens")
 
+	// Tool-level RBAC (enforces the kyverno authz policies in ext-proc).
+	ReadOnlyToolPrefixes  []string
+	DangerousToolPrefixes []string
+	RestrictedGroup       string
+	AdminGroup            string
+	UserGroup             string
+
+	// jit-approver session JWT (gates dangerous tools — UC2). Empty JITJWKSURL
+	// disables the JIT gate (dangerous tools then require admin only).
+	JITJWKSURL  string
+	JITIssuer   string
+	JITAudience string
+
 	// Safety invariant — only valid value is "closed".
 	FailMode string
 
@@ -76,6 +89,14 @@ func Load() (*Config, error) {
 		ToolSecretPathPrefix: getEnv("TOOL_SECRET_PATH_PREFIX", "secret/data/mcp-tools/"),
 		StaticAuthPaths:      splitNonEmpty(getEnv("STATIC_AUTH_PATHS", "/mcp")),
 		StaticTokenSecret:    getEnv("STATIC_TOKEN_SECRET", "mcp-tokens"),
+		ReadOnlyToolPrefixes:  splitNonEmpty(getEnv("READONLY_TOOL_PREFIXES", "get_,search_,list_,find_,diagnose_,show_,export_,follow_,check_,test_")),
+		DangerousToolPrefixes: splitNonEmpty(getEnv("DANGEROUS_TOOL_PREFIXES", "add_,set_,delete_,update_,create_,remove_,apply_,reload_,manage_,issue_,renew_,restore_,halt_,reboot_,disconnect_,send_,bulk_,move_,register_,control_,generate_,update_")),
+		RestrictedGroup:       getEnv("RESTRICTED_GROUP", "restricted"),
+		AdminGroup:            getEnv("ADMIN_GROUP", "mcp-admins"),
+		UserGroup:             getEnv("USER_GROUP", "mcp-users"),
+		JITJWKSURL:            getEnv("JIT_JWKS_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"),
+		JITIssuer:             getEnv("JIT_ISSUER", "https://jit-approver.mcp-gateway.svc.cluster.local:8080"),
+		JITAudience:           getEnv("JIT_AUDIENCE", "kyverno-authz"),
 		FailMode:             getEnv("FAIL_MODE", "closed"),
 		GRPCAddr:             getEnv("GRPC_ADDR", ":9000"),
 		MetricsAddr:          getEnv("METRICS_ADDR", ":9090"),

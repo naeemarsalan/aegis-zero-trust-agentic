@@ -38,6 +38,7 @@ type VerifiedToken struct {
 	PreferredUsername string
 	Groups            []string
 	Issuer            string
+	ToolScope         []string // jit-approver session JWT: tools this grant covers
 }
 
 // Verifier verifies Keycloak-issued RS256 JWTs against a cached JWKS.
@@ -112,6 +113,7 @@ type trustedClaims struct {
 	PreferredUsername string   `json:"preferred_username"`
 	Issuer            string   `json:"iss"`
 	Groups            []string `json:"groups"`
+	ToolScope         []string `json:"tool_scope"`
 }
 
 // Verify cryptographically verifies a raw JWT (no "Bearer " prefix) and
@@ -170,6 +172,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*VerifiedToken, erro
 		PreferredUsername: custom.PreferredUsername,
 		Groups:            custom.Groups,
 		Issuer:            custom.Issuer,
+		ToolScope:         custom.ToolScope,
 	}, nil
 }
 
