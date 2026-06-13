@@ -1,0 +1,10 @@
+{
+  "$comment": "Production-only typecheck — excludes test files. Run with: tsc --project tsconfig.check.json --noEmit",
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.spec.ts",
+    "src/**/*.spec.tsx"
+  ]
+}

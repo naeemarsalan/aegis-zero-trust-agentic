@@ -28,6 +28,7 @@ Keycloak / Vault / Forgejo stay the substrate. **Compose, don't rewrite.**
 | `catalog/` | catalog descriptors | Models each MCP capability as `kind: Resource` (`spec.type: mcp-server`) — `pfsense.yaml`, `echo.yaml` — plus supporting `groups.yaml` (mcp-admins/mcp-users), `system-agentic-platform.yaml`, and the aggregating `all.yaml` `Location`. Registered by URL. |
 | `templates/run-agent/template.yaml` | scaffolder Template | "Run an Agent" wizard: collects goal / scope / kind / capabilities / TTL and POSTs to the sandbox launcher via an RHDH proxy endpoint. Registered by URL. |
 | `app-config-k8s.yaml` | merge snippet | Complete `kubernetes:` app-config stanza — cluster entry (`anaeem`, `${K8S_ANAEEM_TOKEN}`, `skipTLSVerify: true`) plus `customResources` for `agents.x-k8s.io/sandboxes`. Merge into `developer-hub-app-config`. |
+| `app-config-launcher.yaml` | merge snippet | `proxy.endpoints./mcp-launcher` delta pointing at `http://sandbox-launcher.mcp-gateway.svc:8080`. Uses `credentials: forward` + `allowedHeaders: [Content-Type, Authorization]` so the Backstage user JWT reaches the launcher for identity verification. Depends on `services/sandbox-launcher` being live. |
 | `k8s-plugin.md` | operator doc | How to enable the Kubernetes dynamic plugins, teach the plugin about the `agents.x-k8s.io/sandboxes` CR, annotate the launched Sandbox entity, apply RHDH ServiceAccount RBAC, and surface the JIT approval PR queue via `spec.links`. |
 
 ---
@@ -148,16 +149,19 @@ entity) pointing at the template's raw URL:
       target: https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/templates/run-agent/template.yaml
 ```
 
-**3b. Register the launcher proxy endpoint** in `developer-hub-app-config` so the
-`http:backstage:request` step can reach it (it can't call raw URLs):
+**3b. Register the launcher proxy endpoint** by merging `app-config-launcher.yaml`
+into `developer-hub-app-config`. See that file and the `### Launcher proxy` section
+below for the full auth rationale. Key delta:
 ```yaml
 proxy:
   endpoints:
     /mcp-launcher:
-      target: http://sandbox-launcher.mcp-gateway.svc:8080   # PLACEHOLDER — see below
+      target: http://sandbox-launcher.mcp-gateway.svc:8080   # PLACEHOLDER
       changeOrigin: true
-      credentials: require
-      allowedHeaders: [Content-Type]
+      credentials: forward          # forwards Backstage user JWT to launcher
+      allowedHeaders:
+        - Content-Type
+        - Authorization             # required: carries the user JWT through
       pathRewrite:
         '^/api/proxy/mcp-launcher/': '/'
 ```
@@ -206,5 +210,110 @@ Restart RHDH and run the verification checklist in `k8s-plugin.md`.
 
 1. **SSO** — Keycloak `rhdh` client (manual) + Secret + keycloak dynamic plugin + merge `app-config-auth.yaml`; restart RHDH.
 2. **Catalog location** — register `catalog/all.yaml` via `catalog.locations`; restart RHDH.
-3. **Scaffolder template** — register `templates/run-agent/template.yaml` + add the `/mcp-launcher` proxy endpoint; restart RHDH.
+3. **Scaffolder template** — register `templates/run-agent/template.yaml` + merge `app-config-launcher.yaml` proxy endpoint; restart RHDH.
 4. **Kubernetes plugin** — add `customResources` for `sandboxes` + RHDH SA RBAC per `k8s-plugin.md`; restart RHDH.
+
+---
+
+### Launcher proxy
+
+`app-config-launcher.yaml` is the hand-merge delta for `proxy.endpoints./mcp-launcher`.
+It depends on the `services/sandbox-launcher` service being deployed and running in
+namespace `mcp-gateway` (port 8080, `POST /launch`). Until that service exists,
+submitting the "Run an Agent" template will error at the launch step.
+
+**Path cross-check:** The scaffolder step in `templates/run-agent/template.yaml` sends:
+```
+path: /proxy/mcp-launcher/launch
+```
+The Backstage scaffolder backend prepends `/api`, producing the server-side URL:
+```
+/api/proxy/mcp-launcher/launch
+```
+The proxy entry key `/mcp-launcher` and `pathRewrite: '^/api/proxy/mcp-launcher/': '/'`
+strip the prefix so the launcher sees `POST /launch`. These three are coupled — if you
+rename the proxy key you must update both the template path and the pathRewrite.
+
+**Auth design:** The config uses `credentials: forward` (not `credentials: require`).
+
+With `credentials: require`, RHDH demands that the caller (the scaffolder backend)
+authenticate, but the Backstage user JWT is stripped before the request leaves RHDH.
+The launcher would receive no cryptographic identity — only the client-supplied
+`user` body field (`LaunchRequest.user`), which is unauthenticated.
+
+With `credentials: forward`, RHDH requires the caller to be authenticated AND forwards
+the Backstage user JWT as `Authorization: Bearer <token>` upstream. `Authorization` is
+listed explicitly in `allowedHeaders` because the proxy strips non-CORS-safe headers
+even under `credentials: forward` unless they are whitelisted.
+
+The forwarded token is a **Backstage-issued JWT** — not the user's Keycloak OIDC access
+token. The Keycloak credential stays inside RHDH and is never relayed. The launcher
+verifies the Backstage JWT once against RHDH's JWKS endpoint, extracts the user entity
+ref from the `sub` (or `ent[0]`) claim, cross-checks it against `body.user`
+(`LaunchRequest.user`), then discards the token. All outbound launcher calls to
+agentgateway/OpenShell use the launcher's own OIDC `client_credentials` token —
+the user's token is never stored, logged, or relayed. This preserves the
+no-credential-passing invariant.
+
+**Launcher verification env vars** — already set in
+`services/sandbox-launcher/deploy/overlays/anaeem/deployment-patch.yaml`.
+Listed here for reference; no additional overlay edits are needed.
+
+| Variable | Value (as set in the overlay) |
+|---|---|
+| `RHDH_JWKS_URL` | `https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json` |
+| `RHDH_TOKEN_ISSUER` | `https://developer-hub-rhdh.apps.anaeem.na-launch.com` |
+| `LAUNCHER_OIDC_TOKEN_URL` | `http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token` |
+| `LAUNCHER_OIDC_CLIENT_ID` | `sandbox-launcher` |
+| `LAUNCHER_OIDC_CLIENT_SECRET_FILE` | `/vault/secrets/launcher-oidc-secret` |
+
+**Fallback — if `credentials: forward` is unavailable** (RHDH/Backstage pre-1.26):
+Drop back to `credentials: require`, remove `Authorization` from `allowedHeaders`, and
+add a static `headers.X-Launcher-Token: ${LAUNCHER_SHARED_SECRET}` header for
+service-to-service authentication. With this fallback, user identity comes only from
+`body.user` (`LaunchRequest.user`, advisory/unauthenticated); treat it as owner
+labeling metadata only, not as an access-control input. See the inline comments in
+`app-config-launcher.yaml` for the exact snippet.
+
+---
+
+### Known wiring discrepancies (flagged, not yet fixed in place)
+
+**`RHDH_JWKS_URL` / `RHDH_TOKEN_ISSUER` — in-cluster HTTP vs. public Route HTTPS.**
+The env-var table above and the inline comments in `app-config-launcher.yaml` give the
+public HTTPS Route URL (`https://developer-hub-rhdh.apps.anaeem.na-launch.com`). The
+launcher overlay (`services/sandbox-launcher/deploy/overlays/anaeem/deployment-patch.yaml`)
+already carries both vars set to the public HTTPS Route URL. If you switch `RHDH_JWKS_URL`
+to in-cluster HTTP (`http://developer-hub.rhdh.svc:7007/api/auth/.backstage/jwks.json`)
+to avoid the wildcard cert, keep `RHDH_TOKEN_ISSUER` set to the public HTTPS origin,
+because that is the `iss` claim Backstage embeds in its JWTs. Changing only one and not
+the other will cause token verification to fail.
+
+**`template.yaml` sends `userRef`, launcher expects `user`.**
+`platform/devhub/templates/run-agent/template.yaml` (line ~227) sends the body field
+as `userRef: ${{ user.ref }}`. The launcher's `LaunchRequest` model (`models.py`)
+defines the field as `user: str`, and `api.py` cross-checks against `body.user`. This
+means the template POST sends `userRef` but the launcher's Pydantic model reads `user`
+— the field is silently absent, causing validation to fail with a 422 (required field
+missing). This bug lives in `template.yaml` (and/or `models.py`), not in this proxy
+artifact. It must be fixed by renaming `userRef` → `user` in the template body before
+the end-to-end flow can succeed. Tracked here for visibility; the proxy wiring itself
+is correct.
+
+**`template.yaml` sends `scope` — no such field in `LaunchRequest`.**
+`platform/devhub/templates/run-agent/template.yaml` sends `scope: ${{ parameters.scope }}`
+in the POST body. `LaunchRequest` in `models.py` has no `scope` field. Pydantic v2
+ignores unknown fields by default (`model_config` does not set `extra='forbid'`), so
+the value is silently dropped and never reaches the launcher logic. If the launcher
+needs the scope tier (e.g. to apply the floor policy ceiling), `scope` must be added
+to `LaunchRequest` with the matching enum. Tracked here for visibility.
+
+**`template.yaml` sends `ttlMinutes`, launcher field is `ttl_minutes` (no alias).**
+`platform/devhub/templates/run-agent/template.yaml` sends `ttlMinutes: ${{ parameters.ttlMinutes }}`
+(camelCase). The `LaunchRequest` Pydantic model defines the field as `ttl_minutes` (snake_case)
+with no `alias` or `model_config` `populate_by_name`/`alias_generator` declared. Pydantic v2
+will not bind the inbound `ttlMinutes` key to `ttl_minutes`, so the field silently falls back
+to its default of 60 minutes regardless of what the user selected. Fix by either: (a) adding
+`alias='ttlMinutes'` to the `Field(...)` call in `models.py` and setting
+`model_config = ConfigDict(populate_by_name=True)`, or (b) changing the template body key to
+`ttl_minutes`. Option (b) is simpler for a PoC. Tracked here for visibility.

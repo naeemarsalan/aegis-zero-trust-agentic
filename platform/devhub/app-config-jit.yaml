@@ -1,0 +1,139 @@
+# ============================================================================
+# RHDH proxy snippet — jit-approver endpoint
+# ============================================================================
+#
+# HAND-MERGE DELTA — DO NOT `oc apply` this file directly.
+#
+#   This file is a SNIPPET to be MERGED into the live RHDH ConfigMap:
+#     ConfigMap: developer-hub-app-config
+#     Namespace: rhdh
+#     Data key:  app-config.yaml
+#
+#   PRESERVE ALL EXISTING KEYS. Merge only the proxy.endpoints./jit-approver
+#   stanza shown below inside the existing proxy.endpoints block (alongside the
+#   live /mcp-launcher entry from app-config-launcher.yaml).
+#
+#   Edit in place with:
+#     oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#       -n rhdh edit configmap developer-hub-app-config
+#   Then restart RHDH:
+#     oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#       -n rhdh rollout restart deployment/developer-hub
+#
+# DEPENDS ON: services/jit-approver — a FastAPI service that MUST be deployed
+#   and running as:
+#     Service: jit-approver
+#     Namespace: mcp-gateway
+#     Port: 8080
+#   Until that service exists, all three card plugins (agent-workspace,
+#   approvals-panel, receipt) will surface 502/ECONNREFUSED errors from their
+#   fetch paths.
+#
+# ============================================================================
+# AUTH DESIGN — credentials: forward, matching the launcher precedent
+# ============================================================================
+#
+# The /jit-approver proxy uses credentials: forward for the same reason as the
+# proven /mcp-launcher proxy in app-config-launcher.yaml: the browser-originated
+# GET requests from the three card plugins present a Backstage user JWT, and
+# jit-approver needs that identity to scope the session list to the requesting
+# user and to emit per-user audit events.
+#
+# credentials: require vs. credentials: forward — critical distinction:
+#
+#   credentials: require
+#     RHDH enforces that the CALLER presents valid Backstage credentials before
+#     proxying, but then STRIPS the Authorization header before sending the
+#     request upstream. The downstream service (jit-approver) receives NO
+#     cryptographic user identity — only whatever the browser put in the body.
+#
+#     An earlier draft of this file specified credentials: require following
+#     a generic hardening recommendation. That choice was INCORRECT for this
+#     use-case: the three card plugins use useApi(fetchApiRef).fetch() which
+#     attaches the Backstage JWT in Authorization: Bearer, but credentials:
+#     require would strip it before it reaches jit-approver. The user identity
+#     would be unavailable upstream.
+#
+#   credentials: forward  <-- THIS CONFIG (matches /mcp-launcher precedent)
+#     Same caller authentication requirement, but the Backstage user JWT IS
+#     forwarded to jit-approver in Authorization: Bearer <backstage-token>.
+#     jit-approver can verify this token against RHDH's JWKS endpoint and
+#     extract a cryptographically authenticated user identity for:
+#       - scoping GET /requests?sandbox=<name> to the requesting user
+#       - emitting per-user audit log entries
+#       - enforcing that only the sandbox owner can read session status
+#
+#     Authorization must be in allowedHeaders (see below); without it the
+#     header is stripped by the proxy-backend even under credentials: forward.
+#
+# PLUGIN REQUIREMENT: all three card plugins (agent-workspace, approvals-panel,
+# receipt) MUST use useApi(fetchApiRef).fetch() — NOT the raw browser fetch().
+# The fetchApiRef implementation attaches the Backstage user JWT automatically.
+# Raw fetch() sends no Authorization header, which means:
+#   - Under credentials: forward  → jit-approver sees no user identity (broken auth binding)
+#   - Under credentials: require  → the proxy returns 401 before the request reaches jit-approver
+# Both plugins have been updated to use fetchApiRef as of the Phase-3 skeleton fix.
+#
+# ============================================================================
+# PATH MATCH — cross-checked against plugin fetch calls
+# ============================================================================
+#
+# The card plugins call:
+#   fetchApi.fetch(`${proxyBase}/jit-approver/requests/${sessionId}/status`)
+# where proxyBase = discoveryApi.getBaseUrl('proxy')
+#                 = https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/proxy
+#
+# Full URL resolved browser-side:
+#   /api/proxy/jit-approver/requests/<id>/status
+#
+# The pathRewrite below strips /api/proxy/jit-approver/, so jit-approver
+# receives the request at:
+#   GET /requests/<id>/status
+#
+# This is the confirmed endpoint in services/jit-approver/src/jit_approver/api.py
+# (function get_status, line 155).
+#
+# ============================================================================
+
+proxy:
+  endpoints:
+    /jit-approver:
+      # jit-approver Service in namespace mcp-gateway (same namespace as ext-proc-delegation).
+      target: http://jit-approver.mcp-gateway.svc:8080
+      changeOrigin: true
+
+      # credentials: forward — RHDH requires the caller to be authenticated
+      # and forwards the Backstage user JWT as Authorization: Bearer <token>
+      # to jit-approver. This matches the /mcp-launcher precedent in
+      # app-config-launcher.yaml and is required for per-user session scoping.
+      # See AUTH DESIGN section above for why credentials: require was rejected.
+      credentials: forward
+
+      allowedHeaders:
+        # Content-Type is required for any POST body (e.g. future POST /requests).
+        - Content-Type
+        # Authorization is required to carry the Backstage user JWT to jit-approver
+        # for identity verification. Without this entry the header is stripped by
+        # the proxy-backend even under credentials: forward.
+        - Authorization
+
+      pathRewrite:
+        # Strips /api/proxy/jit-approver/ so jit-approver sees the bare path.
+        # Cross-checked against plugin fetch calls above.
+        '^/api/proxy/jit-approver/': '/'
+
+# ============================================================================
+# JIT-APPROVER ENV VARS (reference — already in services/jit-approver overlay)
+# ============================================================================
+#
+# For identity verification of the inbound Backstage user token, jit-approver
+# needs:
+#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
+#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#
+# The user entity ref is in the `sub` claim (e.g. user:default/arsalan) or the
+# `ent[0]` claim. The token must be discarded after identity extraction; never
+# log or relay it. All outbound calls from jit-approver use its OWN OIDC
+# client-credentials token.
+#
+# ============================================================================

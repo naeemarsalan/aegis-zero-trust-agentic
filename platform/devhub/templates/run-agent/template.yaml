@@ -274,17 +274,37 @@ spec:
   output:
     links:
       - title: Open agent conversation
-        # conversationUrl is set by the launcher in its JSON response body.
-        url: ${{ steps['launchSandbox'].output.body.conversationUrl }}
+        # conversation_url (snake_case) — LaunchResponse serialises snake_case
+        # keys with no camelCase aliases on the response model. Always null at
+        # launch time (ExposeService is never called on the /launch path; see
+        # TODO-D1 in plugins/PHASE3.md). This link renders as a blank URL until
+        # TODO-D1 lands in sandbox-launcher.
+        url: ${{ steps['launchSandbox'].output.body.conversation_url }}
         icon: chat
+      # ── Phase-3 keystone: Plan & Consent page (primary CTA) ─────────────
+      # Registered as dynamicRoute /agent-consent by the plan-consent plugin.
+      # Query params map exactly to the ConsentPage's usePlanData() hook:
+      #   sandbox    → LaunchResponse.sandbox_name (confirmed field, snake_case)
+      #   scope      → parameters.scope            (confirmed field)
+      #   ttl        → parameters.ttlMinutes       (confirmed field)
+      #   capabilities → parameters.capabilities (csv via join filter)
+      #   goal       → parameters.goal (url-encoded)
+      #   owner      → user.ref        (entity ref of the logged-in user)
+      # NOTE: capabilities is a YAML list in the template; Jinja join(',') produces
+      # the comma-separated string the ConsentPage expects.
+      # NOTE: sandbox_name uses snake_case because LaunchResponse (models.py) has
+      # no response aliases — aliases exist only on the request model (LaunchRequest).
+      - title: Review agent plan and confirm
+        url: /agent-consent?sandbox=${{ steps['launchSandbox'].output.body.sandbox_name }}&scope=${{ parameters.scope }}&ttl=${{ parameters.ttlMinutes }}&capabilities=${{ parameters.capabilities | join(',') }}&goal=${{ parameters.goal | urlencode }}&owner=${{ user.ref | urlencode }}
+        icon: security
       - title: View sandbox in cluster
-        # sandboxName is set by the launcher; links to the OpenShift console.
-        url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandboxName }}
+        # sandbox_name — snake_case per LaunchResponse serialisation (no alias).
+        url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandbox_name }}
         icon: kubernetes
     text:
       - title: Sandbox details
         content: |
-          **Sandbox name:** `${{ steps['launchSandbox'].output.body.sandboxName }}`
+          **Sandbox name:** `${{ steps['launchSandbox'].output.body.sandbox_name }}`
           **Run mode:** `${{ parameters.mode }}`
           **Scope:** `${{ parameters.scope }}`
           **Capabilities:** `${{ parameters.capabilities }}`
@@ -355,8 +375,10 @@ spec:
 #
 #    It must respond with 200–299 and a JSON body containing at minimum:
 #      {
-#        "sandboxName":     "<string>",  // used in output links
-#        "conversationUrl": "<url>"      // used in output links
-#      }
+#        "sandbox_name":     "<string>",  // snake_case — LaunchResponse has no
+#        "conversation_url": "<url>"      // camelCase aliases on response fields.
+#      }                                  // Aliases exist ONLY on LaunchRequest.
 #    Optionally include "catalogInfoUrl" to enable Step 3 (catalog:register).
+#    NOTE: if you add response aliases to LaunchResponse (models.py) to emit
+#    camelCase, you must also update the output.links Jinja expressions above.
 # ====================================================================

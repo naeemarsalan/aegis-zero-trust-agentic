@@ -1,0 +1,109 @@
+# ============================================================================
+# RHDH dynamic-plugin ConfigMap entry — plan-consent
+# ============================================================================
+#
+# HAND-MERGE DELTA — DO NOT `oc apply` this file directly.
+#
+# Target ConfigMap:  developer-hub-dynamic-plugins
+# Namespace:         rhdh
+# Data key:          dynamic-plugins.yaml
+# Merge location:    Under the top-level `plugins:` list.
+#
+# DELIVERY METHOD: HTTPS tgz (confirmed working delivery path for this cluster)
+#   1. Build:
+#        cd plugins/plan-consent
+#        npm install
+#        npx @red-hat-developer-hub/cli@1.9.0 plugin export \
+#            --no-generate-module-federation-assets --clean
+#        cd dist-dynamic && npm pack
+#
+#   2. Get integrity hash:
+#        npm pack --json | jq -r '.[0].integrity'
+#
+#   3. Upload nvidia-ida-plugin-plan-consent-dynamic-0.1.0.tgz to Gitea
+#      as a repo attachment (same pattern as migration-discovery plugin):
+#        https://git.arsalan.io/anaeem/nvidia-ida  → Releases or Attachments
+#
+#   4. Substitute the real URL and hash below before merging.
+#
+# PRESERVE ALL EXISTING ENTRIES. Only ADD the block below.
+# Do NOT remove the `includes: - dynamic-plugins.default.yaml` line.
+# Do NOT remove existing plugin entries (migration-catalog, ansible-collection-discovery).
+#
+# SHARED INSTANCE NOTE:
+#   This RHDH instance also hosts migration-catalog and
+#   ansible-collection-discovery. The conditions
+#     if: allOf: [isKind: resource, isType: agent-sandbox]
+#   are additive and DO NOT affect those tenants' entity pages.
+#   The /agent-consent route is new and does not conflict with any
+#   existing routes on this instance.
+#
+# SCALPRUM NAME:
+#   package.json scalprum.name = "nvidia-ida.plugin-plan-consent"
+#   This is the key used under pluginConfig.dynamicPlugins.frontend.
+#   Derived from @nvidia-ida/plugin-plan-consent →  nvidia-ida.plugin-plan-consent
+#   (scope dot package, per CLI derivation rules confirmed in RHDH CLI source).
+#
+# ============================================================================
+
+# Paste inside the `plugins:` list in developer-hub-dynamic-plugins:
+
+- disabled: false
+  # TODO: replace URL and integrity after uploading the tgz to Gitea.
+  package: https://git.arsalan.io/attachments/<REPLACE-WITH-GITEA-ATTACHMENT-UUID>/nvidia-ida-plugin-plan-consent-dynamic-0.1.0.tgz
+  integrity: sha512-<REPLACE-WITH-npm-pack-json-integrity>
+  pluginConfig:
+    dynamicPlugins:
+      frontend:
+        nvidia-ida.plugin-plan-consent:
+
+          # ── dynamicRoute: the Plan & Consent standalone page ──
+          # Registered at /agent-consent — independent of any catalog entity.
+          # Reached via the scaffolder output link added to:
+          #   platform/devhub/templates/run-agent/template.yaml (output.links)
+          dynamicRoutes:
+            - path: /agent-consent
+              importName: AgentConsentPage
+              # module defaults to PluginRoot (scalprum.exposedModules key)
+              menuItem:
+                icon: security
+                text: Agent Consent
+
+          # ── No mountPoints: the consent page is standalone ──
+          # It is reached by URL, not mounted on an entity tab.
+          # The three entity-tab cards (workspace, approvals, receipt) are
+          # registered by their own plugins (agent-workspace, approvals-panel, receipt).
+
+# ============================================================================
+# HOW THE SCAFFOLDER OUTPUT LINK REACHES THIS ROUTE
+# ============================================================================
+#
+# Add the following to output.links in:
+#   platform/devhub/templates/run-agent/template.yaml
+#
+#   - title: Review agent plan and confirm
+#     url: /agent-consent?sandbox=${{ steps['launchSandbox'].output.body.sandboxName }}&scope=${{ parameters.scope }}&ttl=${{ parameters.ttlMinutes }}&capabilities=${{ parameters.capabilities | join(',') }}&goal=${{ parameters.goal | urlencode }}&owner=${{ user.ref | urlencode }}
+#     icon: security
+#
+# This renders as a clickable button on the scaffolder success screen.
+# The user clicks it to reach the consent page with all query params populated.
+# (RHDH renders output.links as buttons; no onComplete redirect exists —
+#  confirmed issue backstage/backstage#27322, closed "not planned" Oct 2024.)
+#
+# ============================================================================
+# RESTART AFTER MERGE
+# ============================================================================
+#
+# After merging the plugin entry into the ConfigMap:
+#   oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#     rollout restart deployment/developer-hub -n rhdh
+#
+# Watch initContainer logs:
+#   oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#     -n rhdh logs -f deployment/developer-hub -c install-dynamic-plugins
+#
+# Success indicator:
+#   "Loading plugin nvidia-ida.plugin-plan-consent"
+#   "Registered route /agent-consent -> AgentConsentPage"
+#
+# ============================================================================

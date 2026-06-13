@@ -28,3 +28,6 @@ __pycache__/
 
 # kustomize --enable-helm chart pull cache (repo-server fetches charts itself)
 charts/
+node_modules/
+dist-dynamic/
+dist-scalprum/

@@ -1,0 +1,22 @@
+{
+  "name": "nvidia-ida-rhdh-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RHDH dynamic-plugin workspace for the nvidia-ida zero-trust agentic platform.",
+  "workspaces": [
+    "plan-consent",
+    "agent-workspace",
+    "approvals-panel",
+    "receipt"
+  ],
+  "scripts": {
+    "tsc": "npm run tsc --workspaces --if-present",
+    "export-dynamic": "npm run export-dynamic --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

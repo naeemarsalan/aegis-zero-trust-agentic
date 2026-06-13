@@ -1,0 +1,33 @@
+{
+  "name": "@nvidia-ida/plugin-plan-consent",
+  "version": "0.1.0",
+  "main": "src/index.ts",
+  "backstage": {
+    "role": "frontend-plugin",
+    "pluginId": "plan-consent"
+  },
+  "scalprum": {
+    "name": "nvidia-ida.plugin-plan-consent",
+    "exposedModules": {
+      "PluginRoot": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "export-dynamic": "rhdh-cli plugin export --no-generate-module-federation-assets --clean",
+    "tsc": "tsc --project tsconfig.check.json --noEmit"
+  },
+  "dependencies": {
+    "@backstage/core-components": "^0.15.0",
+    "@backstage/core-plugin-api": "^1.9.0",
+    "react": "^18.0.0",
+    "react-router-dom": "^6.0.0"
+  },
+  "devDependencies": {
+    "@red-hat-developer-hub/cli": "^1.9.0",
+    "@types/react": "^18.3.31",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  }
+}
