@@ -225,6 +225,11 @@ async def post_summary(session_id: str, summary: SessionSummary) -> dict[str, st
         actions_taken=summary.actions_taken,
     )
 
+    # Persist the summary so GET /requests/{id}/summary and /receipt can serve it
+    # to the RHDH receipt plugin. (Previously the summary was only emitted to the
+    # audit log + PR comment and then dropped.)
+    session["summary"] = summary
+
     # Post comment on the PR (best-effort)
     pr_number = session.get("pr_number")
     if pr_number is not None:
@@ -259,6 +264,121 @@ def _render_summary_comment(session_id: str, summary: SessionSummary) -> str:
         f"**Errors encountered:**\n{errors_md}\n\n"
         f"*Posted automatically by the agent via jit-approver.*"
     )
+
+
+# ---------------------------------------------------------------------------
+# Read endpoints for the RHDH Phase-3 plugins (approvals panel + receipt).
+#
+# CREDENTIAL INVARIANT: none of these expose sa_token / session_jwt — only
+# GET /requests/{id}/status does that, and ONLY when state==issued over the
+# SVID-mTLS channel. The endpoints below return request METADATA and the
+# post-session summary only.
+# ---------------------------------------------------------------------------
+
+
+def _session_sandbox(session: dict[str, Any]) -> str | None:
+    """The OpenShell sandbox a session is bound to (request field, or the one the
+    webhook widened)."""
+    req = session.get("request")
+    return getattr(req, "sandbox", None) or session.get("openshell_sandbox")
+
+
+@app.get("/requests")
+async def list_requests(
+    sandbox: str | None = None, state: str | None = None
+) -> list[SessionStatus]:
+    """List JIT sessions, optionally filtered by ?sandbox= and/or ?state=.
+
+    Powers the approvals panel: given a Sandbox the plugin discovers its grant
+    sessions without a hardcoded id. Credential fields are NEVER populated here.
+    """
+    out: list[SessionStatus] = []
+    for sid, session in session_store.items():
+        if sandbox is not None and _session_sandbox(session) != sandbox:
+            continue
+        if state is not None and session.get("state") != state:
+            continue
+        out.append(
+            SessionStatus(
+                id=sid,
+                state=SessionState(session["state"]),
+                pr_url=session.get("pr_url"),
+                expires_at=session.get("expires_at"),
+            )
+        )
+    return out
+
+
+@app.get("/requests/{session_id}/detail")
+async def get_detail(session_id: str) -> dict[str, Any]:
+    """Return the approved/requested scope of a session (no credentials).
+
+    Powers the approvals panel's scope display: verbs/resources/namespace,
+    justification, duration, the OpenShell sandbox + network policy_delta.
+    """
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    req: EscalationRequest = session["request"]
+    return {
+        "id": session_id,
+        "state": session.get("state"),
+        "expires_at": session.get("expires_at"),
+        "pr_url": session.get("pr_url"),
+        "requester_sub": req.requester_sub,
+        "namespace": req.namespace,
+        "verbs": req.verbs,
+        "resources": req.resources,
+        "duration_minutes": req.duration_minutes,
+        "justification": req.justification,
+        "sandbox": _session_sandbox(session),
+        "policy_delta": [pd.model_dump() for pd in req.policy_delta],
+    }
+
+
+@app.get("/requests/{session_id}/summary")
+async def get_summary(session_id: str) -> SessionSummary:
+    """Return the post-session summary the agent posted, or 404 if none yet."""
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    summary = session.get("summary")
+    if summary is None:
+        raise HTTPException(
+            status_code=404, detail=f"No summary posted for session {session_id} yet"
+        )
+    return summary
+
+
+@app.get("/requests/{session_id}/receipt")
+async def get_receipt(session_id: str) -> dict[str, Any]:
+    """Trust-artifact receipt for a session (no credentials).
+
+    Stitches the agent's posted summary (allowed actions taken + errors) with the
+    grant scope. The ext-proc-side DENIALS (dangerous-tool gate / RBAC) are
+    sourced from the audit logs in Loki — querying that requires LOKI_URL and is
+    left as a documented TODO; until then `denied` is empty and `denied_source`
+    explains why, rather than fabricating data.
+    """
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    summary: SessionSummary | None = session.get("summary")
+    return {
+        "id": session_id,
+        "state": session.get("state"),
+        "expires_at": session.get("expires_at"),
+        "tool_scope": session.get("tool_scope"),
+        "outcome": summary.outcome if summary else None,
+        "allowed": summary.actions_taken if summary else [],
+        "errors": summary.errors_encountered if summary else [],
+        "denied": [],
+        "denied_source": (
+            "TODO: aggregate ext-proc credential_delegation + dangerous-tool-gate "
+            "denials from Loki ({app=\"ext-proc-delegation\"} | json | session_id=...) "
+            "— requires LOKI_URL."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

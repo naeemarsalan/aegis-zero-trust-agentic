@@ -1441,3 +1441,80 @@ class TestReaper:
 
         assert reaped == []
         assert session_store[sid]["state"] == "issued"
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 read endpoints (approvals panel + receipt) — credential-free
+# ---------------------------------------------------------------------------
+
+
+class TestPhase3ReadEndpoints:
+    def test_list_filters_by_sandbox_no_creds(self, client: TestClient):
+        from jit_approver.models import EscalationRequest
+        a = _base_request() | {"sandbox": "sbx-a"}
+        b = _base_request() | {"sandbox": "sbx-b"}
+        _insert_session("sid-a", 1, EscalationRequest(**a))
+        _insert_session("sid-b", 2, EscalationRequest(**b))
+        # an issued session with creds present must NOT leak them in the list
+        session_store["sid-a"].update(
+            {"state": "issued", "sa_token": "SECRET-SA", "session_jwt": "SECRET-JWT"}
+        )
+
+        r = client.get("/requests", params={"sandbox": "sbx-a"})
+        assert r.status_code == 200
+        body = r.json()
+        assert [s["id"] for s in body] == ["sid-a"]
+        assert "SECRET-SA" not in r.text and "SECRET-JWT" not in r.text
+        assert all(s.get("sa_token") is None for s in body)
+
+    def test_detail_returns_scope_no_creds(self, client: TestClient):
+        from jit_approver.models import EscalationRequest
+        req = _base_request() | {
+            "sandbox": "sbx-a",
+            "policy_delta": [{"host": "example.com", "port": 443}],
+        }
+        _insert_session("sid-x", 7, EscalationRequest(**req))
+        session_store["sid-x"].update({"state": "issued", "sa_token": "SECRET-SA"})
+
+        r = client.get("/requests/sid-x/detail")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["verbs"] == ["get", "list"]
+        assert d["sandbox"] == "sbx-a"
+        assert d["policy_delta"][0]["host"] == "example.com"
+        assert "SECRET-SA" not in r.text  # invariant: detail never exposes creds
+
+    def test_detail_404(self, client: TestClient):
+        assert client.get("/requests/nope/detail").status_code == 404
+
+    def test_summary_404_then_200(self, client: TestClient):
+        from jit_approver.models import EscalationRequest, SessionSummary
+
+        _insert_session("sid-s", 3, EscalationRequest(**_base_request()))
+        assert client.get("/requests/sid-s/summary").status_code == 404
+        session_store["sid-s"]["summary"] = SessionSummary(
+            outcome="rotated the firewall alias", actions_taken=["update_alias"], errors_encountered=[]
+        )
+        r = client.get("/requests/sid-s/summary")
+        assert r.status_code == 200
+        assert r.json()["outcome"] == "rotated the firewall alias"
+
+    def test_receipt_grounds_on_summary(self, client: TestClient):
+        from jit_approver.models import EscalationRequest, SessionSummary
+
+        _insert_session("sid-r", 4, EscalationRequest(**_base_request()))
+        session_store["sid-r"].update(
+            {
+                "tool_scope": ["create_alias"],
+                "summary": SessionSummary(
+                    outcome="completed ok", actions_taken=["create_alias"], errors_encountered=["timeout once"]
+                ),
+            }
+        )
+        r = client.get("/requests/sid-r/receipt")
+        assert r.status_code == 200
+        rec = r.json()
+        assert rec["allowed"] == ["create_alias"]
+        assert rec["errors"] == ["timeout once"]
+        assert rec["denied"] == []
+        assert "Loki" in rec["denied_source"]
