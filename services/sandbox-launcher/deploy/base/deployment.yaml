@@ -1,0 +1,202 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-launcher
+  namespace: mcp-gateway
+  labels:
+    app: sandbox-launcher
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-launcher
+  template:
+    metadata:
+      labels:
+        app: sandbox-launcher
+        app.kubernetes.io/name: sandbox-launcher
+        app.kubernetes.io/part-of: nvidia-ida
+      annotations:
+        # ---------------------------------------------------------------------------
+        # Vault Agent Injector — writes secrets to tmpfs at /vault/secrets/
+        # ---------------------------------------------------------------------------
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "sandbox-launcher"
+        # OIDC client secret for the launcher's own client-credentials gateway token.
+        # Written to /vault/secrets/launcher-oidc-secret; read via LAUNCHER_OIDC_CLIENT_SECRET_FILE.
+        # This is the launcher service's OWN secret — the caller's token is NEVER stored here.
+        vault.hashicorp.com/agent-inject-secret-launcher-oidc-secret: "secret/data/sandbox-launcher/launcher-oidc-secret"
+        vault.hashicorp.com/agent-inject-template-launcher-oidc-secret: |
+          {{- with secret "secret/data/sandbox-launcher/launcher-oidc-secret" -}}
+          {{ .Data.data.secret }}
+          {{- end }}
+    spec:
+      serviceAccountName: sandbox-launcher
+      # true: the Vault Agent injector webhook refuses pods without an SA token
+      # volume ("failed to find service account volume mount"), and the agent
+      # needs it for Kubernetes auth.
+      automountServiceAccountToken: true
+      volumes:
+        # SPIFFE CSI volume — injects SVID at /var/run/secrets/spiffe.io/
+        - name: spiffe-csi
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        # Shared tmpfs where the svid-writer sidecar keeps a fresh JWT-SVID
+        # (audience=vault) that the app reads to authenticate the Vault JWT auth path.
+        - name: svid-jwt
+          emptyDir:
+            medium: Memory
+        # TLS client certificate for mTLS gRPC calls to the OpenShell gateway.
+        # Secret is created out-of-band (ExternalSecret or manual) in mcp-gateway.
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            defaultMode: 0440
+        # vault-secrets volume/mount come from the Vault Agent injector webhook —
+        # pre-declaring them makes the mutated pod invalid (duplicate name).
+        # DO NOT add a vault-secrets volume here.
+        # Baseline policy ConfigMap — mounted read-only.
+        # kubectl create cm openshell-baseline-policy --from-file=baseline.yaml=platform/openshell/policies/baseline.yaml -n mcp-gateway
+        - name: openshell-baseline
+          configMap:
+            name: openshell-baseline-policy
+            items:
+              - key: baseline.yaml
+                path: baseline.yaml
+      containers:
+        - name: sandbox-launcher
+          image: oci.arsalan.io/nvidia-ida/sandbox-launcher:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_JWT_ROLE
+              value: "sandbox-launcher"
+            - name: VAULT_JWT_AUTH_PATH
+              value: "jwt"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"  # Vault route uses the router wildcard cert (PoC)
+            - name: SVID_JWT_PATH
+              value: "/svid/svid.jwt"
+            - name: OPENSHELL_GATEWAY_ADDR
+              value: "openshell.openshell.svc:8080"
+            - name: OPENSHELL_CLIENT_TLS_DIR
+              value: "/etc/openshell-client-tls"
+            # Launcher's OWN OIDC client-credentials for the OpenShell gateway
+            # (LAUNCHER_OIDC_* — distinct from caller identity; no-credential-passing invariant).
+            - name: LAUNCHER_OIDC_TOKEN_URL
+              value: "http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token"
+            - name: LAUNCHER_OIDC_CLIENT_ID
+              value: "sandbox-launcher"
+            # File path wins over LAUNCHER_OIDC_CLIENT_SECRET (Vault Agent Injector pattern).
+            - name: LAUNCHER_OIDC_CLIENT_SECRET_FILE
+              value: "/vault/secrets/launcher-oidc-secret"
+            - name: LAUNCHER_OIDC_CLIENT_SECRET
+              value: ""  # overridden by file above
+            # RHDH Backstage JWKS — verifies the forwarded caller JWT (credentials: forward).
+            - name: RHDH_JWKS_URL
+              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json"
+            - name: RHDH_TOKEN_ISSUER
+              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
+            # Sandbox workload configuration
+            - name: SANDBOX_IMAGE
+              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:dev"
+            - name: SANDBOX_RUNTIME_CLASS
+              value: "kata"
+            - name: SANDBOX_NAMESPACE
+              value: "openshell"
+            - name: KEYCLOAK_REALM_URL
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            - name: MCP_GATEWAY_URL
+              value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+            # Baseline policy ConfigMap mount path
+            - name: OPENSHELL_BASELINE_POLICY_PATH
+              value: "/etc/openshell-baseline/baseline.yaml"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: spiffe-csi
+              mountPath: /var/run/secrets/spiffe.io
+              readOnly: true
+            - name: svid-jwt
+              mountPath: /svid
+              readOnly: true
+            - name: openshell-client-tls
+              mountPath: /etc/openshell-client-tls
+              readOnly: true
+            - name: openshell-baseline
+              mountPath: /etc/openshell-baseline
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            # no runAsUser: restricted-v2 assigns the UID from the namespace
+            # range; a fixed integer is rejected by SCC admission
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+        # Sidecar: keeps a fresh JWT-SVID (audience=vault) at /svid/svid.jwt so the
+        # launcher app can authenticate the Vault JWT auth path by identity rather than
+        # a static token. Same pattern as jit-approver.
+        - name: svid-writer
+          image: oci.arsalan.io/nvidia-ida/svid-vault-fetch:dev
+          imagePullPolicy: Always
+          env:
+            - name: WRITE_SVID_PATH
+              value: "/svid/svid.jwt"
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: "unix:///var/run/secrets/spiffe.io/spire-agent.sock"
+            - name: VAULT_JWT_AUDIENCE
+              value: "vault"
+          volumeMounts:
+            - name: spiffe-csi
+              mountPath: /var/run/secrets/spiffe.io
+              readOnly: true
+            - name: svid-jwt
+              mountPath: /svid
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault

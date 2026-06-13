@@ -1,0 +1,50 @@
+---
+# ClusterRole: minimum verbs for sandbox-launcher to provision per-user sandboxes.
+# jit-approver has no RBAC (it makes no k8s API calls); this role is unique to launcher.
+#
+# Verbs are scoped to the narrowest set required:
+#   - namespaces: create+get to provision sandbox ns; list/watch to detect conflicts
+#   - serviceaccounts: create+get for per-sandbox SA provisioning
+#   - rolebindings: create+get to bind the sandbox SA to the sandbox role
+#   - networkpolicies: create+get to apply the default-deny baseline for new ns
+#
+# "delete" on namespaces is intentionally excluded: sandbox teardown is handled
+# by the OpenShell gateway (CreateSandbox/DestroySandbox RPC). Add delete only
+# when a teardown code path is confirmed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sandbox-launcher
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sandbox-launcher
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-launcher
+    namespace: mcp-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sandbox-launcher

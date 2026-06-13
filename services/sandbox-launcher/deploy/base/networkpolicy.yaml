@@ -1,0 +1,219 @@
+# Default-deny baseline: only allow explicitly whitelisted ingress/egress.
+---
+# Deny all ingress and egress to sandbox-launcher by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-deny-all
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow ingress on :8080 from the OpenShift router.
+# RHDH (backstage-rhdh-oidc) is on the virt hub cluster; its proxy call to
+# https://sandbox-launcher.apps.anaeem.na-launch.com arrives post-DNAT from the
+# router pods in openshift-ingress, not from an intra-cluster pod-to-pod path.
+# The same selector covers all Route-fronted ingress (admin curl, health checks).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-ingress-router
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Allow ingress from monitoring (Prometheus scrape /metrics).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-ingress-monitoring
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-observability
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Egress: allow DNS (kube-dns).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-dns
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Egress: allow mTLS gRPC to OpenShell gateway (openshell.openshell.svc:8080).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-openshell
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Egress: allow OIDC token fetch + JWKS to Keycloak.
+# Token URL: http://keycloak.keycloak.svc:8080 (in-cluster HTTP; httpEnabled: true in CR).
+# JWKS URL:  http://keycloak.keycloak.svc:8080 (same in-cluster endpoint).
+# The keycloak namespace NetworkPolicy (allow-mcp-gateway) already permits ingress
+# from mcp-gateway pods on port 8080 — no change needed on the keycloak side.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-keycloak
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Egress: allow Vault (cluster-internal :8200 + Route via router :443).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-vault
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+    # Also allow vault FQDN via Route (vault.apps.anaeem.na-launch.com -> router :443)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 443
+          protocol: TCP
+
+---
+# Egress: allow k8s API server for sandbox provisioning (namespace/SA/RoleBinding/NetworkPolicy create).
+# ClusterIP of kubernetes.default.svc on anaeem is 172.30.0.1 (confirmed via oc get svc).
+# The API server also listens on the node IP at :6443; use a /32 for 172.30.0.1 +
+# an ipBlock covering the SNO node to catch both paths.
+# TODO: narrow the node-IP block once the SNO node IP is confirmed (oc get nodes -o wide).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-launcher-egress-apiserver
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox-launcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.30.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # SNO node API endpoint — broaden to /12 RFC1918 block until node IP confirmed.
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/12
+      ports:
+        - port: 6443
+          protocol: TCP

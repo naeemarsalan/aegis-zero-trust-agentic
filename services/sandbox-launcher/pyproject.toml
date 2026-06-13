@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sandbox-launcher"
+version = "0.1.0"
+description = "Packaged-agent sandbox launcher — provisions OpenShell sandboxes on behalf of RHDH users"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "nvidia-ida team" }]
+
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.3",
+    "httpx==0.28.1",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.9.1",
+    "PyYAML==6.0.2",
+    # Caller JWT verification (Backstage-issued token, RS256).
+    "PyJWT==2.10.1",
+    "cryptography>=43.0.0",
+    # gRPC runtime + protobuf for vendored openshell stubs.
+    "grpcio==1.81.1",
+    "protobuf>=6.31,<7",
+]
+
+[project.optional-dependencies]
+metrics = ["prometheus-client>=0.21.0"]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "respx==0.21.1",
+    "httpx==0.28.1",
+    "anyio[trio]>=4.0",
+]
+
+[project.scripts]
+sandbox-launcher = "sandbox_launcher.api:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_launcher"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.hatch.envs.default]
+python = "3.12"

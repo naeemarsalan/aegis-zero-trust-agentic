@@ -1,0 +1,29 @@
+# OpenShift Route — exposes the sandbox-launcher API publicly on anaeem.
+#
+# RHDH (backstage-rhdh-oidc in rhdh-oidc-test) runs on the virt hub cluster, not on
+# anaeem. The RHDH scaffolder template calls the launcher via an app-config proxy entry.
+# Because cross-cluster pod-to-pod is not configured, the proxy target MUST be this
+# Route URL, not the in-cluster Service URL.
+#
+# RHDH app-config proxy target: https://sandbox-launcher.apps.anaeem.na-launch.com
+# (update the RHDH proxy entry from the placeholder to this URL when configuring
+# the virt hub backstage-rhdh-oidc deployment).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sandbox-launcher
+  namespace: mcp-gateway
+  labels:
+    app: sandbox-launcher
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  host: sandbox-launcher.apps.anaeem.na-launch.com
+  to:
+    kind: Service
+    name: sandbox-launcher
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshell-baseline-policy
+  namespace: mcp-gateway
+  labels:
+    app.kubernetes.io/name: sandbox-launcher
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: openshell-policy
+  annotations:
+    # This ConfigMap mirrors platform/openshell/policies/baseline.yaml.
+    # Keep both files in sync — the platform/openshell copy is the single source
+    # of truth; this copy exists because the launcher runs in mcp-gateway and
+    # Kubernetes volumes cannot mount ConfigMaps across namespaces.
+data:
+  baseline.yaml: |
+    # OpenShell baseline sandbox policy — the GLOBAL FLOOR we control centrally.
+    #
+    # This is the deny-by-default standing policy applied to EVERY OpenShell sandbox
+    # at launch. A sandboxed agent may reach ONLY the platform's own surfaces — the
+    # MCP gateway, Keycloak, Vault, and the inference endpoint — and nothing else.
+    # Everything outside this allowlist is denied (OpenShell: "if no rule matches, deny").
+    #
+    # When this floor isn't enough, the agent does NOT get more by default — it must
+    # request a time-boxed, approved widening through the JIT flow (UC2), which merges
+    # an approved delta onto this baseline via `openshell policy set` and reverts to
+    # this exact document on expiry.
+    version: 1
+
+    filesystem_policy:
+      include_workdir: true
+      read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets]
+      read_write: [/sandbox, /tmp, /dev/null]
+    landlock:
+      compatibility: best_effort
+    process:
+      run_as_user: sandbox
+      run_as_group: sandbox
+
+    network_policies:
+      mcp_gateway:
+        name: platform-mcp-gateway
+        endpoints:
+          - host: mcp-gateway.apps.anaeem.na-launch.com
+            port: 443
+            protocol: rest
+            tls: terminate
+            enforcement: enforce
+            access: full
+        binaries:
+          - { path: /sandbox-agent }
+          - { path: /usr/bin/curl }
+      keycloak:
+        name: platform-keycloak
+        endpoints:
+          - host: keycloak.apps.anaeem.na-launch.com
+            port: 443
+            protocol: rest
+            tls: terminate
+            enforcement: enforce
+            access: full
+        binaries:
+          - { path: /sandbox-agent }
+          - { path: /usr/bin/curl }
+      vault:
+        name: platform-vault
+        endpoints:
+          - host: vault.apps.anaeem.na-launch.com
+            port: 443
+            protocol: rest
+            tls: terminate
+            enforcement: enforce
+            access: full
+        binaries:
+          - { path: /sandbox-agent }
+          - { path: /usr/bin/curl }
+      inference:
+        name: platform-inference
+        endpoints:
+          - host: api.anthropic.com
+            port: 443
+            protocol: rest
+            tls: terminate
+            enforcement: enforce
+            access: full
+        binaries:
+          - { path: /sandbox-agent }
+          - { path: /usr/bin/python3 }
+          - { path: /usr/bin/node }

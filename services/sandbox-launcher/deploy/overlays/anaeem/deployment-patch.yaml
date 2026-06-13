@@ -1,0 +1,65 @@
+# Overlay-specific environment tweaks for the anaeem SNO cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-launcher
+  namespace: mcp-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox-launcher
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            - name: VAULT_JWT_ROLE
+              value: "sandbox-launcher"
+            - name: VAULT_JWT_AUTH_PATH
+              value: "jwt"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            - name: SVID_JWT_PATH
+              value: "/svid/svid.jwt"
+            # OpenShell gateway mTLS gRPC address and cert dir
+            - name: OPENSHELL_GATEWAY_ADDR
+              value: "openshell.openshell.svc:8080"
+            - name: OPENSHELL_CLIENT_TLS_DIR
+              value: "/etc/openshell-client-tls"
+            # Launcher's OWN OIDC client-credentials for the OpenShell gateway.
+            # NEVER the caller's/user's token — see no-credential-passing invariant.
+            - name: LAUNCHER_OIDC_TOKEN_URL
+              value: "http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token"
+            - name: LAUNCHER_OIDC_CLIENT_ID
+              value: "sandbox-launcher"
+            # Secret injected by Vault agent at /vault/secrets/launcher-oidc-secret.
+            # File path wins over the plain env var (openshell.py pattern).
+            - name: LAUNCHER_OIDC_CLIENT_SECRET_FILE
+              value: "/vault/secrets/launcher-oidc-secret"
+            - name: LAUNCHER_OIDC_CLIENT_SECRET
+              value: ""  # overridden by file above
+            # RHDH Backstage JWKS — used to verify the forwarded caller JWT.
+            # Requires the RHDH proxy to be configured with credentials: forward.
+            # In-cluster HTTP to avoid TLS cert issues (RHDH is on virt hub — use Route URL).
+            - name: RHDH_JWKS_URL
+              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json"
+            - name: RHDH_TOKEN_ISSUER
+              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
+            # Sandbox workload configuration
+            - name: SANDBOX_IMAGE
+              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:dev"
+            - name: SANDBOX_RUNTIME_CLASS
+              value: "kata"
+            - name: SANDBOX_NAMESPACE
+              value: "openshell"
+            - name: KEYCLOAK_REALM_URL
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            - name: MCP_GATEWAY_URL
+              value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+            # Baseline policy ConfigMap mount path
+            - name: OPENSHELL_BASELINE_POLICY_PATH
+              value: "/etc/openshell-baseline/baseline.yaml"
+            # LOKI_PUSH_URL intentionally absent: audit.py logs structured JSON to
+            # stdout only; no Loki push client is wired. Setting an unused env var
+            # would imply a shipping path that does not exist.
+            - name: PYTHONUNBUFFERED
+              value: "1"
