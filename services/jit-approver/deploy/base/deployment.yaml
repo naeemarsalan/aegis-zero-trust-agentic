@@ -45,6 +45,16 @@ spec:
         # The approver reads SVID_JWT_PATH=/var/run/secrets/svid.jwt at login time
     spec:
       serviceAccountName: jit-approver
+      # Forgejo (git.arsalan.io) resolves to a PUBLIC IP from inside the cluster
+      # (split-horizon DNS), which the egress NetworkPolicy intentionally does not
+      # allow — agent-platform egress is pinned to the private homelab range
+      # 172.16.0.0/12. Pin the Forgejo hostname to its private address so the PR
+      # API calls stay on the allowed in-network path (172.16.1.1 serves the
+      # git.arsalan.io vhost by SNI).
+      hostAliases:
+        - ip: "172.16.1.1"
+          hostnames:
+            - "git.arsalan.io"
       # true: the Vault Agent injector webhook refuses pods without an SA token
       # volume ("failed to find service account volume mount"), and the agent
       # needs it for Kubernetes auth.
