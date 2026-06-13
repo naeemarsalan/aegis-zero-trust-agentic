@@ -471,3 +471,27 @@ added above use `if: allOf: [isKind: resource, isType: agent-sandbox]` condition
 they render ONLY on Sandbox entities and are invisible to all other catalog entities.
 The `includes: - dynamic-plugins.default.yaml` line in the ConfigMap must not be removed.
 Existing plugin entries must not be altered.
+
+## PROVEN deploy recipe (plan-consent keystone is LIVE on anaeem, 2026-06-14)
+
+The custom dynamic-plugin packaging + loading is verified end-to-end on RHDH 1.9.4:
+```sh
+cd plugins/<plugin>
+npm install --legacy-peer-deps --no-audit --no-fund
+# the scalprum webpack needs these peers of @backstage/core-components present:
+npm install --legacy-peer-deps react-dom@^18 @material-ui/core@^4.12.4 \
+  @material-ui/icons@^4.11.3 @material-ui/lab@4.0.0-alpha.61
+npx @red-hat-developer-hub/cli@1.9.0 plugin export --no-generate-module-federation-assets --clean
+cd dist-dynamic
+npm pack                                    # tgz (the package.json 'files' field MUST list dist-scalprum
+                                            #  or only src/ is packed — fixed in each source package.json)
+INTEGRITY="sha512-$(openssl dgst -sha512 -binary <tgz> | base64 -w0)"
+```
+Host the tgz at an HTTPS URL the RHDH pod can reach (we use the PUBLIC mirror repo
+git.arsalan.io/anaeem/nvidia-ida-catalog raw path; push binary via the Gitea
+contents API reading base64 from a FILE — argv is too small for a 2 MB b64).
+Register in the developer-hub-dynamic-plugins ConfigMap under plugins: with
+{package: <url>, integrity: <sha512>, pluginConfig.dynamicPlugins.frontend.<scalprum-name>}.
+Restart RHDH; the install-dynamic-plugins init container fetches + verifies
+integrity + extracts; scalprum logs "Loaded dynamic frontend plugin ...". The k8s
+plugin + roadiehq http-request action are ALREADY enabled on this instance.
