@@ -41,6 +41,7 @@ service credential, so no-downstream-credential-passing (UC1) is not violated.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -184,9 +185,14 @@ async def issue_credentials(
             headers=headers,
             json={
                 "allowed_kubernetes_namespaces": [req.namespace],
+                "kubernetes_role_type": "Role",
                 "token_default_ttl": ttl,
                 "token_max_ttl": ttl,
-                "generated_role_rules": _generated_role_rules(req),
+                # Vault's kubernetes engine wants generated_role_rules as a JSON
+                # STRING wrapped in {"rules": [...]} — not a raw array (that 400s).
+                "generated_role_rules": json.dumps(
+                    {"rules": _generated_role_rules(req)}
+                ),
             },
         )
         role_resp.raise_for_status()
