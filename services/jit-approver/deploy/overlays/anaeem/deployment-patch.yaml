@@ -21,7 +21,7 @@ spec:
             - name: JIT_ALLOWED_NAMESPACES
               value: "agent-sandbox,agentic-mcp"
             - name: SVID_JWT_PATH
-              value: "/var/run/secrets/svid.jwt"
+              value: "/svid/svid.jwt"
             - name: LOKI_PUSH_URL
               value: "http://172.16.2.252:3100"
             - name: PYTHONUNBUFFERED
