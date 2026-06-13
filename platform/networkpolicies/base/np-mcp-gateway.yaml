@@ -60,10 +60,18 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # jit-approver publishes the JWKS for the UC2 session-capability JWT at :8080/jwks.
+    # Two consumers fetch it: (1) the kyverno-envoy-plugin (legacy coarse gate), and
+    # (2) ext-proc-delegation, which is the enforcement point for the dangerous-tool
+    # gate (Phase 3) — it verifies X-JIT-Session-JWT against this JWKS. ext-proc is in
+    # this same namespace, so it is selected by podSelector rather than namespaceSelector.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kyverno
+        - podSelector:
+            matchLabels:
+              app: ext-proc-delegation
       ports:
         - port: 8080
           protocol: TCP

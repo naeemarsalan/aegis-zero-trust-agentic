@@ -82,3 +82,13 @@ spec:
           protocol: TCP
         - port: 443
           protocol: TCP
+    # jit-approver JWKS — ext-proc verifies the UC2 X-JIT-Session-JWT (the
+    # dangerous-tool gate, Phase 3) against jit-approver's /jwks. Same namespace,
+    # so the target is selected by podSelector on :8080.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jit-approver
+      ports:
+        - port: 8080
+          protocol: TCP

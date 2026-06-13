@@ -14,7 +14,9 @@ RUN pip install --no-cache-dir \
     "pydantic==2.12.5" \
     "pydantic-settings==2.9.1" \
     "PyYAML==6.0.2" \
-    "prometheus-client==0.21.0"
+    "prometheus-client==0.21.0" \
+    "PyJWT==2.10.1" \
+    "cryptography>=43.0.0"
 
 # Copy project files
 COPY pyproject.toml ./
