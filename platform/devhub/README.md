@@ -87,22 +87,33 @@ Then restart RHDH (command above).
 > can lock yourself out of Developer Hub. Do **not** set `scope:` under the OIDC
 > provider — it gets rejected.
 
-### 2. Catalog location — `catalog/all.yaml`
+### 2. Catalog location — published to the PUBLIC mirror repo
 
-After login works (so owners/groups resolve), register the capability catalog.
-Append one entry under `catalog.locations` in `developer-hub-app-config`:
+RHDH's Backstage Gitea URL reader only reliably ingests **public, root-level**
+catalog files — it 404s ("no matching files found") on this **private** nvidia-ida
+repo even with a valid token (verified: the RHDH pod can `curl` the raw file 200,
+but the reader still fails). So the catalog is published to a dedicated PUBLIC repo
+and registered from there:
 
 ```yaml
 catalog:
   locations:
     - type: url
-      target: https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/all.yaml
+      target: https://git.arsalan.io/anaeem/nvidia-ida-catalog/raw/branch/main/all.yaml
 ```
 
-`all.yaml` pulls in `groups.yaml`, `system-agentic-platform.yaml`, `pfsense.yaml`,
-and `echo.yaml` by relative path. `Resource` is already allowed by the live
-`catalog.rules`, so **no plugin install and no catalog.rules change** is needed.
-Restart RHDH and confirm the `mcp-pfsense` / `mcp-echo` Resources appear.
+The per-entity files in THIS directory (`groups.yaml`, `system-agentic-platform.yaml`,
+`pfsense.yaml`, `echo.yaml`) are the **authoring source**. `publish-public-catalog.sh`
+concatenates them into the public repo's root `all.yaml` (repointing each
+`source-location` annotation at the mirror) — run it after editing any of them:
+
+```sh
+GITEA_PAT=<pat-with-write-on-nvidia-ida-catalog> ./publish-public-catalog.sh
+```
+
+`Resource` is already allowed by the live `catalog.rules`, so **no plugin install
+and no catalog.rules change** is needed. Restart RHDH and confirm the
+`mcp-pfsense` / `mcp-echo` Resources appear.
 
 ### 3. Scaffolder template — `templates/run-agent/template.yaml`
 
