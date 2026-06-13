@@ -67,9 +67,12 @@ class EscalationRequest(BaseModel):
         min_length=1,
         description="Kubernetes resource types to grant — secrets/roles/rolebindings/clusterroles forbidden",
     )
-    duration_minutes: Annotated[int, Field(ge=1, le=60)] = Field(
+    duration_minutes: Annotated[int, Field(ge=10, le=60)] = Field(
         ...,
-        description="Duration for the credential grant, 1–60 minutes (hard ceiling)",
+        description="Duration for the credential grant, 10–60 minutes. Floor is 10: "
+        "the Kubernetes TokenRequest API rejects ServiceAccount tokens with an "
+        "expiration under 10 minutes, and the ephemeral SA token TTL is derived "
+        "from this value.",
     )
     justification: str = Field(
         ...,
