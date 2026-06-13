@@ -37,6 +37,15 @@ def _get_allowed_namespaces() -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
+class PolicyNetworkEndpoint(BaseModel):
+    """One egress endpoint a grant may temporarily open on the OpenShell floor."""
+
+    host: str = Field(..., min_length=1, description="Destination host (FQDN)")
+    port: Annotated[int, Field(ge=1, le=65535)] = Field(
+        default=443, description="Destination port"
+    )
+
+
 class EscalationRequest(BaseModel):
     """Incoming JIT escalation request.
 
@@ -78,6 +87,20 @@ class EscalationRequest(BaseModel):
         ...,
         min_length=10,
         description="Human-readable justification for audit / PR body",
+    )
+    # OpenShell policy elevator (the "request changes" for the network floor).
+    # When set, an approved grant ALSO widens the named sandbox's egress to these
+    # endpoints for the grant window (via openshell.py), reverting on expiry —
+    # the same time-boxed, audited shape as the SA token. Optional: omit for a
+    # pure Kubernetes-RBAC grant.
+    sandbox: str | None = Field(
+        default=None,
+        description="OpenShell sandbox name to widen (required if policy_delta is set)",
+    )
+    policy_delta: List[PolicyNetworkEndpoint] = Field(
+        default_factory=list,
+        description="Network endpoints to temporarily allow egress to (host+port). "
+        "Deny-by-default baseline otherwise.",
     )
 
     @field_validator("verbs", mode="before")

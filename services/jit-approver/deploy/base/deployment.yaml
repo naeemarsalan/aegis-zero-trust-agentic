@@ -70,6 +70,12 @@ spec:
         - name: svid-jwt
           emptyDir:
             medium: Memory
+        # TLS client certificate for mTLS gRPC calls to the OpenShell gateway.
+        # Secret is created out-of-band (ExternalSecret or manual) in mcp-gateway.
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            defaultMode: 0440
         # tmpfs for Vault-injected secrets (mounted by Vault agent sidecar)
         # vault-secrets volume/mount come from the Vault Agent injector —
         # pre-declaring them makes the mutated pod invalid (duplicate name).
@@ -109,6 +115,10 @@ spec:
             # the kubernetes-secrets-engine mint (identity-based, no static token).
             - name: SVID_JWT_PATH
               value: "/svid/svid.jwt"
+            - name: OPENSHELL_GATEWAY_ADDR
+              value: "openshell.openshell.svc:8080"
+            - name: OPENSHELL_CLIENT_TLS_DIR
+              value: "/etc/openshell-client-tls"
             # N1: stable RS256 signing key for the session JWT (UC2). If the file
             # is absent an ephemeral key is generated (PoC). See /jwks + signing.py.
             - name: JIT_SIGNING_KEY_PATH
@@ -121,6 +131,9 @@ spec:
               readOnly: true
             - name: svid-jwt
               mountPath: /svid
+              readOnly: true
+            - name: openshell-client-tls
+              mountPath: /etc/openshell-client-tls
               readOnly: true
           livenessProbe:
             httpGet:

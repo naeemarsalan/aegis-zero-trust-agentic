@@ -20,6 +20,9 @@ dependencies = [
     # N1: RS256 session-JWT minting + JWKS for the dangerous-tool gate (UC2).
     "PyJWT==2.10.1",
     "cryptography>=43.0.0",
+    # gRPC runtime + protobuf for pre-generated openshell stubs (src/jit_approver/osh/).
+    "grpcio==1.81.1",
+    "protobuf>=6.31,<7",
 ]
 
 [project.optional-dependencies]

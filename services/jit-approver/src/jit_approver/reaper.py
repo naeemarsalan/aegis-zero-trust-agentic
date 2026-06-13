@@ -114,6 +114,23 @@ async def reap_once(
                     extra={"session_id": session_id, "vault_role": role_name, "error": str(exc)},
                 )
                 continue
+            # Revert the OpenShell network widen back to the baseline floor (the
+            # policy-side teardown, sibling of the Vault lease revoke). Best-effort
+            # and idempotent (tolerates a gone sandbox / already-removed rule); a
+            # failure here must NOT block reaping — the Vault creds are already
+            # gone, and a lingering rule is re-attempted only if we leave it
+            # un-reaped, which we do not.
+            osh_sandbox = session.get("openshell_sandbox")
+            if osh_sandbox:
+                try:
+                    from jit_approver import openshell
+
+                    openshell.revert_network(session_id, osh_sandbox)
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.error(
+                        "reap_policy_revert_failed",
+                        extra={"session_id": session_id, "sandbox": osh_sandbox, "error": str(exc)},
+                    )
             async with store_lock:
                 sess = session_store.get(session_id)
                 if sess is not None:

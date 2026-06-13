@@ -16,7 +16,9 @@ RUN pip install --no-cache-dir \
     "PyYAML==6.0.2" \
     "prometheus-client==0.21.0" \
     "PyJWT==2.10.1" \
-    "cryptography>=43.0.0"
+    "cryptography>=43.0.0" \
+    "grpcio==1.81.1" \
+    "protobuf>=6.31,<7"
 
 # Copy project files
 COPY pyproject.toml ./

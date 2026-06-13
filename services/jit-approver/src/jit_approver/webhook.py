@@ -270,6 +270,34 @@ async def handle_gitea_webhook(
         )
         return {"status": "error", "reason": str(exc)}
 
+    # OpenShell policy elevator: if the REVIEWED grant widens the sandbox's
+    # network floor, apply it now via the gateway (incremental AddNetworkRule).
+    # Best-effort: the SA token + session JWT are the primary, hard credentials;
+    # a policy-widen failure is logged + audited, not fatal (the reaper still
+    # reverts on expiry, and the agent can re-request). The sandbox name is
+    # stashed on the session so the reaper knows to revert this exact rule.
+    sandbox = getattr(reviewed_req, "sandbox", None)
+    policy_delta = getattr(reviewed_req, "policy_delta", None) or []
+    if sandbox and policy_delta:
+        try:
+            from jit_approver import openshell
+
+            endpoints = [
+                {"host": getattr(e, "host", None) or e["host"],
+                 "port": getattr(e, "port", None) or e.get("port", 443)}
+                for e in policy_delta
+            ]
+            if openshell.widen_network(session_id, sandbox, endpoints):
+                async with store_lock:
+                    sess = session_store.get(session_id)
+                    if sess is not None:
+                        sess["openshell_sandbox"] = sandbox
+        except Exception as exc:  # noqa: BLE001 — widen is best-effort
+            logger.error(
+                "webhook_policy_widen_failed",
+                extra={"session_id": session_id, "sandbox": sandbox, "error": str(exc)},
+            )
+
     audit.emit_issued(
         session_id,
         reviewed_req.namespace,

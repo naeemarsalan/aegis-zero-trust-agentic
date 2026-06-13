@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 import yaml  # PyYAML — available in python:3.12-slim via pip
 
-from jit_approver.models import EscalationRequest
+from jit_approver.models import EscalationRequest, PolicyNetworkEndpoint
 
 logger = logging.getLogger("jit_approver.gitea")
 
@@ -92,6 +92,18 @@ def _render_scope_yaml(session_id: str, req: EscalationRequest) -> str:
                     }
                 ],
             },
+            # OpenShell policy delta: only present when sandbox + endpoints are set.
+            # A reviewer may narrow the endpoint list or remove the block entirely
+            # before merging (parse_grant_yaml defaults to None/[] when absent).
+            **({
+                "openshellPolicyDelta": {
+                    "sandbox": req.sandbox,
+                    "endpoints": [
+                        {"host": ep.host, "port": ep.port}
+                        for ep in req.policy_delta
+                    ],
+                }
+            } if req.sandbox and req.policy_delta else {}),
             # Vault role caps documented inline for reviewer. The reviewed scope
             # above is the ENFORCED scope: at issuance an EPHEMERAL Vault role
             # kubernetes/roles/jit-<sessionId> is created from exactly these
@@ -119,8 +131,38 @@ def _render_scope_yaml(session_id: str, req: EscalationRequest) -> str:
     return yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
 
+def _network_egress_section(req: EscalationRequest) -> str:
+    """Return a PR-body section describing the requested network egress widening.
+
+    Returns an empty string when no sandbox/policy_delta is set so the section
+    is cleanly omitted for pure Kubernetes-RBAC grants.
+    """
+    if not req.sandbox or not req.policy_delta:
+        return ""
+    rows = "\n".join(
+        f"        | `{ep.host}` | `{ep.port}` |" for ep in req.policy_delta
+    )
+    return textwrap.dedent(f"""\
+
+        ### Network Egress Widening (OpenShell)
+
+        | Field | Value |
+        |-------|-------|
+        | Sandbox | `{req.sandbox}` |
+
+        Endpoints temporarily opened for the grant window:
+
+        | Host | Port |
+        |------|------|
+        {rows.strip()}
+
+        > These egress rules are reverted on grant expiry (same TTL as the SA token).
+    """)
+
+
 def _pr_body(session_id: str, req: EscalationRequest, scope_yaml: str) -> str:
     """Render the PR body including scope, justification and denial context."""
+    network_section = _network_egress_section(req)
     return textwrap.dedent(f"""\
         ## JIT Escalation Request
 
@@ -133,6 +175,7 @@ def _pr_body(session_id: str, req: EscalationRequest, scope_yaml: str) -> str:
         | Verbs | `{", ".join(req.verbs)}` |
         | Resources | `{", ".join(req.resources)}` |
         | Duration | `{req.duration_minutes}m` |
+        """) + network_section + textwrap.dedent(f"""\
 
         ### Justification
 
@@ -380,6 +423,33 @@ def parse_grant_yaml(scope_yaml: str) -> EscalationRequest:
         verbs.extend(rule.get("verbs") or [])
         resources.extend(rule.get("resources") or [])
 
+    # Reconstruct optional OpenShell policy delta — default to None/[] so old
+    # grants (lacking the block) continue to parse without error (fail-closed:
+    # we only populate if the block is structurally valid; any parse issue leaves
+    # the fields at their safe defaults so downstream will simply skip openshell).
+    sandbox: str | None = None
+    policy_delta: list[PolicyNetworkEndpoint] = []
+    delta_block = spec.get("openshellPolicyDelta")
+    if isinstance(delta_block, dict):
+        raw_sandbox = delta_block.get("sandbox")
+        if isinstance(raw_sandbox, str) and raw_sandbox:
+            sandbox = raw_sandbox
+        raw_endpoints = delta_block.get("endpoints")
+        if isinstance(raw_endpoints, list):
+            for item in raw_endpoints:
+                if not isinstance(item, dict):
+                    continue
+                raw_host = item.get("host")
+                raw_port = item.get("port")
+                if isinstance(raw_host, str) and raw_host and isinstance(raw_port, int):
+                    try:
+                        policy_delta.append(PolicyNetworkEndpoint(host=raw_host, port=raw_port))
+                    except Exception:  # noqa: BLE001 — malformed endpoint, skip defensively
+                        logger.warning(
+                            "parse_grant_yaml.skipped_endpoint",
+                            extra={"host": raw_host, "port": raw_port},
+                        )
+
     # Re-run the ceiling. ValueError/ValidationError here => deny.
     return EscalationRequest(
         agent_spiffe_id=spec.get("agentSpiffeId", ""),
@@ -389,6 +459,8 @@ def parse_grant_yaml(scope_yaml: str) -> EscalationRequest:
         resources=resources,
         duration_minutes=scope.get("durationMinutes", 0),
         justification=spec.get("justification", ""),
+        sandbox=sandbox,
+        policy_delta=policy_delta,
     )
 
 

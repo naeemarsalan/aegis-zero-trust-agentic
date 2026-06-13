@@ -22,6 +22,10 @@ spec:
               value: "agent-sandbox,agentic-mcp"
             - name: SVID_JWT_PATH
               value: "/svid/svid.jwt"
+            - name: OPENSHELL_GATEWAY_ADDR
+              value: "openshell.openshell.svc:8080"
+            - name: OPENSHELL_CLIENT_TLS_DIR
+              value: "/etc/openshell-client-tls"
             - name: LOKI_PUSH_URL
               value: "http://172.16.2.252:3100"
             - name: PYTHONUNBUFFERED
