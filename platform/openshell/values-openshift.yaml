@@ -1,0 +1,11 @@
+# OpenShell gateway helm overrides for OpenShift (chart ghcr.io/nvidia/openshell/helm-chart).
+# OpenShift assigns uid/fsGroup from the namespace range, so the chart's hardcoded
+# 1000 must be relaxed. The chart's own OpenShift docs suggest null; we pin to the
+# namespace range which also works and is explicit. Sandboxes land in `openshell`.
+podSecurityContext:
+  fsGroup: 1000990000      # or null to let OpenShift assign
+securityContext:
+  runAsUser: 1000990000    # or null
+sandbox:
+  sandboxNamespace: openshell
+  runtimeClassName: kata   # sandboxes can run as Kata micro-VMs

@@ -1,0 +1,66 @@
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: capstone-agent
+  namespace: openshell
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: capstone-agent
+    spec:
+      containers:
+      - env:
+        - name: KEYCLOAK_REALM_URL
+          value: https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+        - name: MCP_GATEWAY_URL
+          value: https://mcp-gateway.apps.anaeem.na-launch.com
+        - name: ECHO_PATH
+          value: /echo
+        image: oci.arsalan.io/nvidia-ida/sandbox-agent:dev
+        imagePullPolicy: Always
+        name: agent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /vault/secrets
+          name: vault-secrets
+          readOnly: true
+      initContainers:
+      - command:
+        - /bin/sh
+        - -c
+        - for f in api_key endpoint model oidc_client_id oidc_client_secret; do cp
+          /src/$f /vault/secrets/inference.$f; done; ls /vault/secrets
+        image: registry.redhat.io/ubi9/ubi-minimal:latest
+        name: seed-secret
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /src
+          name: src
+          readOnly: true
+        - mountPath: /vault/secrets
+          name: vault-secrets
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: openshell-sandbox
+      volumes:
+      - name: src
+        secret:
+          secretName: agent-inference
+      - emptyDir:
+          medium: Memory
+        name: vault-secrets
+  replicas: 1
+  shutdownPolicy: Retain
+
