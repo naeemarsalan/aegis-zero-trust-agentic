@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: nvidia-ida-capabilities
+  namespace: default
+  description: >
+    Root catalog entrypoint for the zero-trust agentic platform. Registered in
+    RHDH (developer-hub-app-config -> catalog.locations) by THIS file's raw URL.
+    It fans out by relative path to the per-capability descriptors under
+    platform/devhub/catalog/. Lives at repo root because the RHDH instance's
+    Gitea URL reader only reads a nested file when it is resolved as a relative
+    child of a root location — not when a nested path is registered directly.
+  annotations:
+    backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/catalog-info.yaml
+spec:
+  type: url
+  targets:
+    - ./platform/devhub/catalog/groups.yaml
+    - ./platform/devhub/catalog/system-agentic-platform.yaml
+    - ./platform/devhub/catalog/pfsense.yaml
+    - ./platform/devhub/catalog/echo.yaml
