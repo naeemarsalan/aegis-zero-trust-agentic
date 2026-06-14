@@ -91,9 +91,9 @@ spec:
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
             # Sandbox workload configuration
             - name: SANDBOX_IMAGE
-              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:dev"
+              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:sh3"
             - name: SANDBOX_RUNTIME_CLASS
-              value: "kata"
+              value: ""
             - name: SANDBOX_NAMESPACE
               value: "openshell"
             - name: KEYCLOAK_REALM_URL

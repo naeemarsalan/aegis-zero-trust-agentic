@@ -363,6 +363,21 @@ async def catalog() -> Response:
             continue
         labels = meta.get("labels", {}) or {}
         owner = labels.get("nvidia-ida/owner", "unknown")
+        # The k8s plugin must find the sandbox's pods. The OpenShell CR exposes the
+        # exact pod label selector in status.selector (e.g.
+        # "agents.x-k8s.io/sandbox-name-hash=<hash>") — use it as the entity's
+        # kubernetes-label-selector so the Workspace tab shows the live workload.
+        # (backstage.io/kubernetes-id alone selects app.kubernetes.io/instance=<id>,
+        # which the OpenShell pods do NOT carry, so the tab would be empty.)
+        selector = (sb.get("status", {}) or {}).get("selector", "").strip()
+        annotations = {
+            "backstage.io/kubernetes-namespace": ns,
+            "nvidia-ida/owner": owner,
+        }
+        if selector:
+            annotations["backstage.io/kubernetes-label-selector"] = selector
+        else:
+            annotations["backstage.io/kubernetes-id"] = name
         entities.append({
             "apiVersion": "backstage.io/v1alpha1",
             "kind": "Resource",
@@ -371,11 +386,7 @@ async def catalog() -> Response:
                 "namespace": "default",
                 "title": name,
                 "description": f"Live OpenShell agent sandbox owned by {owner}.",
-                "annotations": {
-                    "backstage.io/kubernetes-id": name,
-                    "backstage.io/kubernetes-namespace": ns,
-                    "nvidia-ida/owner": owner,
-                },
+                "annotations": annotations,
                 "labels": {
                     k.replace("nvidia-ida/", "nvidia-ida_"): v
                     for k, v in labels.items()
