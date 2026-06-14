@@ -317,6 +317,82 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
 
 
 # ---------------------------------------------------------------------------
+# Catalog (TODO-E1): serve live OpenShell sandboxes as Backstage Resources so a
+# launched agent shows up in RHDH with the Workspace/Approvals/Receipt tabs.
+# Register as a catalog.location (type:url) pointing at this endpoint.
+# ---------------------------------------------------------------------------
+
+
+def _list_sandboxes() -> list[dict[str, Any]]:
+    """List OpenShell Sandbox CRs in SANDBOX_NAMESPACE via the in-cluster k8s API
+    (the launcher SA token; read-only)."""
+    import httpx
+
+    ns = os.environ.get("SANDBOX_NAMESPACE", "openshell")
+    sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+    try:
+        token = open(f"{sa}/token").read().strip()
+    except OSError:
+        return []
+    url = (
+        "https://kubernetes.default.svc/apis/agents.x-k8s.io/v1alpha1/"
+        f"namespaces/{ns}/sandboxes"
+    )
+    with httpx.Client(timeout=10, verify=f"{sa}/ca.crt") as http:
+        resp = http.get(url, headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json().get("items", [])
+
+
+@app.get("/catalog")
+async def catalog() -> Response:
+    """Backstage catalog entities for the current sandboxes (multi-doc YAML)."""
+    import yaml
+
+    ns = os.environ.get("SANDBOX_NAMESPACE", "openshell")
+    try:
+        items = _list_sandboxes()
+    except Exception as exc:  # noqa: BLE001 — serve an empty (valid) catalog on error
+        logger.warning("catalog_list_failed", extra={"error": str(exc)})
+        items = []
+    entities: list[dict[str, Any]] = []
+    for sb in items:
+        meta = sb.get("metadata", {})
+        name = meta.get("name", "")
+        if not name:
+            continue
+        labels = meta.get("labels", {}) or {}
+        owner = labels.get("nvidia-ida/owner", "unknown")
+        entities.append({
+            "apiVersion": "backstage.io/v1alpha1",
+            "kind": "Resource",
+            "metadata": {
+                "name": name,
+                "namespace": "default",
+                "title": name,
+                "description": f"Live OpenShell agent sandbox owned by {owner}.",
+                "annotations": {
+                    "backstage.io/kubernetes-id": name,
+                    "backstage.io/kubernetes-namespace": ns,
+                    "nvidia-ida/owner": owner,
+                },
+                "labels": {
+                    k.replace("nvidia-ida/", "nvidia-ida_"): v
+                    for k, v in labels.items()
+                    if k.startswith("nvidia-ida/")
+                },
+            },
+            "spec": {
+                "type": "agent-sandbox",
+                "owner": "group:default/mcp-admins",
+                "system": "system:default/agentic-platform",
+            },
+        })
+    body = yaml.safe_dump_all(entities) if entities else "{}\n"
+    return Response(content=body, media_type="application/yaml")
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
