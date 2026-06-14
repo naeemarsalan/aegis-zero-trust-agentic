@@ -277,13 +277,23 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
     # Proto-derived name (see openshell.phase_name) — never drifts from the wire enum.
     phase_str = openshell.phase_name(phase_int)
 
-    # Step 5: build response
-    # conversationUrl is null at creation time — the OpenShell API does not return
-    # a routable URL from CreateSandbox. Call ExposeService after sandbox is READY
-    # if a public HTTP URL is needed. See design brief §(3).
-    access_hint = (
-        f"oc -n {_SANDBOX_NAMESPACE} exec -it <agent_pod> -c agent -- /bin/sh"
-        f"  # sandbox: {sandbox_name}"
+    # Step 5: build response — the agent pod is named after the sandbox.
+    access_hint = f"oc -n {_SANDBOX_NAMESPACE} exec -it {sandbox_name} -c agent -- /bin/sh"
+
+    # Persist scope/ttl/owner + the shell access hint onto the Sandbox CR so the
+    # RHDH Agent Workspace card (which reads them via /catalog as entity
+    # labels/annotations) shows LIVE values instead of placeholders (TODO-D3).
+    # Best-effort: needs sandboxes patch RBAC; a failure just leaves the card on
+    # its defaults and never blocks the launch.
+    _patch_sandbox_meta(
+        sandbox_name,
+        labels={
+            "nvidia-ida/scope": body.scope.value,
+            "nvidia-ida/ttl-minutes": str(body.ttl_minutes),
+            "nvidia-ida/owner": openshell._sanitize_label_value(entity_ref),
+            "nvidia-ida/mode": body.mode.value,
+        },
+        annotations={"nvidia-ida/access-hint": access_hint},
     )
 
     audit.emit_launch_outcome(
@@ -321,6 +331,45 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
 # launched agent shows up in RHDH with the Workspace/Approvals/Receipt tabs.
 # Register as a catalog.location (type:url) pointing at this endpoint.
 # ---------------------------------------------------------------------------
+
+
+def _patch_sandbox_meta(
+    name: str, labels: dict[str, str], annotations: dict[str, str]
+) -> None:
+    """Best-effort merge-patch of labels/annotations onto a Sandbox CR via the k8s
+    API, so /catalog can read back scope/ttl/owner/access-hint for the Workspace
+    card. Requires sandboxes 'patch' RBAC; any failure is logged and swallowed and
+    never blocks a launch."""
+    import httpx
+
+    ns = os.environ.get("SANDBOX_NAMESPACE", "openshell")
+    sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+    try:
+        token = open(f"{sa}/token").read().strip()
+    except OSError:
+        return
+    url = (
+        "https://kubernetes.default.svc/apis/agents.x-k8s.io/v1alpha1/"
+        f"namespaces/{ns}/sandboxes/{name}"
+    )
+    patch = {"metadata": {"labels": labels, "annotations": annotations}}
+    try:
+        with httpx.Client(timeout=10, verify=f"{sa}/ca.crt") as http:
+            r = http.patch(
+                url,
+                json=patch,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/merge-patch+json",
+                },
+            )
+        if r.status_code >= 300:
+            logger.warning(
+                "sandbox_meta_patch_failed",
+                extra={"sandbox": name, "code": r.status_code, "body": r.text[:200]},
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("sandbox_meta_patch_error", extra={"sandbox": name, "error": str(exc)})
 
 
 def _list_sandboxes() -> list[dict[str, Any]]:
@@ -362,22 +411,31 @@ async def catalog() -> Response:
         if not name:
             continue
         labels = meta.get("labels", {}) or {}
+        cr_ann = meta.get("annotations", {}) or {}
+        status = sb.get("status", {}) or {}
         owner = labels.get("nvidia-ida/owner", "unknown")
         # The k8s plugin must find the sandbox's pods. The OpenShell CR exposes the
         # exact pod label selector in status.selector (e.g.
         # "agents.x-k8s.io/sandbox-name-hash=<hash>") — use it as the entity's
         # kubernetes-label-selector so the Workspace tab shows the live workload.
-        # (backstage.io/kubernetes-id alone selects app.kubernetes.io/instance=<id>,
-        # which the OpenShell pods do NOT carry, so the tab would be empty.)
-        selector = (sb.get("status", {}) or {}).get("selector", "").strip()
+        selector = status.get("selector", "").strip()
+        # Real phase for the Agent Workspace card (was hard-defaulting to PROVISIONING):
+        # prefer status.phase, else derive from the Ready condition.
+        phase = status.get("phase")
+        if not phase:
+            conds = {c.get("type"): c.get("status") for c in status.get("conditions", [])}
+            phase = "READY" if conds.get("Ready") == "True" else "PROVISIONING"
         annotations = {
             "backstage.io/kubernetes-namespace": ns,
             "nvidia-ida/owner": owner,
+            "nvidia-ida/phase": str(phase),
         }
-        if selector:
-            annotations["backstage.io/kubernetes-label-selector"] = selector
-        else:
-            annotations["backstage.io/kubernetes-id"] = name
+        annotations["backstage.io/kubernetes-label-selector" if selector else "backstage.io/kubernetes-id"] = (
+            selector or name
+        )
+        # Pass through the shell access hint the launcher patched onto the CR (TODO-D3).
+        if cr_ann.get("nvidia-ida/access-hint"):
+            annotations["nvidia-ida/access-hint"] = cr_ann["nvidia-ida/access-hint"]
         entities.append({
             "apiVersion": "backstage.io/v1alpha1",
             "kind": "Resource",
@@ -387,10 +445,10 @@ async def catalog() -> Response:
                 "title": name,
                 "description": f"Live OpenShell agent sandbox owned by {owner}.",
                 "annotations": annotations,
+                # Keep the nvidia-ida/ label keys verbatim — the Agent Workspace card
+                # reads labels['nvidia-ida/scope'] and ['nvidia-ida/ttl-minutes'].
                 "labels": {
-                    k.replace("nvidia-ida/", "nvidia-ida_"): v
-                    for k, v in labels.items()
-                    if k.startswith("nvidia-ida/")
+                    k: v for k, v in labels.items() if k.startswith("nvidia-ida/")
                 },
             },
             "spec": {

@@ -35,7 +35,7 @@ rules:
   # Read OpenShell Sandbox CRs to serve them as Backstage catalog entities (/catalog, TODO-E1).
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
