@@ -51,6 +51,23 @@ oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
 > fallback preserved; validate OIDC round-trip; (Step 2) remove the guest block.
 > See `app-config-auth.yaml` header for the full safety rationale.
 
+**1a0. RHDH MUST TRUST THE INGRESS CA — PREREQUISITE (verified blocker).**
+The Keycloak route is edge-terminated with the `*.apps` ingress cert (signed by
+the ingress-operator router-CA). The RHDH (Node/Backstage) pod does NOT trust that
+CA by default — verified: `curl` to the OIDC discovery URL from the RHDH pod fails
+with exit 60 (SSL: unable to get local issuer certificate). OIDC discovery and
+login will FAIL until RHDH trusts it. Fix: mount the ingress CA bundle
+(`openshift-config-managed/default-ingress-cert` key `ca-bundle.crt`) into the
+RHDH pod and set `NODE_EXTRA_CA_CERTS` to its path (via the RHDH CR / helm values,
+so the operator doesn't revert it). Re-verify discovery returns 200 from the pod
+BEFORE flipping `signInPage: oidc`.
+
+Status (anaeem, staged 2026-06-14): the Keycloak `rhdh` client + service-account
+roles + the `rhdh-keycloak-secret` (8 env values, incl. a fresh AUTH_SESSION_SECRET)
+are CREATED but NOT wired into the deployment and the auth config is NOT merged —
+so the sign-in page is unchanged and other tenants are unaffected. To complete:
+do 1a0 (CA trust), wire the secret into the `developer-hub` env, then 1c–1e below.
+
 **1a. Create the Keycloak client (manual, in the `agentic` realm) — PREREQUISITE.**
 RHDH will fail to start if this client does not exist when the config is applied:
 
