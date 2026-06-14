@@ -1,0 +1,20 @@
+# Sample agent-sandbox Resource — gives the Phase-3 entity-tab plugins something
+# to mount on (the Workspace + Approvals tabs and the Session Receipt overview
+# card are gated to `isKind: resource` AND `isType: agent-sandbox`). Published to
+# the public mirror (nvidia-ida-catalog all.yaml). In the real flow the launcher
+# would emit one of these per launched sandbox (TODO-E1).
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: demo-agent-sandbox
+  namespace: default
+  title: Demo Agent Sandbox
+  description: >
+    A sample launched agent sandbox demonstrating the Phase-3 rich-UX plugins.
+  annotations:
+    backstage.io/kubernetes-id: demo-agent-sandbox
+    nvidia-ida/owner: user-default-arsalan
+spec:
+  type: agent-sandbox
+  owner: group:default/mcp-admins
+  system: system:default/agentic-platform
