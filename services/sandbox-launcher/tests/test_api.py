@@ -194,7 +194,7 @@ class TestAuthFailures:
 
     def test_expired_jwt_returns_401(self, client: TestClient, mock_openshell_ok):
         """JWT verification raises ValueError (expired token) -> 401."""
-        with patch(
+        with patch.dict(os.environ, {"LAUNCHER_REQUIRE_VERIFIED": "true"}), patch(
             "sandbox_launcher.auth.verify_caller_token",
             side_effect=ValueError("caller token has expired"),
         ):
@@ -208,7 +208,7 @@ class TestAuthFailures:
 
     def test_invalid_signature_jwt_returns_401(self, client: TestClient, mock_openshell_ok):
         """JWT verification raises ValueError (signature) -> 401."""
-        with patch(
+        with patch.dict(os.environ, {"LAUNCHER_REQUIRE_VERIFIED": "true"}), patch(
             "sandbox_launcher.auth.verify_caller_token",
             side_effect=ValueError("caller token signature did not verify"),
         ):
@@ -508,3 +508,15 @@ def test_sanitize_label_value():
     assert s("::weird//") == "weird"
     assert s("") == "unknown"
     assert len(s("x" * 100)) <= 63
+
+
+def test_unverifiable_token_falls_back_to_advisory(client, mock_openshell_ok):
+    """Default (PoC): a token that can't be verified -> advisory identity (202),
+    NOT a hard 401. The gateway call still uses the launcher's own creds."""
+    from unittest.mock import patch
+    with patch("sandbox_launcher.auth.verify_caller_token",
+               side_effect=ValueError("unable to fetch RHDH JWKS for token verification")):
+        resp = client.post("/launch", json=_VALID_BODY,
+                           headers={"Authorization": "Bearer cannot.verify.this"})
+    assert resp.status_code == 202
+    assert resp.json().get("owner")  # advisory owner recorded

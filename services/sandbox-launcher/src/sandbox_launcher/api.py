@@ -138,9 +138,20 @@ def _extract_and_verify_caller(request: Request, body_user: str) -> tuple[str, b
     try:
         claims = verify_caller_token(token)
     except ValueError as exc:
-        # Fail-closed: any verification failure -> 401, log without token
         audit.emit_auth_failure("unknown", f"token verification failed: {exc}")
-        raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
+        # LAUNCHER_REQUIRE_VERIFIED=true → fail closed (401). Default (PoC): a token
+        # was presented but couldn't be verified (e.g. JWKS reachability, or the
+        # Backstage token type/issuer differs from RHDH_TOKEN_ISSUER) — fall back to
+        # advisory identity (body.user, verified=false) so the flow proceeds. The
+        # no-credential-passing invariant is unaffected: the gateway call still uses
+        # the launcher's OWN creds, never the caller's token.
+        if os.environ.get("LAUNCHER_REQUIRE_VERIFIED", "").strip().lower() == "true":
+            raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
+        logger.warning(
+            "caller_token_unverified_fallback",
+            extra={"body_user": body_user, "reason": str(exc)},
+        )
+        return body_user, False
     except RuntimeError as exc:
         # RHDH JWKS not configured — mis-deployment, not caller error
         logger.error("rhdh_jwks_not_configured", extra={"error": str(exc)})

@@ -60,8 +60,14 @@ def _fetch_jwks() -> list[dict[str, Any]]:
         if _jwks_cache and (time.monotonic() - _jwks_fetched_at) < _JWKS_TTL:
             return _jwks_cache
 
-        # TLS: use system CA bundle; no InsecureSkipVerify in production paths
-        with httpx.Client(timeout=10) as http:
+        # TLS: RHDH's route is edge-terminated with the cluster ingress cert, signed
+        # by the self-signed ingress-operator CA that the launcher image doesn't ship.
+        # Trust it via the mounted ingress CA (RHDH_JWKS_CA, default /etc/rhdh-ingress-ca/
+        # ca.crt); RHDH_JWKS_INSECURE=true skips verify (JWKS is public key material).
+        insecure = os.environ.get("RHDH_JWKS_INSECURE", "").strip().lower() == "true"
+        ca_path = os.environ.get("RHDH_JWKS_CA", "/etc/rhdh-ingress-ca/ca.crt").strip()
+        verify: Any = False if insecure else (ca_path if ca_path and os.path.exists(ca_path) else True)
+        with httpx.Client(timeout=10, verify=verify) as http:
             resp = http.get(jwks_url)
         resp.raise_for_status()
         keys = resp.json().get("keys", [])
