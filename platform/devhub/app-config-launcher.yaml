@@ -1,0 +1,195 @@
+# ============================================================================
+# RHDH proxy snippet — sandbox-launcher endpoint
+# ============================================================================
+#
+# HAND-MERGE DELTA — DO NOT `oc apply` this file directly.
+#
+#   This file is a SNIPPET to be MERGED into the live RHDH ConfigMap:
+#     ConfigMap: developer-hub-app-config
+#     Namespace: rhdh
+#     Data key:  app-config.yaml
+#
+#   The shared instance already contains keys for:
+#     - auth / signInPage   (from app-config-auth.yaml)
+#     - kubernetes          (from app-config-k8s.yaml)
+#     - catalog             (locations, rules, providers)
+#     - integrations, backend, etc.
+#
+#   PRESERVE ALL EXISTING KEYS. Merge only the proxy.endpoints./mcp-launcher
+#   stanza shown below. If a proxy.endpoints block already exists, append
+#   the /mcp-launcher entry inside it; do NOT replace the existing block.
+#
+#   Edit in place with:
+#     oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#       -n rhdh edit configmap developer-hub-app-config
+#   Then restart RHDH:
+#     oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify \
+#       rollout restart deployment/developer-hub -n rhdh
+#
+# DEPENDS ON: services/sandbox-launcher — a FastAPI service that MUST be
+#   deployed and running as:
+#     Service: sandbox-launcher
+#     Namespace: mcp-gateway
+#     Port: 8080
+#     Endpoint: POST /launch
+#   Until that service exists, submitting the "Run an Agent" scaffolder
+#   template will fail at the launch step with a connection error.
+#
+# ============================================================================
+# AUTH DESIGN — why credentials: forward (not: require)
+# ============================================================================
+#
+# The scaffolder action http:backstage:request runs server-side inside the
+# RHDH backend. It routes the request through the proxy at:
+#
+#   browser -> RHDH scaffolder backend -> /api/proxy/mcp-launcher/launch
+#              -> sandbox-launcher.mcp-gateway.svc:8080/launch
+#
+# credentials: require vs. credentials: forward — CRITICAL DISTINCTION:
+#
+#   credentials: require
+#     RHDH enforces that the CALLER (the scaffolder backend) presents valid
+#     Backstage credentials before it will proxy the request. The Backstage
+#     user token IS NOT forwarded upstream. The Authorization header is
+#     stripped before the request reaches sandbox-launcher. Result: the
+#     launcher receives NO cryptographic identity — only the client-supplied
+#     user body field (LaunchRequest.user), which is unauthenticated.
+#
+#   credentials: forward  <-- THIS CONFIG
+#     Same requirement on the caller, but the Backstage user token (a
+#     Backstage-issued JWT, NOT the raw Keycloak OIDC token) IS forwarded
+#     upstream in the Authorization: Bearer <backstage-token> header.
+#     The launcher can verify this token against RHDH's own JWKS endpoint
+#     and extract a cryptographically authenticated user identity.
+#
+# INVARIANT PRESERVED: the NO-CREDENTIAL-PASSING invariant is NOT violated.
+#   The forwarded token is a Backstage-issued JWT, not the user's Keycloak
+#   OIDC access token. Backstage validated the Keycloak token at sign-in
+#   and issued its own short-lived token. The Keycloak credential never
+#   leaves RHDH. The launcher verifies the Backstage token once (to
+#   extract and cross-check the user identity), then discards it — it
+#   MUST NOT store, log, or relay it. All calls from the launcher to
+#   downstream services (agentgateway/OpenShell) use the launcher's OWN
+#   OIDC client-credentials token, not the user's.
+#
+# NOTE — X-Backstage-User-Info: The OPERATOR WIRING comment in
+#   templates/run-agent/template.yaml mentions "RHDH forwards the caller's
+#   Backstage credentials as an X-Backstage-User-Info header." This is
+#   NOT a standard Backstage proxy header and is NOT emitted by the
+#   proxy-backend. Do NOT rely on it. The Authorization Bearer token
+#   (forwarded via credentials: forward) is the correct mechanism.
+#
+# ============================================================================
+# PATH MATCH — cross-checked against template.yaml
+# ============================================================================
+#
+# The http:backstage:request step in:
+#   platform/devhub/templates/run-agent/template.yaml (line ~220)
+# sends:
+#   path: /proxy/mcp-launcher/launch
+#
+# The Backstage frontend and scaffolder backend prepend /api, so the full
+# URL resolved server-side is:
+#   /api/proxy/mcp-launcher/launch
+#
+# The pathRewrite below strips the /api/proxy/mcp-launcher/ prefix, so the
+# launcher receives the request at:
+#   POST /launch
+#
+# This is the ONLY endpoint the launcher must expose for this template.
+# Verify the match is exact: the proxy key is /mcp-launcher and the template
+# path prefix is /proxy/mcp-launcher/ — these are coupled; change both or
+# neither.
+#
+# ============================================================================
+
+proxy:
+  endpoints:
+    /mcp-launcher:
+      # PLACEHOLDER: replace with the real Service ClusterIP once
+      # services/sandbox-launcher is deployed in namespace mcp-gateway.
+      target: http://sandbox-launcher.mcp-gateway.svc:8080
+      changeOrigin: true
+
+      # credentials: forward — RHDH requires the caller to be authenticated
+      # and forwards the Backstage user JWT as Authorization: Bearer <token>
+      # to the launcher. The launcher MUST verify this token against:
+      #   RHDH_JWKS_URL: https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
+      #   RHDH_TOKEN_ISSUER: https://developer-hub-rhdh.apps.anaeem.na-launch.com
+      # The user entity ref is in the `sub` claim (e.g. user:default/arsalan)
+      # or the `ent[0]` claim. Cross-check against body.user (LaunchRequest.user); reject 403
+      # if they conflict. Reject 401 if the token is absent or fails
+      # verification. Discard the token after identity extraction.
+      credentials: forward
+
+      allowedHeaders:
+        # Content-Type is required for the JSON POST body.
+        - Content-Type
+        # Authorization is required to carry the Backstage user JWT to the
+        # launcher for identity verification. Without this entry, the header
+        # is stripped even under credentials: forward.
+        - Authorization
+
+      pathRewrite:
+        # Strips /api/proxy/mcp-launcher/ so the launcher sees POST /launch.
+        # Cross-checked against template path: /proxy/mcp-launcher/launch
+        # -> full server-side path: /api/proxy/mcp-launcher/launch
+        # -> after rewrite: /launch
+        '^/api/proxy/mcp-launcher/': '/'
+
+# ============================================================================
+# LAUNCHER ENV VARS — already set in services/sandbox-launcher overlay
+# ============================================================================
+#
+# services/sandbox-launcher/deploy/overlays/anaeem/deployment-patch.yaml
+# already carries all of the vars below. This block is retained as a
+# reference for what each var does; no additional edits to that file are
+# required for this wiring.
+#
+#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
+#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#   LAUNCHER_OIDC_TOKEN_URL=http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token
+#   LAUNCHER_OIDC_CLIENT_ID=sandbox-launcher
+#   LAUNCHER_OIDC_CLIENT_SECRET_FILE=/vault/secrets/launcher-oidc-secret
+#
+# RHDH_JWKS_URL / RHDH_TOKEN_ISSUER are for verifying the inbound Backstage
+# user token (one-time identity check; token then discarded).
+# NOTE — in-cluster vs. Route URL: RHDH_JWKS_URL above uses the public HTTPS
+# Route. The launcher pod can alternatively reach RHDH in-cluster at:
+#   http://developer-hub.rhdh.svc:7007
+# which avoids the wildcard TLS cert on the Route. If you switch to in-cluster
+# HTTP, update BOTH RHDH_JWKS_URL and RHDH_TOKEN_ISSUER — the issuer claim in
+# the Backstage JWT must still match RHDH_TOKEN_ISSUER exactly, so keep
+# RHDH_TOKEN_ISSUER set to the public HTTPS origin (what Backstage put in `iss`)
+# and change only RHDH_JWKS_URL to the in-cluster HTTP URL if desired.
+# LAUNCHER_OIDC_* are for the launcher's OWN client-credentials token used
+# in all outbound calls to agentgateway/OpenShell — user token never relayed.
+#
+# ============================================================================
+# IF credentials: forward IS NOT AVAILABLE on your RHDH VERSION
+# ============================================================================
+#
+# Some RHDH / Backstage proxy-backend versions (pre-1.26) may not support
+# credentials: forward. In that case, fall back to:
+#
+#   credentials: require
+#   allowedHeaders:
+#     - Content-Type
+#   # Add a static shared-secret header so the launcher can authenticate
+#   # the proxy as its caller (service-to-service, no user identity):
+#   headers:
+#     X-Launcher-Token: ${LAUNCHER_SHARED_SECRET}
+#
+# With this fallback:
+#   - The launcher validates X-Launcher-Token (constant-time compare) to
+#     authenticate the proxy as the caller.
+#   - User identity comes ONLY from body.user (LaunchRequest.user), which is
+#     client-supplied and MUST be treated as advisory metadata only (label on
+#     the Sandbox CR, not an access-control input).
+#   - This provides weaker user binding than the credentials: forward path
+#     but is acceptable for a PoC where the launcher has no per-user
+#     authorization decisions beyond owner labeling.
+#   - Cross-check against body.user is still recommended for consistency
+#     but cannot be cryptographically enforced.
+#
+# ============================================================================

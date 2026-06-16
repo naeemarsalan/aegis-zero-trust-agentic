@@ -17,6 +17,14 @@ path "secret/data/mcp-gateway/*" {
   capabilities = ["read"]
 }
 
+# Sandbox consent grants (Option D delegated identity). ext-proc reads the
+# grant at secret/data/sandbox-grants/<sandbox-uid> to learn the authorised
+# user for an SVID-bearing in-sandbox agent, then runs RFC 8693 on-behalf
+# impersonation. Read-only — ext-proc never writes grants.
+path "secret/data/sandbox-grants/*" {
+  capabilities = ["read"]
+}
+
 # Deny all other paths explicitly to guard against policy inheritance surprises.
 path "*" {
   capabilities = ["deny"]

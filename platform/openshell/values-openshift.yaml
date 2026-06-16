@@ -8,7 +8,10 @@ securityContext:
   runAsUser: 1000990000    # or null
 sandbox:
   sandboxNamespace: openshell
-  runtimeClassName: kata   # sandboxes can run as Kata micro-VMs
+  # First cut for SVID delegated identity: runc (empty runtimeClass), because the
+  # csi.spiffe.io workload-API socket cannot cross the Kata micro-VM boundary.
+  # Hardened follow-up = Kata + a nested in-VM SPIRE agent (see ADR-0008).
+  runtimeClassName: ""
 
 # --- Gateway authentication (OIDC + mTLS) -----------------------------------
 # The management gRPC API is secured with OIDC bearer auth (on top of mTLS).
@@ -39,3 +42,12 @@ server:
     rolesClaim: realm_access.roles
     adminRole: openshell-admin
     userRole: openshell-user
+  # Mount the SPIFFE Workload API (csi.spiffe.io) socket into every sandbox pod so
+  # the in-sandbox agent can fetch its own JWT-SVID (Option D delegated identity —
+  # no user credential ever enters the sandbox). OpenShell also stamps the pod with
+  # label openshell.ai/sandbox-id=<uuid>, which the openshell-sandbox ClusterSPIFFEID
+  # encodes into the SVID path so ext-proc binds the Vault grant per-sandbox.
+  providerTokenGrants:
+    spiffe:
+      enabled: true
+      # workloadApiSocketPath defaults to /spiffe-workload-api/spire-agent.sock

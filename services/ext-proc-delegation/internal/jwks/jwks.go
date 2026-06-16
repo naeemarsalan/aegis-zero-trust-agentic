@@ -1,11 +1,14 @@
-// Package jwks fetches and caches the Keycloak realm signing keys (JWKS) and
-// cryptographically VERIFIES incoming Authorization Bearer JWTs.
+// Package jwks fetches and caches JWKS signing keys and cryptographically
+// VERIFIES incoming JWTs.
 //
 // This is the independent-verification leg of ext-proc's defense in depth:
 // ext-proc does NOT trust that the gateway already validated the token. It
-// re-verifies the RS256 signature against the Keycloak JWKS, the issuer, the
-// audience, and the exp/nbf time bounds before any claim is trusted as the
-// caller identity that drives token exchange.
+// re-verifies the signature against the JWKS, the issuer, the audience, and
+// the exp/nbf time bounds before any claim is trusted.
+//
+// Two verifier instances are maintained in production:
+//   - Keycloak verifier: RS256, iss=keycloak realm, aud=mcp-gateway (legacy /echo path)
+//   - SPIRE verifier:    RS256+ES256, iss=spire-oidc, aud=mcp-gateway (sandbox agent path)
 //
 // Keys are cached in-memory with a TTL (~10m). On encountering an unknown
 // `kid` the cache is force-refreshed once (key rotation), and only if the kid
@@ -14,6 +17,7 @@ package jwks
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -39,15 +43,20 @@ type VerifiedToken struct {
 	Groups            []string
 	Issuer            string
 	ToolScope         []string // jit-approver session JWT: tools this grant covers
+	// SPIRE workload claims — only populated when verifying a SPIRE JWT-SVID.
+	SandboxUID   string
+	SandboxNonce string
 }
 
-// Verifier verifies Keycloak-issued RS256 JWTs against a cached JWKS.
+// Verifier verifies JWTs against a cached JWKS. By default it accepts RS256
+// only; set AllowEC to also accept ES256 (needed for SPIRE OIDC-issued SVIDs).
 type Verifier struct {
 	jwksURL          string
 	issuer           string
 	expectedAudience string
 	ttl              time.Duration
 	leeway           time.Duration
+	allowEC          bool // when true, ES256 is accepted in addition to RS256
 
 	httpClient *http.Client
 
@@ -67,6 +76,9 @@ type Config struct {
 	Leeway time.Duration
 	// HTTPClient is optional; a 5s-timeout client is used if nil.
 	HTTPClient *http.Client
+	// AllowEC, when true, also accepts ES256-signed tokens (SPIRE OIDC SVIDs).
+	// RS256 is always accepted. Set to false (default) for the Keycloak verifier.
+	AllowEC bool
 }
 
 // New constructs a Verifier. It does NOT fetch keys eagerly; the first
@@ -99,6 +111,7 @@ func New(cfg Config) (*Verifier, error) {
 		expectedAudience: cfg.ExpectedAudience,
 		ttl:              ttl,
 		leeway:           leeway,
+		allowEC:          cfg.AllowEC,
 		httpClient:       hc,
 	}, nil
 }
@@ -114,31 +127,45 @@ type trustedClaims struct {
 	Issuer            string   `json:"iss"`
 	Groups            []string `json:"groups"`
 	ToolScope         []string `json:"tool_scope"`
+	// SPIRE workload identity custom claims (stamped per registration entry).
+	// Present only in SPIRE JWT-SVIDs; empty for Keycloak tokens.
+	SandboxUID   string `json:"sandbox_uid"`
+	SandboxNonce string `json:"sandbox_nonce"`
 }
 
 // Verify cryptographically verifies a raw JWT (no "Bearer " prefix) and
-// returns the trusted claims. It enforces: RS256 signature against the
-// Keycloak JWKS, iss == configured issuer, expected audience present,
-// exp/nbf within leeway. Any failure returns an error (fail closed).
+// returns the trusted claims. It enforces: RS256 (and ES256 when AllowEC is
+// set) signature against the JWKS, iss == configured issuer, expected audience
+// present, exp/nbf within leeway. Any failure returns an error (fail closed).
 func (v *Verifier) Verify(ctx context.Context, raw string) (*VerifiedToken, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("%w: empty token", ErrVerification)
 	}
 
-	// Parse, restricting accepted algorithms to RS256 only. This rejects
-	// alg=none and any algorithm-confusion attempt at parse time.
-	tok, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256})
+	// Build the set of accepted algorithms. RS256 is always accepted; ES256 is
+	// added when the verifier is configured for SPIRE OIDC SVIDs (AllowEC=true).
+	// This rejects alg=none and any other algorithm-confusion attempt at parse.
+	algos := []jose.SignatureAlgorithm{jose.RS256}
+	if v.allowEC {
+		algos = append(algos, jose.ES256)
+	}
+
+	tok, err := jwt.ParseSigned(raw, algos)
 	if err != nil {
 		return nil, fmt.Errorf("%w: parse: %v", ErrVerification, err)
 	}
 
-	// Determine the signing kid from the JWS header.
+	// Determine the signing kid and algorithm from the JWS header.
 	kid := ""
+	alg := jose.RS256
 	if len(tok.Headers) > 0 {
 		kid = tok.Headers[0].KeyID
+		if tok.Headers[0].Algorithm != "" {
+			alg = jose.SignatureAlgorithm(tok.Headers[0].Algorithm)
+		}
 	}
 
-	key, err := v.keyForKID(ctx, kid)
+	key, err := v.keyForKIDAlg(ctx, kid, alg)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrVerification, err)
 	}
@@ -173,18 +200,21 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*VerifiedToken, erro
 		Groups:            custom.Groups,
 		Issuer:            custom.Issuer,
 		ToolScope:         custom.ToolScope,
+		SandboxUID:        custom.SandboxUID,
+		SandboxNonce:      custom.SandboxNonce,
 	}, nil
 }
 
-// keyForKID returns the RSA public key matching kid, refreshing the JWKS once
-// on a cache miss (key rotation). Fails closed if the kid is unresolvable.
-func (v *Verifier) keyForKID(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+// keyForKIDAlg returns the public key matching kid and algorithm, refreshing
+// the JWKS once on a cache miss (key rotation). Fails closed if the kid is
+// unresolvable. Returns an *rsa.PublicKey or *ecdsa.PublicKey depending on alg.
+func (v *Verifier) keyForKIDAlg(ctx context.Context, kid string, alg jose.SignatureAlgorithm) (any, error) {
 	// Try the cache (refresh if stale).
 	keys, err := v.ensureKeys(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	if k := lookupRSA(keys, kid); k != nil {
+	if k := lookupKey(keys, kid, alg); k != nil {
 		return k, nil
 	}
 
@@ -193,32 +223,48 @@ func (v *Verifier) keyForKID(ctx context.Context, kid string) (*rsa.PublicKey, e
 	if err != nil {
 		return nil, err
 	}
-	if k := lookupRSA(keys, kid); k != nil {
+	if k := lookupKey(keys, kid, alg); k != nil {
 		return k, nil
 	}
-	return nil, fmt.Errorf("no RS256 signing key for kid %q", kid)
+	return nil, fmt.Errorf("no signing key for kid %q alg %s", kid, alg)
 }
 
-// lookupRSA finds an RSA public key for kid. If kid is empty and exactly one
-// key is present, that key is used.
-func lookupRSA(set *jose.JSONWebKeySet, kid string) *rsa.PublicKey {
+// lookupKey finds an RSA or EC public key for kid and alg. If kid is empty
+// and exactly one key of the expected type is present, that key is used.
+func lookupKey(set *jose.JSONWebKeySet, kid string, alg jose.SignatureAlgorithm) any {
 	if set == nil {
 		return nil
 	}
-	if kid != "" {
-		for _, jwk := range set.Key(kid) {
+	isEC := alg == jose.ES256 || alg == jose.ES384 || alg == jose.ES512
+
+	matchesType := func(jwk jose.JSONWebKey) any {
+		if isEC {
+			if pk, ok := jwk.Key.(*ecdsa.PublicKey); ok {
+				return pk
+			}
+		} else {
 			if pk, ok := jwk.Key.(*rsa.PublicKey); ok {
 				return pk
 			}
 		}
 		return nil
 	}
-	// No kid in header: only safe if the set has a single RSA key.
-	var found *rsa.PublicKey
+
+	if kid != "" {
+		for _, jwk := range set.Key(kid) {
+			if k := matchesType(jwk); k != nil {
+				return k
+			}
+		}
+		return nil
+	}
+
+	// No kid in header: only safe if the set has a single key of the right type.
+	var found any
 	count := 0
 	for _, jwk := range set.Keys {
-		if pk, ok := jwk.Key.(*rsa.PublicKey); ok {
-			found = pk
+		if k := matchesType(jwk); k != nil {
+			found = k
 			count++
 		}
 	}

@@ -9,4 +9,5 @@ resources:
   - deployment.yaml
   - service.yaml
   - route.yaml
+  - route-api.yaml
   - networkpolicy.yaml

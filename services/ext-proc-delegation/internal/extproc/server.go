@@ -3,13 +3,30 @@
 //
 //	RequestHeaders -> RequestBody -> ResponseHeaders
 //
-// The service performs credential delegation: it extracts the caller's identity,
-// exchanges it for a downstream token (Keycloak), fetches tool secrets (Vault),
-// injects the downstream token into the upstream request, and strips credential
-// headers from the upstream response.
+// The service performs credential delegation supporting TWO paths:
 //
-// The service is fail-closed: any error in the exchange or Vault legs causes
-// an ImmediateResponse 403 and denies the request.
+// (A) LEGACY PATH (Keycloak user JWT):
+//
+//	The caller presents a Keycloak-issued JWT. ext-proc independently verifies
+//	it, runs RFC 8693 token exchange (subject_token=caller JWT), fetches the
+//	Vault tool secret or static token, and injects the downstream bearer.
+//
+// (B) SANDBOX AGENT PATH (SPIRE JWT-SVID, Option D):
+//
+//	The caller presents a SPIRE OIDC JWT-SVID. ext-proc:
+//	  1. Verifies the SVID (SPIRE OIDC JWKS, iss=spire-oidc, aud=mcp-gateway,
+//	     trust domain=spiffe://anaeem.na-launch.com/).
+//	  2. Reads the sandbox consent grant from Vault at
+//	     secret/data/sandbox-grants/<svid.sandbox_uid>.
+//	  3. Validates: TTL not expired, sandbox_uid+nonce bind SVID to grant,
+//	     scope permits the requested tool.
+//	  4. Runs RFC 8693 Phase-1 impersonation with requested_subject=grant.user
+//	     (NO subject_token — the user JWT was discarded at the launcher).
+//	  5. Selects the per-user static pfSense token from Vault by grant.user,
+//	     injects it as Authorization: Bearer.
+//
+// The service is fail-closed: any error in any leg causes an ImmediateResponse
+// 403 and denies the request. There is no default-allow path on error.
 //
 // Fail-closed on body-less / headers-only requests: a downstream credential is
 // minted ONLY in the RequestBody leg. If a stream reaches ResponseHeaders
@@ -20,6 +37,8 @@ package extproc
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,20 +58,31 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/audit"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/claims"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/config"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/grant"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/inject"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/jwks"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/mcp"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/rbac"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/spire"
 )
 
-// Exchanger is the interface for the Keycloak token exchange leg.
+// Exchanger is the interface for Keycloak RFC 8693 token exchange using the
+// caller's own JWT as subject_token (legacy / Keycloak user path).
 type Exchanger interface {
 	Exchange(ctx context.Context, callerToken, audience string) (string, error)
+}
+
+// OnBehalfExchanger is the interface for RFC 8693 Phase-1 impersonation:
+// the service authenticates as itself and sets requested_subject=user.
+// No user subject_token is involved. Used exclusively on the SPIRE SVID path.
+type OnBehalfExchanger interface {
+	ExchangeOnBehalf(ctx context.Context, user, audience string) (string, error)
 }
 
 // VaultClient is the interface for the Vault secret retrieval leg.
 type VaultClient interface {
 	FetchToolSecret(ctx context.Context, tool string) (map[string]interface{}, error)
+	FetchGrant(ctx context.Context, grantPathPrefix, sandboxUID string) (map[string]interface{}, error)
 }
 
 // JITVerifier verifies a jit-approver session JWT and returns its tool_scope.
@@ -60,20 +90,28 @@ type JITVerifier interface {
 	Verify(ctx context.Context, raw string) (*jwks.VerifiedToken, error)
 }
 
+// SpireVerifier verifies SPIRE JWT-SVIDs and extracts sandbox claims.
+type SpireVerifier interface {
+	VerifySVID(ctx context.Context, raw string) (*spire.SVIDClaims, error)
+}
+
 // Server implements extprocv3.ExternalProcessorServer.
 type Server struct {
 	extprocv3.UnimplementedExternalProcessorServer
-	cfg      *config.Config
-	kc       Exchanger
-	vault    VaultClient
-	verifier claims.Verifier
-	jit      JITVerifier
-	policy   rbac.Policy
+	cfg          *config.Config
+	kc           Exchanger
+	kcOnBehalf   OnBehalfExchanger
+	vault        VaultClient
+	verifier     claims.Verifier
+	jit          JITVerifier
+	spireVerifier SpireVerifier
+	policy       rbac.Policy
 }
 
 // NewServer creates a new ext_proc server. verifier independently verifies the
 // caller's JWT (defense in depth — the gateway is not trusted). jit may be nil
 // (JIT gate disabled — dangerous tools then require admin only).
+// spireV may be nil when SPIRE_JWKS_URL is not configured (sandbox path disabled).
 func NewServer(cfg *config.Config, kc Exchanger, vault VaultClient, verifier claims.Verifier, jit JITVerifier) *Server {
 	return &Server{
 		cfg: cfg, kc: kc, vault: vault, verifier: verifier, jit: jit,
@@ -87,6 +125,24 @@ func NewServer(cfg *config.Config, kc Exchanger, vault VaultClient, verifier cla
 	}
 }
 
+// NewServerWithSpire creates a Server with the SPIRE SVID verifier enabled.
+// The kc parameter must also implement OnBehalfExchanger for the on-behalf path.
+func NewServerWithSpire(
+	cfg *config.Config,
+	kc Exchanger,
+	vault VaultClient,
+	verifier claims.Verifier,
+	jit JITVerifier,
+	sv SpireVerifier,
+) *Server {
+	s := NewServer(cfg, kc, vault, verifier, jit)
+	s.spireVerifier = sv
+	if obc, ok := kc.(OnBehalfExchanger); ok {
+		s.kcOnBehalf = obc
+	}
+	return s
+}
+
 // Process handles a single bidirectional gRPC stream from Envoy.
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	ctx := stream.Context()
@@ -94,7 +150,9 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 	// per-stream state
 	var (
 		identity       *claims.Identity
+		svidClaims     *spire.SVIDClaims // non-nil on SPIRE SVID path
 		authHeader     string
+		rawToken       string
 		reqPath        string
 		jitJWT         string
 		sessionID      string
@@ -128,17 +186,33 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			traceID = headerValue(hdrs, "x-b3-traceid")
 			spanID = headerValue(hdrs, "x-b3-spanid")
 
-			// Independently verify the caller token against Keycloak JWKS
-			// (signature/iss/aud/exp) and cross-check any gateway metadata.
-			// No verifiable token -> 401 deny.
-			id, idErr := claims.FromContext(ctx, authHeader, s.verifier)
-			if idErr != nil {
-				slog.Error("ext_proc: identity verification failed", "err", idErr.Error())
-				emitter := audit.NewEmitter(sessionID, traceID, spanID)
-				emitter.Emit(ctx, "deny", "no_identity", false, false)
-				return stream.Send(immediateResponse(http.StatusUnauthorized, "no identity"))
+			// Extract the raw bearer token (strip "Bearer " prefix).
+			rawToken = bearerFromHeader(authHeader)
+
+			// Determine which path: SPIRE SVID or legacy Keycloak user JWT.
+			if rawToken != "" && s.spireVerifier != nil && spire.IsSPIRESVID(rawToken, s.cfg.SpireIssuer) {
+				// SPIRE SVID path: verify the SVID cryptographically.
+				sv, svErr := s.spireVerifier.VerifySVID(ctx, rawToken)
+				if svErr != nil {
+					slog.Error("ext_proc: SPIRE SVID verification failed", "err", svErr.Error())
+					emitter := audit.NewEmitter(sessionID, traceID, spanID)
+					emitter.Emit(ctx, "deny", "spire_svid_invalid", false, false)
+					return stream.Send(immediateResponse(http.StatusUnauthorized, "invalid SPIRE SVID"))
+				}
+				svidClaims = sv
+			} else {
+				// Legacy path: independently verify the caller token against Keycloak JWKS
+				// (signature/iss/aud/exp) and cross-check any gateway metadata.
+				// No verifiable token -> 401 deny.
+				id, idErr := claims.FromContext(ctx, authHeader, s.verifier)
+				if idErr != nil {
+					slog.Error("ext_proc: identity verification failed", "err", idErr.Error())
+					emitter := audit.NewEmitter(sessionID, traceID, spanID)
+					emitter.Emit(ctx, "deny", "no_identity", false, false)
+					return stream.Send(immediateResponse(http.StatusUnauthorized, "no identity"))
+				}
+				identity = id
 			}
-			identity = id
 
 			// Acknowledge request headers — continue to body.
 			if err := stream.Send(&extprocv3.ProcessingResponse{
@@ -161,6 +235,8 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				emitter := audit.NewEmitter(sessionID, traceID, spanID)
 				if identity != nil {
 					emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
+				} else if svidClaims != nil {
+					emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
 				}
 				emitter.Emit(ctx, "deny", "empty_body", false, false)
 				return stream.Send(immediateResponse(http.StatusForbidden, "empty body"))
@@ -187,140 +263,169 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			}
 			mcpReq = mcpR
 
-			emitter := audit.NewEmitter(sessionID, traceID, spanID)
-			if identity != nil {
-				emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
-			}
 			tool := ""
 			argsHash := ""
 			if mcpReq != nil {
 				tool = mcpReq.Tool
 				argsHash = mcpReq.ArgsHash
 			}
-			emitter.SetMCP("", tool, argsHash)
 
-			// Tool-level RBAC: enforce the kyverno authz policies here (the
-			// gateway forwards no claims to ext_authz, and the deployed
-			// kyverno-envoy-plugin lacks the mcp CEL lib). For dangerous tools,
-			// verify the jit-approver session JWT (X-JIT-Session-JWT) and require
-			// the tool in its tool_scope.
-			{
-				var groups []string
-				if identity != nil {
-					groups = identity.Groups
+			// Route to the appropriate delegation path.
+			if svidClaims != nil {
+				// ----------------------------------------------------------------
+				// SANDBOX AGENT PATH (Option D: SPIRE SVID + Vault grant)
+				// ----------------------------------------------------------------
+				tok, dErr := s.handleSandboxAgentPath(ctx, sessionID, traceID, spanID,
+					stream, svidClaims, tool, argsHash, reqPath)
+				if dErr != nil {
+					return dErr // stream.Send(immediateResponse) already sent inside
 				}
-				jitValid := false
-				var jitScope []string
-				if tool != "" && jitJWT != "" && s.jit != nil {
-					if vt, jerr := s.jit.Verify(ctx, jitJWT); jerr == nil {
-						jitValid = true
-						jitScope = vt.ToolScope
+				downToken = tok
+				delegationDone = true
+
+				mutation := inject.BuildRequestMutation(downToken)
+				if err := stream.Send(&extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_RequestBody{
+						RequestBody: &extprocv3.BodyResponse{
+							Response: mutation,
+						},
+					},
+				}); err != nil {
+					return err
+				}
+
+			} else {
+				// ----------------------------------------------------------------
+				// LEGACY PATH (Keycloak user JWT)
+				// ----------------------------------------------------------------
+				emitter := audit.NewEmitter(sessionID, traceID, spanID)
+				if identity != nil {
+					emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
+				}
+				emitter.SetMCP("", tool, argsHash)
+
+				// Tool-level RBAC.
+				{
+					var groups []string
+					if identity != nil {
+						groups = identity.Groups
+					}
+					jitValid := false
+					var jitScope []string
+					if tool != "" && jitJWT != "" && s.jit != nil {
+						if vt, jerr := s.jit.Verify(ctx, jitJWT); jerr == nil {
+							jitValid = true
+							jitScope = vt.ToolScope
+						}
+					}
+					if reason, allow := s.policy.Decide(groups, tool, jitValid, jitScope); !allow {
+						emitter.Emit(ctx, "deny", reason, false, false)
+						return stream.Send(immediateResponse(http.StatusForbidden, reason))
 					}
 				}
-				if reason, allow := s.policy.Decide(groups, tool, jitValid, jitScope); !allow {
+
+				// Run Keycloak exchange and Vault secret fetch concurrently.
+				var exchangedToken string
+				var vaultErr error
+				eg, egCtx := errgroup.WithContext(ctx)
+
+				eg.Go(func() error {
+					if identity == nil || identity.Raw == "" {
+						return fmt.Errorf("no caller token available for exchange")
+					}
+					tok, err := s.kc.Exchange(egCtx, identity.Raw, s.cfg.DownstreamAudience)
+					if err != nil {
+						slog.Error("ext_proc: keycloak exchange failed", "err", err)
+						emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, exchangeErrorCode(err))
+						return fmt.Errorf("keycloak exchange: %w", err)
+					}
+					exchangedToken = tok
+					emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, "success")
+					return nil
+				})
+
+				eg.Go(func() error {
+					vaultTool := tool
+					if vaultTool == "" {
+						vaultTool = "_default"
+					}
+					secretPath := s.cfg.ToolSecretPathPrefix + vaultTool
+					_, err := s.vault.FetchToolSecret(egCtx, vaultTool)
+					// Fall back to the _default secret when a tool has no dedicated
+					// KV entry (e.g. pfsense_* tools, echo-mcp tools): the Vault SVID
+					// auth still ran, we just have no per-tool backend credential.
+					if err != nil && vaultTool != "_default" {
+						if _, derr := s.vault.FetchToolSecret(egCtx, "_default"); derr == nil {
+							secretPath = s.cfg.ToolSecretPathPrefix + "_default"
+							err = nil
+						}
+					}
+					if err != nil {
+						slog.Error("ext_proc: vault fetch failed", "err", err)
+						vc := vaultErrorCode(err)
+						emitter.SetVault(vc, secretPath, vc)
+						vaultErr = err
+						return fmt.Errorf("vault: %w", err)
+					}
+					emitter.SetVault("success", secretPath, "success")
+					return nil
+				})
+
+				if err := eg.Wait(); err != nil {
+					// Fail closed: any error -> 403 deny.
+					reason := "exchange_failed"
+					if vaultErr != nil {
+						reason = "vault_failed"
+					}
 					emitter.Emit(ctx, "deny", reason, false, false)
 					return stream.Send(immediateResponse(http.StatusForbidden, reason))
 				}
-			}
 
-			// Run Keycloak exchange and Vault secret fetch concurrently.
-			var exchangedToken string
-			var vaultErr error
-			eg, egCtx := errgroup.WithContext(ctx)
+				// Both legs succeeded but the exchange MUST have produced a real
+				// downstream credential — never inject/allow an empty token.
+				if exchangedToken == "" {
+					emitter.Emit(ctx, "deny", "empty_downstream_token", false, false)
+					return stream.Send(immediateResponse(http.StatusForbidden, "no downstream credential"))
+				}
 
-			eg.Go(func() error {
-				if identity == nil || identity.Raw == "" {
-					return fmt.Errorf("no caller token available for exchange")
-				}
-				tok, err := s.kc.Exchange(egCtx, identity.Raw, s.cfg.DownstreamAudience)
-				if err != nil {
-					emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, "error:"+err.Error())
-					return fmt.Errorf("keycloak exchange: %w", err)
-				}
-				exchangedToken = tok
-				emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, "success")
-				return nil
-			})
+				downToken = exchangedToken
 
-			eg.Go(func() error {
-				vaultTool := tool
-				if vaultTool == "" {
-					vaultTool = "_default"
-				}
-				secretPath := s.cfg.ToolSecretPathPrefix + vaultTool
-				_, err := s.vault.FetchToolSecret(egCtx, vaultTool)
-				// Fall back to the _default secret when a tool has no dedicated
-				// KV entry (e.g. pfsense_* tools, echo-mcp tools): the Vault SVID
-				// auth still ran, we just have no per-tool backend credential.
-				if err != nil && vaultTool != "_default" {
-					if _, derr := s.vault.FetchToolSecret(egCtx, "_default"); derr == nil {
-						secretPath = s.cfg.ToolSecretPathPrefix + "_default"
-						err = nil
+				// Static-bearer downstreams (e.g. pfsense-mcp on /mcp) validate a
+				// fixed per-user token list, not JWTs. For those paths, inject the
+				// caller's pre-provisioned static token (Vault KV keyed by username)
+				// instead of the exchanged JWT. The exchange above still ran for
+				// audit; it is the injected bearer that differs.
+				if s.cfg.IsStaticAuthPath(reqPath) {
+					m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
+					if ferr != nil {
+						emitter.Emit(ctx, "deny", "static_token_fetch_failed", false, false)
+						return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
 					}
+					userKey := ""
+					if identity != nil {
+						userKey = identity.PreferredUsername
+					}
+					ut, _ := m[userKey].(string)
+					if ut == "" {
+						emitter.Emit(ctx, "deny", "no_user_token", false, false)
+						return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
+					}
+					downToken = ut
 				}
-				if err != nil {
-					emitter.SetVault("error:"+err.Error(), secretPath, "error:"+err.Error())
-					vaultErr = err
-					return fmt.Errorf("vault: %w", err)
-				}
-				emitter.SetVault("success", secretPath, "success")
-				return nil
-			})
 
-			if err := eg.Wait(); err != nil {
-				// Fail closed: any error -> 403 deny.
-				reason := "exchange_failed"
-				if vaultErr != nil {
-					reason = "vault_failed"
-				}
-				emitter.Emit(ctx, "deny", reason, false, false)
-				return stream.Send(immediateResponse(http.StatusForbidden, reason))
-			}
+				delegationDone = true
 
-			// Both legs succeeded but the exchange MUST have produced a real
-			// downstream credential — never inject/allow an empty token.
-			if exchangedToken == "" {
-				emitter.Emit(ctx, "deny", "empty_downstream_token", false, false)
-				return stream.Send(immediateResponse(http.StatusForbidden, "no downstream credential"))
-			}
-
-			downToken = exchangedToken
-
-			// Static-bearer downstreams (e.g. pfsense-mcp on /mcp) validate a
-			// fixed per-user token list, not JWTs. For those paths, inject the
-			// caller's pre-provisioned static token (Vault KV keyed by username)
-			// instead of the exchanged JWT. The exchange above still ran for
-			// audit; it is the injected bearer that differs.
-			if s.cfg.IsStaticAuthPath(reqPath) {
-				m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
-				if ferr != nil {
-					emitter.Emit(ctx, "deny", "static_token_fetch_failed", false, false)
-					return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
-				}
-				userKey := ""
-				if identity != nil {
-					userKey = identity.PreferredUsername
-				}
-				ut, _ := m[userKey].(string)
-				if ut == "" {
-					emitter.Emit(ctx, "deny", "no_user_token", false, false)
-					return stream.Send(immediateResponse(http.StatusForbidden, "no per-user token"))
-				}
-				downToken = ut
-			}
-
-			delegationDone = true
-
-			// Inject the downstream token.
-			mutation := inject.BuildRequestMutation(downToken)
-			if err := stream.Send(&extprocv3.ProcessingResponse{
-				Response: &extprocv3.ProcessingResponse_RequestBody{
-					RequestBody: &extprocv3.BodyResponse{
-						Response: mutation,
+				// Inject the downstream token.
+				mutation := inject.BuildRequestMutation(downToken)
+				if err := stream.Send(&extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_RequestBody{
+						RequestBody: &extprocv3.BodyResponse{
+							Response: mutation,
+						},
 					},
-				},
-			}); err != nil {
-				return err
+				}); err != nil {
+					return err
+				}
 			}
 
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
@@ -363,6 +468,9 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			if identity != nil {
 				emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
 			}
+			if svidClaims != nil {
+				emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
+			}
 			tool := ""
 			argsHash := ""
 			if mcpReq != nil {
@@ -389,6 +497,315 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			// Unknown message type — pass through.
 		}
 	}
+}
+
+// handleSandboxAgentPath implements the SPIRE SVID + Vault grant delegation
+// flow (Option D). It reads+validates the consent grant, runs RFC 8693 Phase-1
+// impersonation, and selects the per-user static pfSense token.
+//
+// The sandbox UUID binding comes exclusively from the cryptographic SPIFFE URI
+// path (sub = spiffe://<trustdomain>/ns/<ns>/sandbox/<uuid>), which is
+// guaranteed non-empty by VerifySVID. The grant's nonce field is vestigial on
+// this path — real SPIRE JWT-SVIDs cannot carry custom claims, so there is no
+// nonce to match from the SVID. The nonce is retained in the grant document for
+// audit purposes only (SetGrant records whether g.Nonce is non-empty).
+//
+// Returns (downstreamToken, nil) on success.
+// On any failure it sends an ImmediateResponse on stream and returns ("", err)
+// where err is a non-nil sentinel that tells the caller to return immediately.
+func (s *Server) handleSandboxAgentPath(
+	ctx context.Context,
+	sessionID, traceID, spanID string,
+	stream extprocv3.ExternalProcessor_ProcessServer,
+	svidClaims *spire.SVIDClaims,
+	tool, argsHash string,
+	reqPath string,
+) (string, error) {
+	emitter := audit.NewEmitter(sessionID, traceID, spanID)
+	emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
+	emitter.SetMCP("", tool, argsHash)
+
+	// SandboxUID is guaranteed non-empty by VerifySVID (which parses it from the
+	// SPIFFE URI path and fails closed if absent). The false literal for the nonce
+	// argument reflects that the SVID carries no nonce — the grant nonce field is
+	// recorded later via g.Nonce once the grant is loaded.
+	deny := func(httpStatus int, reason, grantResult string) (string, error) {
+		emitter.SetGrant(svidClaims.SandboxUID, "", grantResult, false)
+		emitter.Emit(ctx, "deny", reason, false, false)
+		sendErr := stream.Send(immediateResponse(httpStatus, reason))
+		if sendErr != nil {
+			return "", sendErr
+		}
+		return "", fmt.Errorf("denied: %s", reason) // sentinel — caller returns this
+	}
+
+	// Validate that the on-behalf exchanger is available (required for this path).
+	if s.kcOnBehalf == nil {
+		slog.Error("ext_proc: OnBehalfExchanger not configured for SPIRE path")
+		return deny(http.StatusForbidden, "on_behalf_exchanger_not_configured", string(grant.ResultAbsent))
+	}
+
+	// (b) Vault-read grant by sandbox_uid derived from the SVID sub path.
+	// The SandboxUID here is the same UUID that was used as the Vault KV key
+	// when the grant was written: secret/data/sandbox-grants/<SandboxUID>.
+	grantPath := s.cfg.SandboxGrantPathPrefix
+	rawData, vErr := s.vault.FetchGrant(ctx, grantPath, svidClaims.SandboxUID)
+	if vErr != nil {
+		slog.Error("ext_proc: vault grant fetch error", "sandbox_uid", svidClaims.SandboxUID, "err", vErr)
+		vc := vaultErrorCode(vErr)
+		emitter.SetVault(vc, grantPath+svidClaims.SandboxUID, vc)
+		return deny(http.StatusForbidden, "grant_vault_error", string(grant.ResultAbsent))
+	}
+	emitter.SetVault("success", grantPath+svidClaims.SandboxUID, "success")
+
+	// nil rawData means 404 (grant not found in Vault).
+	if rawData == nil {
+		return deny(http.StatusForbidden, "grant_absent", string(grant.ResultAbsent))
+	}
+
+	g, gErr := grant.FromVaultData(rawData)
+	if gErr != nil {
+		var ve *grant.ValidationError
+		result := string(grant.ResultMalformed)
+		if errors.As(gErr, &ve) {
+			result = string(ve.Result)
+		}
+		slog.Error("ext_proc: grant parse/validate error", "err", gErr)
+		return deny(http.StatusForbidden, "grant_malformed", result)
+	}
+
+	// (c) Binding check: the grant's sandbox_uid field must match the UUID
+	// extracted from the SVID sub path. This cross-validates that the Vault
+	// document at the path was written for this specific sandbox identity.
+	// Note: CheckNonce is NOT called here. Real SPIRE JWT-SVIDs cannot carry a
+	// nonce custom claim, so there is nothing to match from the SVID side.
+	// The grant.Nonce field may still be non-empty (written by sandbox-launcher
+	// for audit/vestigial purposes) but is not used as a security gate here.
+	// The cryptographic binding is the unique sandbox UUID in the SPIFFE URI.
+	if g.SandboxUID != svidClaims.SandboxUID {
+		slog.Error("ext_proc: grant sandbox_uid mismatch", "svid_uid", svidClaims.SandboxUID, "grant_uid", g.SandboxUID)
+		return deny(http.StatusForbidden, "grant_uid_mismatch", string(grant.ResultNonceMismatch))
+	}
+
+	// (d) TTL cap check (Finding 3): reject grants whose validity window exceeds
+	// the platform maximum, regardless of the created/expiry values.
+	if capErr := g.CheckTTLCap(); capErr != nil {
+		slog.Error("ext_proc: grant TTL exceeds platform cap", "sandbox_uid", g.SandboxUID, "ttl", g.TTL)
+		return deny(http.StatusForbidden, "grant_ttl_exceeds_cap", string(grant.ResultMalformed))
+	}
+
+	// (d) TTL expiry check.
+	if tErr := g.CheckTTL(time.Now()); tErr != nil {
+		slog.Error("ext_proc: grant expired", "sandbox_uid", g.SandboxUID)
+		return deny(http.StatusForbidden, "grant_expired", string(grant.ResultExpired))
+	}
+
+	// (e) Scope: grant.scope must permit the tool.
+	if sErr := g.CheckScope(tool, s.cfg.ReadOnlyToolPrefixes); sErr != nil {
+		slog.Error("ext_proc: grant scope denied", "tool", tool, "scope", g.Scope)
+		return deny(http.StatusForbidden, "grant_scope_denied", string(grant.ResultScopeDenied))
+	}
+
+	// Also run standard RBAC policy — defense-in-depth alongside scope check.
+	// For the sandbox path, the agent has no group membership; treat as mcp-users
+	// (read-only user). The scope check above already enforces read-only on the
+	// grant; RBAC here uses the tool prefix tables.
+	{
+		// Use "mcp-users" equivalent group check: read-only tools only.
+		// We synthesise a groups slice from the grant scope to reuse the policy.
+		groups := grantScopeGroups(g.Scope, s.cfg)
+		if reason, allow := s.policy.Decide(groups, tool, false, nil); !allow {
+			return deny(http.StatusForbidden, reason, string(grant.ResultScopeDenied))
+		}
+	}
+
+	// Grant is valid. Record grant audit fields.
+	emitter.SetGrant(g.SandboxUID, g.Scope, string(grant.ResultValid), g.Nonce != "")
+	emitter.SetCallerUser("", g.User, nil) // caller_username = grant.user for audit
+
+	// (f) RFC 8693 Phase-1 impersonation: requested_subject=grant.user.
+	exchangedToken, exErr := s.kcOnBehalf.ExchangeOnBehalf(ctx, g.User, s.cfg.DownstreamAudience)
+	if exErr != nil {
+		slog.Error("ext_proc: on-behalf exchange failed", "user", "[redacted]", "err", exErr)
+		emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, exchangeErrorCode(exErr))
+		return deny(http.StatusForbidden, "on_behalf_exchange_failed", string(grant.ResultValid))
+	}
+	emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, "success")
+
+	// Finding 4: defense-in-depth group check on the exchanged token.
+	// If Keycloak placed a groups claim in the issued token and it contains
+	// a privileged group (e.g. mcp-admins), deny. This is a belt-and-suspenders
+	// check; Keycloak's own impersonation policy is the primary gate.
+	// Fail-closed: deny if the minted token says the impersonated user is privileged.
+	if tokenGroups := peekJWTGroups(exchangedToken); isPrivilegedGroup(tokenGroups) {
+		slog.Error("ext_proc: on-behalf exchange returned privileged group — denying sandbox agent path",
+			"groups_count", len(tokenGroups))
+		return deny(http.StatusForbidden, "impersonation_target_is_privileged", string(grant.ResultScopeDenied))
+	}
+
+	// The exchanged Keycloak token is recorded for audit only. For the static
+	// pfSense path (/mcp), we inject the per-user pfSense bearer from Vault
+	// keyed by grant.user — NOT the Keycloak JWT.
+	downToken := exchangedToken
+
+	if s.cfg.IsStaticAuthPath(reqPath) {
+		// (g) Select per-user pfSense static token from Vault by grant.user.
+		m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
+		if ferr != nil {
+			slog.Error("ext_proc: static token fetch failed for sandbox agent")
+			return deny(http.StatusForbidden, "static_token_fetch_failed", string(grant.ResultValid))
+		}
+		ut, _ := m[g.User].(string)
+		if ut == "" {
+			slog.Error("ext_proc: no static token for user in grant", "user", "[redacted]")
+			return deny(http.StatusForbidden, "no_user_token", string(grant.ResultValid))
+		}
+		downToken = ut
+	}
+
+	return downToken, nil
+}
+
+// grantScopeGroups synthesises a group membership list from the grant scope
+// for use with the rbac.Policy. This lets the RBAC policy re-validate the tool
+// using the same prefix tables without exposing a new code path.
+//
+// SECURITY (Finding 5): for the sandbox-agent slice we HARD-PIN to read-only.
+// Admin/read-write scopes are only used by the legacy path which verifies a JIT
+// session JWT separately. On the sandbox-agent path we never synthesise admin or
+// read-write group membership from the grant scope — the grant scope is advisory
+// metadata; RBAC is the enforced gate.
+func grantScopeGroups(scope string, cfg *config.Config) []string {
+	// Hard-pin: sandbox-agent path is always treated as read-only (mcp-users
+	// equivalent), regardless of the grant scope value. Admin/read-write capability
+	// requires a verified JIT session JWT (enforced in the legacy path; not
+	// available on the SPIRE/sandbox-agent path in this slice).
+	_ = scope
+	return []string{cfg.UserGroup}
+}
+
+// privilegedGroups is the set of group names that must never be the target of
+// on-behalf impersonation on the sandbox-agent path. Keycloak policy is the
+// first gate; this is a defense-in-depth check in code (Finding 4).
+var privilegedGroups = []string{"mcp-admins"}
+
+// isPrivilegedGroup returns true if any element of groups matches a privileged
+// group name. Case-sensitive to match Keycloak group names exactly.
+func isPrivilegedGroup(groups []string) bool {
+	for _, g := range groups {
+		for _, p := range privilegedGroups {
+			if g == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// exchangeErrorCode maps an exchange error to a safe, fixed reason code for
+// inclusion in audit result fields. The raw error message (which may contain
+// internal addresses, server responses, or partial token values) is NEVER
+// placed in the audit result — it is logged only via slog.Error.
+func exchangeErrorCode(err error) string {
+	if err == nil {
+		return "success"
+	}
+	// ExchangeError carries an HTTP status code from Keycloak.
+	// Import is avoided by a type-assertion via the error string convention.
+	// We use the keycloak.ExchangeError interface through errors.As — the import
+	// of keycloak package here would create a circular dependency since keycloak
+	// already imports config. Instead we pattern-match on the error string
+	// classifications that are safe to expose (status class, not raw body).
+	type statusCoder interface{ StatusCode() int }
+	var ee interface {
+		Error() string
+		GetStatusCode() int
+	}
+	_ = ee
+	// Check if the error wraps an ExchangeError by inspecting its content.
+	// We cannot import the keycloak package here (circular), so we examine the
+	// error string for the class marker we control ("keycloak exchange: HTTP").
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "HTTP 5") || strings.Contains(msg, "HTTP 50"):
+		return "exchange_5xx"
+	case strings.Contains(msg, "HTTP 4") || strings.Contains(msg, "HTTP 40") ||
+		strings.Contains(msg, "HTTP 41") || strings.Contains(msg, "HTTP 42") ||
+		strings.Contains(msg, "HTTP 43") || strings.Contains(msg, "HTTP 44") ||
+		strings.Contains(msg, "unauthorized"):
+		return "exchange_4xx"
+	case strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "timeout"):
+		return "exchange_network"
+	default:
+		return "exchange_error"
+	}
+}
+
+// peekJWTGroups extracts the "groups" claim from an unverified JWT payload.
+// This is used ONLY as a defense-in-depth check on the sandbox-agent path AFTER
+// the token has already been minted by Keycloak via an authenticated on-behalf
+// exchange (the authenticity is already assured). We never trust the result
+// for positive access grants — only to detect and DENY impersonation of
+// privileged subjects.
+//
+// Returns nil (not an error) if the token cannot be parsed or has no groups
+// claim, so the caller must treat "no groups parsed" as safe (we only deny on
+// explicit privileged group membership).
+func peekJWTGroups(raw string) []string {
+	parts := strings.SplitN(raw, ".", 3)
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims struct {
+		Groups []string `json:"groups"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil
+	}
+	return claims.Groups
+}
+
+// vaultErrorCode maps a Vault error to a safe, fixed reason code for inclusion
+// in audit result fields. The raw error message is NEVER placed in audit results.
+func vaultErrorCode(err error) string {
+	if err == nil {
+		return "success"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "403") || strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "forbidden"):
+		return "vault_403"
+	case strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "timeout"):
+		return "vault_network"
+	case strings.Contains(msg, "404") || strings.Contains(msg, "not found"):
+		return "vault_404"
+	default:
+		return "vault_error"
+	}
+}
+
+// bearerFromHeader extracts the raw token from a "Bearer <token>" header.
+// Returns "" if the header is absent or malformed.
+func bearerFromHeader(header string) string {
+	if header == "" {
+		return ""
+	}
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 // immediateResponse builds a ProcessingResponse with an ImmediateResponse that

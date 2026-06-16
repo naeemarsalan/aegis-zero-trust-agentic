@@ -6,30 +6,44 @@ Endpoints:
   GET  /metrics  — Prometheus metrics (optional)
 
 Auth contract (§ design brief):
-  The RHDH scaffolder proxy should be configured with:
-    credentials: forward
-    allowedHeaders: [Content-Type, Authorization]
+  Accepts tokens from two issuers:
+    1. RHDH (Backstage) — RHDH_JWKS_URL + RHDH_TOKEN_ISSUER
+    2. Keycloak          — KEYCLOAK_ISSUER (+ optional KEYCLOAK_JWKS_URL,
+                           KEYCLOAK_JWKS_CA)
 
-  This forwards the Backstage-issued user JWT. The launcher:
+  The launcher:
     1. Extracts Authorization: Bearer <token> from the request.
-    2. Verifies it against RHDH JWKS (RHDH_JWKS_URL env var).
-    3. Extracts the user entity ref from 'sub'/'ent' claims.
+    2. Tries each configured issuer's JWKS (fail-closed on all failing).
+    3. Extracts the user entity ref using the matching issuer's strategy.
     4. Cross-checks against body.user. Returns 403 on mismatch.
     5. Discards the token — it is NEVER logged, stored, or forwarded.
 
-  If the Authorization header is ABSENT (proxy misconfigured):
-    - TODO-HARDENING: in production return 401 here.
-    - For PoC: logs a warning and falls back to body.user as advisory identity.
+  If the Authorization header is ABSENT:
+    - Default (LAUNCHER_ALLOW_UNVERIFIED unset or "false"): 401 FAIL-CLOSED.
+      The launcher is exposed via a public Route; unauthenticated access must
+      be rejected.
+    - LAUNCHER_ALLOW_UNVERIFIED=true: advisory fallback to body.user (dev
+      escape hatch only; never use in production).
 
   The launcher then calls the OpenShell gateway using its OWN OIDC
   client-credentials token (LAUNCHER_OIDC_*). This is the NO-CREDENTIAL-PASSING
   invariant: the user's token is verified once to establish identity, then
   discarded. The gateway sees only the launcher's service identity.
 
+Grant write (Option-D zero-trust flow):
+  After CreateSandbox succeeds, the launcher writes a CONSENT GRANT (not a
+  credential) to Vault KV-v2 at secret/data/sandbox-grants/<sandbox-uid>.
+  The grant carries {user, scope, ttl, nonce, created, sandbox_uid, version}.
+  The in-sandbox agent authenticates with its OWN SPIFFE JWT-SVID; ext-proc
+  reads the grant to resolve on-behalf-of identity for RFC 8693 token exchange.
+  The user's original token is NEVER stored — only the grant consent record.
+
 NO-CREDENTIAL-PASSING invariant locations:
   - _extract_and_verify_caller() discards token after entity-ref extraction
   - openshell.create_sandbox() uses _launcher_auth_metadata() exclusively
   - audit.emit_launch_attempt() hashes the goal; never logs the token
+  - vault.build_grant() validates that no credential field appears in the grant
+  - audit.emit_grant_write() hashes grant identity fields; never logs the nonce value
 """
 
 from __future__ import annotations
@@ -77,6 +91,12 @@ async def _on_validation_error(request: Request, exc: RequestValidationError) ->
 
 _SANDBOX_NAMESPACE = os.environ.get("SANDBOX_NAMESPACE", "openshell")
 
+# Finding 3: platform-wide upper bound on grant validity, matching the JIT
+# approver's 60-minute session ceiling. Applied server-side independent of the
+# user-supplied ttl_minutes value so the launcher cannot be coerced into writing
+# a grant with an arbitrarily long validity window.
+MAX_GRANT_TTL_SECONDS: int = int(os.environ.get("MAX_GRANT_TTL_SECONDS", "3600"))
+
 
 def _short_id() -> str:
     """Return a 6-character hex token for sandbox name uniqueness."""
@@ -97,16 +117,32 @@ def _sandbox_name(user_entity_ref: str) -> str:
     return f"agent-{sanitised}-{_short_id()}"
 
 
+def _allow_unverified() -> bool:
+    """Return True only when the dev escape hatch is explicitly enabled.
+
+    LAUNCHER_ALLOW_UNVERIFIED=true permits requests without an Authorization
+    header to proceed with advisory identity (body.user, is_verified=False).
+    Default is False — the launcher is exposed via a public Route so the
+    unauthenticated fallback MUST be closed in normal operation.
+    """
+    return os.environ.get("LAUNCHER_ALLOW_UNVERIFIED", "false").strip().lower() == "true"
+
+
 def _extract_and_verify_caller(request: Request, body_user: str) -> tuple[str, bool]:
-    """Verify the Backstage JWT and return (entity_ref, is_verified).
+    """Verify the caller's Bearer token and return (entity_ref, is_verified).
+
+    Accepts tokens from any configured issuer (RHDH or Keycloak); see auth.py.
 
     Returns:
-        (entity_ref, True)  when the JWT is present and verifies.
-        (body_user, False)  when the JWT is absent (PoC fallback — see TODO below).
+        (entity_ref, True)   when the JWT is present and verifies.
+        (body_user, False)   when the JWT is absent AND LAUNCHER_ALLOW_UNVERIFIED=true.
 
     Raises:
-        HTTPException(401) if the JWT is present but invalid/expired/wrong-issuer.
-        HTTPException(403) if the JWT is valid but entity_ref mismatches body.user.
+        HTTPException(401)  if the JWT is absent and the escape hatch is off
+                            (default), if the header is malformed, or if all
+                            configured issuers reject the token.
+        HTTPException(403)  if the JWT is valid but entity_ref mismatches body.user.
+        HTTPException(503)  if no auth issuer is configured (mis-deployment).
 
     NO-CREDENTIAL-PASSING: the raw token string is NEVER logged, stored, or
     forwarded. It is discarded after claim extraction.
@@ -116,59 +152,63 @@ def _extract_and_verify_caller(request: Request, body_user: str) -> tuple[str, b
     auth_header: str = request.headers.get("Authorization", "")
 
     if not auth_header:
-        # TODO-HARDENING: switch this block to:
-        #   raise HTTPException(status_code=401, detail="Authorization header required")
-        # once the RHDH proxy is configured with credentials: forward.
-        # For PoC, fall back to the body 'user' field as advisory identity.
-        logger.warning(
-            "caller_token_absent_fallback",
-            extra={
-                "body_user": body_user,
-                "note": "TODO-HARDENING: proxy must be set to credentials:forward",
-            },
+        if _allow_unverified():
+            logger.warning(
+                "caller_token_absent_advisory",
+                extra={
+                    "body_user": body_user,
+                    "note": "LAUNCHER_ALLOW_UNVERIFIED=true; using advisory identity",
+                },
+            )
+            return body_user, False
+        audit.emit_auth_failure("unknown", "Authorization header absent")
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header required — sandbox-launcher is publicly routed",
         )
-        return body_user, False
 
     if not auth_header.lower().startswith("bearer "):
         audit.emit_auth_failure("unknown", "malformed Authorization header")
         raise HTTPException(status_code=401, detail="Authorization header must be Bearer token")
 
+    # Fix (2): Token size bound — reject oversized tokens before any crypto work.
+    # 8 192 bytes is generous for a realistic RS256/ES256 JWT with standard claims.
+    # Oversized tokens are a DoS vector on the public Route (signature eval is O(n)).
+    _TOKEN_MAX_BYTES = 8192
     token = auth_header[7:]  # strip "Bearer "
+    if len(token.encode("utf-8")) > _TOKEN_MAX_BYTES:
+        audit.emit_auth_failure("unknown", "bearer token exceeds maximum size")
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization token exceeds maximum allowed size",
+        )
 
     try:
-        claims = verify_caller_token(token)
+        claims, issuer_kind = verify_caller_token(token)
     except ValueError as exc:
+        # All configured issuers rejected the token — fail closed.
         audit.emit_auth_failure("unknown", f"token verification failed: {exc}")
-        # LAUNCHER_REQUIRE_VERIFIED=true → fail closed (401). Default (PoC): a token
-        # was presented but couldn't be verified (e.g. JWKS reachability, or the
-        # Backstage token type/issuer differs from RHDH_TOKEN_ISSUER) — fall back to
-        # advisory identity (body.user, verified=false) so the flow proceeds. The
-        # no-credential-passing invariant is unaffected: the gateway call still uses
-        # the launcher's OWN creds, never the caller's token.
-        if os.environ.get("LAUNCHER_REQUIRE_VERIFIED", "").strip().lower() == "true":
-            raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
-        logger.warning(
-            "caller_token_unverified_fallback",
-            extra={"body_user": body_user, "reason": str(exc)},
-        )
-        return body_user, False
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
     except RuntimeError as exc:
-        # RHDH JWKS not configured — mis-deployment, not caller error
-        logger.error("rhdh_jwks_not_configured", extra={"error": str(exc)})
+        # No issuers configured — mis-deployment, not a caller fault.
+        logger.error("auth_not_configured", extra={"error": str(exc)})
         raise HTTPException(status_code=503, detail="Auth service not configured") from exc
 
     try:
-        entity_ref = extract_entity_ref(claims)
+        entity_ref = extract_entity_ref(claims, issuer_kind)
     except ValueError as exc:
         audit.emit_auth_failure("unknown", f"entity ref extraction failed: {exc}")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    # Cross-check: verified entity_ref must match body.user (consistency check)
-    # We compare the username portion (after last '/') case-insensitively to handle
-    # minor format variations.
-    verified_username = entity_ref.rsplit("/", 1)[-1].lower()
-    body_username = body_user.rsplit("/", 1)[-1].lower()
-    if verified_username != body_username:
+    # Fix (1): Full entity-ref cross-check.
+    # Compare the FULL normalized entity ref (kind:namespace/name), not just the
+    # trailing name segment.  This prevents a token for "user:default/bob" from
+    # satisfying a body.user of "user:admin/bob" (different namespace) or a token
+    # for "group:default/bob" from satisfying a user ref.  Normalize to lowercase
+    # once so minor case variations (e.g. "User:Default/Bob") are still accepted.
+    normalized_token_ref = entity_ref.lower()
+    normalized_body_ref = body_user.lower()
+    if normalized_token_ref != normalized_body_ref:
         audit.emit_auth_failure(
             entity_ref,
             f"entity_ref mismatch: token={entity_ref} body={body_user}",
@@ -181,9 +221,155 @@ def _extract_and_verify_caller(request: Request, body_user: str) -> tuple[str, b
             ),
         )
 
-    # Token is consumed — discard reference
+    # Token is consumed — discard reference so it cannot be forwarded or logged.
     del token, claims
     return entity_ref, True
+
+
+# ---------------------------------------------------------------------------
+# Grant helpers
+# ---------------------------------------------------------------------------
+
+
+def _bare_username(entity_ref: str) -> str:
+    """Extract the bare username from an entity ref for Keycloak impersonation.
+
+    Keycloak Phase-1 impersonation (RFC 8693 requested_subject) expects the
+    bare preferred_username (e.g. "arsalan"), not the full entity ref
+    (e.g. "user:default/arsalan").  The trailing segment after the last '/'
+    is used.  If the ref has no '/', the whole string is returned.
+
+    Examples:
+        "user:default/arsalan" -> "arsalan"
+        "arsalan"              -> "arsalan"
+    """
+    return entity_ref.rsplit("/", 1)[-1]
+
+
+def _write_grant(
+    actor: str,
+    sandbox_uid: str,
+    sandbox_name: str,
+    scope: str,
+    ttl_seconds: int,
+    t0: float,
+    goal_hash: str,
+) -> None:
+    """Build and write the consent grant to Vault.  Fail-closed on any error.
+
+    Raises HTTPException(502) if Vault is unreachable or the grant write fails.
+    Raises HTTPException(500) if the grant schema is invalid (coding error).
+
+    The user identity written into the grant is the BARE username (trailing
+    segment of the entity ref) so ext-proc can use it directly as
+    RFC 8693 requested_subject for Keycloak Phase-1 impersonation.
+
+    When VAULT_ADDR is unset or when the sandbox_uid is empty (happens in dev
+    when the OpenShell stub returns a mock with no id), the write is skipped
+    with a warning rather than failing the launch.  This keeps the dev/test
+    path unblocked while the prod path is fail-closed.
+    """
+    from sandbox_launcher import audit, vault
+
+    # Dev / test escape: if sandbox_uid is empty the KV path would be
+    # secret/data/sandbox-grants/ (no key) which is invalid.  Log and skip.
+    if not sandbox_uid:
+        logger.warning(
+            "grant_write_skipped_no_sandbox_uid",
+            extra={"sandbox_name": sandbox_name, "actor": actor},
+        )
+        return
+
+    # Dev escape: if VAULT_ADDR is explicitly set to "" or "disabled", skip.
+    vault_addr = os.environ.get("VAULT_ADDR", "").strip()
+    if vault_addr.lower() in ("", "disabled"):
+        logger.warning(
+            "grant_write_skipped_vault_disabled",
+            extra={"sandbox_uid": sandbox_uid, "actor": actor},
+        )
+        return
+
+    grant_t0 = time.monotonic()
+    bare_user = _bare_username(actor)
+
+    try:
+        grant = vault.build_grant(
+            sandbox_uid=sandbox_uid,
+            user=bare_user,
+            scope=scope,
+            ttl_seconds=ttl_seconds,
+        )
+    except ValueError as exc:
+        # build_grant raises ValueError on schema violations — this is a coding
+        # error, not a transient failure.  Log and surface as 500.
+        logger.error(
+            "grant_build_failed",
+            extra={"sandbox_uid": sandbox_uid, "error": str(exc)},
+        )
+        audit.emit_grant_write(
+            actor=actor,
+            sandbox_uid=sandbox_uid,
+            sandbox_name=sandbox_name,
+            grant_scope=scope,
+            grant_user=bare_user,
+            grant_ttl=ttl_seconds,
+            grant_nonce_present=False,
+            outcome="error",
+            latency_ms=int((time.monotonic() - grant_t0) * 1000),
+            reason=f"grant_build_failed: {exc}",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Grant build failed (coding error): {exc}",
+        ) from exc
+
+    try:
+        vault.write_sandbox_grant(sandbox_uid=sandbox_uid, grant=grant)
+    except Exception as exc:  # noqa: BLE001 — Vault errors are all RuntimeError / httpx errors
+        # Log full exception server-side (never returned to the caller).
+        logger.error(
+            "grant_write_failed",
+            extra={"sandbox_uid": sandbox_uid, "error": str(exc), "exc_type": type(exc).__name__},
+        )
+        audit.emit_grant_write(
+            actor=actor,
+            sandbox_uid=sandbox_uid,
+            sandbox_name=sandbox_name,
+            grant_scope=scope,
+            grant_user=bare_user,
+            grant_ttl=ttl_seconds,
+            grant_nonce_present=bool(grant.get("nonce")),
+            outcome="error",
+            latency_ms=int((time.monotonic() - grant_t0) * 1000),
+            reason=f"vault_write_failed: {type(exc).__name__}",
+        )
+        # Finding 2: return a GENERIC detail to the client; never expose raw
+        # exception text (which can contain X-Vault-Token / internal addresses).
+        raise HTTPException(
+            status_code=502,
+            detail="grant write failed",
+        ) from exc
+
+    audit.emit_grant_write(
+        actor=actor,
+        sandbox_uid=sandbox_uid,
+        sandbox_name=sandbox_name,
+        grant_scope=scope,
+        grant_user=bare_user,
+        grant_ttl=ttl_seconds,
+        grant_nonce_present=bool(grant.get("nonce")),
+        outcome="allow",
+        latency_ms=int((time.monotonic() - grant_t0) * 1000),
+    )
+    logger.info(
+        "grant_written",
+        extra={
+            "sandbox_uid": sandbox_uid,
+            "grant_scope": scope,
+            "grant_user": bare_user,
+            "grant_nonce_present": True,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +443,10 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
         )
         raise HTTPException(status_code=503, detail=f"OpenShell client not ready: {exc}") from exc
     except Exception as exc:
+        # Log full exception server-side (never returned to the caller).
         logger.error(
             "openshell_create_sandbox_failed",
-            extra={"sandbox_name": name, "error": str(exc)},
+            extra={"sandbox_name": name, "error": str(exc), "exc_type": type(exc).__name__},
         )
         audit.emit_launch_outcome(
             actor=entity_ref,
@@ -268,14 +455,40 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
             latency_ms=int((time.monotonic() - t0) * 1000),
             tool_args_hash=goal_hash,
         )
-        raise HTTPException(status_code=502, detail=f"OpenShell gateway error: {exc}") from exc
+        # Finding 2: return a GENERIC detail to the client; never expose raw
+        # exception text (which may contain internal addresses or grpc metadata).
+        raise HTTPException(status_code=502, detail="sandbox backend error") from exc
 
-    latency_ms = int((time.monotonic() - t0) * 1000)
     sandbox_name = resp.sandbox.metadata.name or name
     sandbox_id = resp.sandbox.metadata.id or ""
     phase_int = resp.sandbox.status.phase
     # Proto-derived name (see openshell.phase_name) — never drifts from the wire enum.
     phase_str = openshell.phase_name(phase_int)
+
+    # Step 4b: Write consent grant to Vault (Option-D zero-trust flow).
+    # The grant is a CONSENT RECORD keyed by sandbox UID — it is NOT a credential.
+    # The user's JWT has already been discarded; only the verified identity string
+    # (entity_ref) is carried forward into the grant's 'user' field.
+    # The bare username (trailing segment after '/') is what Keycloak impersonation
+    # expects as requested_subject in Phase-1 RFC 8693 token exchange.
+    # Fail-closed: if we cannot write the grant, the agent will not be able to
+    # authenticate through ext-proc, so we surface a 502 rather than launch a
+    # sandbox that is unreachable.
+    # Finding 3: clamp the grant TTL to the platform maximum independent of the
+    # user-supplied ttl_minutes. A user cannot extend their grant beyond the
+    # platform ceiling by supplying a large ttl_minutes value.
+    effective_ttl_seconds = min(body.ttl_minutes * 60, MAX_GRANT_TTL_SECONDS)
+    _write_grant(
+        actor=entity_ref,
+        sandbox_uid=sandbox_id,
+        sandbox_name=sandbox_name,
+        scope=body.scope.value,
+        ttl_seconds=effective_ttl_seconds,
+        t0=t0,
+        goal_hash=goal_hash,
+    )
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
 
     # Step 5: build response — the agent pod is named after the sandbox.
     access_hint = f"oc -n {_SANDBOX_NAMESPACE} exec -it {sandbox_name} -c agent -- /bin/sh"

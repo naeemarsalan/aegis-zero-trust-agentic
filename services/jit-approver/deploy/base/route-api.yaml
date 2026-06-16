@@ -1,0 +1,34 @@
+# OpenShift Route — exposes the jit-approver READ API publicly on anaeem.
+#
+# This is SEPARATE from route.yaml (jit-approver-webhook), which is intentionally
+# restricted to /webhooks/gitea. This route exposes the read endpoints the ida-cli
+# consumes: GET /requests, /requests/{id}/detail|status|receipt|summary, /jwks, /healthz.
+#
+# ⚠️ PoC / UNAUTHENTICATED: these read endpoints have no auth of their own (they
+# normally rely on being in-cluster behind the RHDH proxy). Exposing them via a
+# public Route makes JIT session metadata (scopes, justifications) readable by
+# anyone who can reach this host. Acceptable only because this homelab is not
+# internet-exposed. HARDEN before any real exposure (mTLS / oauth-proxy / IP allow).
+#
+# ida-cli config: jit_url: https://jit-approver-api.apps.anaeem.na-launch.com
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: jit-approver-api
+  namespace: mcp-gateway
+  labels:
+    app: jit-approver
+    app.kubernetes.io/name: jit-approver
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/security: "poc-unauthenticated-read-api — harden before real exposure"
+spec:
+  host: jit-approver-api.apps.anaeem.na-launch.com
+  to:
+    kind: Service
+    name: jit-approver
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

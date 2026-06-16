@@ -155,3 +155,51 @@ def emit_auth_failure(actor: str, reason: str) -> None:
         },
     )
     _inc("deny")
+
+
+def emit_grant_write(
+    actor: str,
+    sandbox_uid: str,
+    sandbox_name: str,
+    grant_scope: str,
+    grant_user: str,
+    grant_ttl: int,
+    grant_nonce_present: bool,
+    outcome: str,
+    latency_ms: int,
+    reason: str = "",
+) -> None:
+    """Emit audit event when a consent grant is written to (or fails to write to) Vault.
+
+    Audit contract — one line per grant write attempt.  The nonce VALUE is never
+    logged (only its presence is recorded); the grant document is never serialised
+    raw.  This satisfies the audit logging contract: every action touching Vault
+    emits a structured line with ts/event/actor/namespace/tool_args_hash/outcome/
+    latency_ms.
+    """
+    audit_logger.info(
+        "sandbox.grant_write",
+        extra={
+            "event": "sandbox.grant_write",
+            "actor": actor,
+            "namespace": "mcp-gateway",
+            # Hash of the grant identity fields — never log raw grant content.
+            "tool_args_hash": _args_hash({
+                "sandbox_uid": sandbox_uid,
+                "grant_user": grant_user,
+                "grant_scope": grant_scope,
+                "grant_ttl": grant_ttl,
+            }),
+            "sandbox_uid": sandbox_uid,
+            "sandbox_name": sandbox_name,
+            "grant_scope": grant_scope,
+            "grant_user": grant_user,
+            "grant_ttl": grant_ttl,
+            "grant_nonce_present": grant_nonce_present,
+            "vault_path": f"secret/data/sandbox-grants/{sandbox_uid}",
+            "outcome": outcome,
+            "latency_ms": latency_ms,
+            **({"reason": reason} if reason else {}),
+        },
+    )
+    _inc(outcome)

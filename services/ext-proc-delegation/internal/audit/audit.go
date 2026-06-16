@@ -74,22 +74,33 @@ type ExchangeInfo struct {
 	Vault    VaultInfo            `json:"vault"`
 }
 
+// GrantInfo carries sandbox consent grant fields for audit.
+// grant_nonce_present is logged (bool) instead of the nonce value itself —
+// the nonce is a security binding material and must never be logged.
+type GrantInfo struct {
+	SandboxUID   string `json:"grant_sandbox_uid,omitempty"`
+	Scope        string `json:"grant_scope,omitempty"`
+	NoncePresent bool   `json:"grant_nonce_present"`
+	Result       string `json:"grant_result,omitempty"` // "valid"|"expired"|"absent"|"nonce_mismatch"|"scope_denied"|"malformed"
+}
+
 // Event is the canonical audit record emitted as a single JSON log line.
 type Event struct {
-	TS                          string         `json:"ts"`
-	Event                       string         `json:"event"` // always "credential_delegation"
-	SessionID                   string         `json:"session_id"`
-	TraceID                     string         `json:"trace_id,omitempty"`
-	SpanID                      string         `json:"span_id,omitempty"`
-	Agent                       AgentInfo      `json:"agent"`
-	CallerUser                  CallerUserInfo `json:"caller_user"`
-	MCP                         MCPInfo        `json:"mcp"`
-	Exchange                    ExchangeInfo   `json:"exchange"`
-	Decision                    string         `json:"decision"`  // "allow" | "deny"
-	Reason                      string         `json:"reason,omitempty"`
-	CredentialInjected          bool           `json:"credential_injected"`
-	CredentialStrippedFromResponse bool        `json:"credential_stripped_from_response"`
-	LatencyMs                   float64        `json:"latency_ms"`
+	TS                             string         `json:"ts"`
+	Event                          string         `json:"event"` // always "credential_delegation"
+	SessionID                      string         `json:"session_id"`
+	TraceID                        string         `json:"trace_id,omitempty"`
+	SpanID                         string         `json:"span_id,omitempty"`
+	Agent                          AgentInfo      `json:"agent"`
+	CallerUser                     CallerUserInfo `json:"caller_user"`
+	MCP                            MCPInfo        `json:"mcp"`
+	Exchange                       ExchangeInfo   `json:"exchange"`
+	Grant                          GrantInfo      `json:"grant,omitempty"`
+	Decision                       string         `json:"decision"`  // "allow" | "deny"
+	Reason                         string         `json:"reason,omitempty"`
+	CredentialInjected             bool           `json:"credential_injected"`
+	CredentialStrippedFromResponse bool           `json:"credential_stripped_from_response"`
+	LatencyMs                      float64        `json:"latency_ms"`
 }
 
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -143,6 +154,18 @@ func (e *Emitter) SetVault(auth, secretPath, result string) {
 	e.ev.Exchange.Vault = VaultInfo{Auth: auth, SecretPath: secretPath, Result: result}
 }
 
+// SetGrant records consent grant audit fields.
+// noncePresent should be true when the grant has a nonce (the value itself is
+// NEVER logged — it is security binding material).
+func (e *Emitter) SetGrant(sandboxUID, scope, result string, noncePresent bool) {
+	e.ev.Grant = GrantInfo{
+		SandboxUID:   sandboxUID,
+		Scope:        scope,
+		NoncePresent: noncePresent,
+		Result:       result,
+	}
+}
+
 // Emit finalizes the event (decision + credential flags + latency) and writes
 // it to stdout via slog.  Also updates Prometheus metrics.
 func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected, credStripped bool) {
@@ -178,6 +201,11 @@ func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected,
 		slog.String("vault_auth", e.ev.Exchange.Vault.Auth),
 		slog.String("vault_secret_path", e.ev.Exchange.Vault.SecretPath),
 		slog.String("vault_result", e.ev.Exchange.Vault.Result),
+		// Grant fields (sandbox agent path only; empty on legacy path).
+		slog.String("grant_sandbox_uid", e.ev.Grant.SandboxUID),
+		slog.String("grant_scope", e.ev.Grant.Scope),
+		slog.Bool("grant_nonce_present", e.ev.Grant.NoncePresent),
+		slog.String("grant_result", e.ev.Grant.Result),
 		slog.String("decision", decision),
 		slog.String("reason", reason),
 		slog.Bool("credential_injected", credInjected),

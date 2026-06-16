@@ -103,6 +103,24 @@ spec:
             # Baseline policy ConfigMap mount path
             - name: OPENSHELL_BASELINE_POLICY_PATH
               value: "/etc/openshell-baseline/baseline.yaml"
+            # Vault — consent grant writer (Option-D zero-trust flow).
+            # The launcher writes a CONSENT GRANT (not a credential) to Vault KV-v2
+            # at secret/data/sandbox-grants/<sandbox-uid> after CreateSandbox succeeds.
+            # Auth: in-cluster SA token via Vault k8s auth (same as Vault Agent Injector).
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            # PoC: router wildcard cert not in default trust store; skip verify.
+            # Production: replace with VAULT_CACERT=/etc/vault-ca/ca.crt.
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            - name: VAULT_K8S_AUTH_PATH
+              value: "kubernetes"
+            - name: VAULT_K8S_AUTH_ROLE
+              value: "sandbox-launcher"
+            # Grant TTL defaults to the request's ttl_minutes*60; this env var is the
+            # fallback when ttl_seconds is not passed (currently always passed from the handler).
+            - name: VAULT_GRANT_TTL_SECONDS
+              value: "3600"
             - name: PYTHONUNBUFFERED
               value: "1"
           volumeMounts:

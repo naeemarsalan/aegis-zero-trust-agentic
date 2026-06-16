@@ -38,6 +38,37 @@ spec:
     enabled: true
     displayName: "Agentic MCP Platform"
 
+    # ---------- Realm hardening (Fix 5) ----------
+    # These settings protect the public sandbox-launcher Route and the ida-cli
+    # ROPC grant (directAccessGrantsEnabled) from password-spray and
+    # credential-stuffing attacks, and prevent preferred_username impersonation.
+    #
+    # registrationAllowed: false  — blocks self-registration; prevents an
+    #   attacker from claiming the username of a catalog user before an admin
+    #   creates the account, which would let them bypass the entity-ref
+    #   cross-check in sandbox-launcher.
+    #
+    # editUsernameAllowed: false  — once set by an admin, preferred_username
+    #   is immutable from the user's own profile page.  Combined with
+    #   registrationAllowed:false this closes the impersonation path: an
+    #   authenticated user cannot rename themselves to "arsalan" and then call
+    #   the launcher with body.user=user:default/arsalan.
+    #
+    # bruteForceProtected: true  — enables per-account lockout after repeated
+    #   failures.  The failureFactor / wait settings below allow legitimate
+    #   mistakes while stopping automated spray.  permanentLockout:false means
+    #   lockouts are time-limited rather than requiring admin intervention.
+    registrationAllowed: false
+    editUsernameAllowed: false
+    bruteForceProtected: true
+    failureFactor: 10
+    waitIncrementSeconds: 60
+    maxFailureWaitSeconds: 900
+    minimumQuickLoginWaitSeconds: 60
+    quickLoginCheckMilliSeconds: 1000
+    maxDeltaTimeSeconds: 43200
+    permanentLockout: false
+
     # ---------- Clients ----------
     clients:
 
@@ -135,6 +166,31 @@ spec:
           # Requires features=token-exchange in Keycloak CR additionalOptions.
           # In RHBK 26.2+ this is GA-level; the flag enables the legacy endpoint fallback.
           "token-exchange.standard.enabled": "true"
+
+      # ida-cli: the developer CLI / TUI (`ida`). PUBLIC client — a CLI cannot
+      # keep a secret. Browserless ROPC (`ida login --user <name>`) + device flow.
+      # Tokens it issues are accepted by sandbox-launcher (Component A: KEYCLOAK_ISSUER
+      # multi-issuer verify); launcher maps the caller from preferred_username.
+      - clientId: ida-cli
+        name: "IDA CLI"
+        description: "Developer CLI/TUI (ida) — public client for browserless login"
+        enabled: true
+        protocol: openid-connect
+        publicClient: true           # public: a CLI cannot hold a secret
+        standardFlowEnabled: false   # no browser redirect flow
+        implicitFlowEnabled: false
+        directAccessGrantsEnabled: true   # browserless ROPC password grant
+        serviceAccountsEnabled: false
+        attributes:
+          # OAuth 2.0 Device Authorization Grant (the `ida login` device flow)
+          "oauth2.device.authorization.grant.enabled": "true"
+        # basic -> sub, profile -> preferred_username (both REQUIRED: the launcher
+        # maps the caller to user:default/<preferred_username> and rejects empty sub).
+        defaultClientScopes:
+          - basic
+          - openid
+          - profile
+          - email
 
     # ---------- Client scopes ----------
     # mcp-downstream-aud injects aud=mcp-downstream so the RFC 8693 exchange can

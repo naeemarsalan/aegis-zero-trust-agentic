@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "In-sandbox claude-agent-sdk runner for the nvidia-ida zero-trust agentic PoC"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "nvidia-ida team" }]
+
+dependencies = [
+    "claude-agent-sdk==0.2.101",
+    "spiffe==0.3.2",
+    "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "anyio[trio]>=4.0",
+]
+
+[project.scripts]
+agent-runner = "agent_harness.agent_runner:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

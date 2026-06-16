@@ -21,17 +21,61 @@ secret goes into Vault below. NOT yet in realm-import.yaml — re-importing the 
 would drop it.)
 
 ## 3. Vault (KV v2 mount `secret/`)
+
+### 3a. sandbox-launcher policy (UPDATED — now includes grant write)
+```hcl
+# File: platform/vault/policies/sandbox-launcher.hcl
+# Read own OIDC secret
+path "secret/data/sandbox-launcher/*" {
+  capabilities = ["read"]
+}
+# Write consent grants (NOT credentials) keyed by sandbox UID
+path "secret/data/sandbox-grants/*" {
+  capabilities = ["create", "update"]
+}
+# Deny everything else
+path "*" {
+  capabilities = ["deny"]
+}
 ```
-# policy: read only its own OIDC secret
-vault policy write sandbox-launcher  # path "secret/data/sandbox-launcher/*" {read}; deny *
-# kubernetes-auth role for the injector
+
+Apply and configure:
+```
+vault policy write sandbox-launcher platform/vault/policies/sandbox-launcher.hcl
+
+# kubernetes-auth role for the injector (Vault Agent + runtime grant write)
 vault write auth/kubernetes/role/sandbox-launcher \
   bound_service_account_names=sandbox-launcher \
   bound_service_account_namespaces=mcp-gateway \
   token_policies=sandbox-launcher token_ttl=15m
+
 # the client secret (injected at /vault/secrets/launcher-oidc-secret)
 vault kv put secret/sandbox-launcher/launcher-oidc-secret secret=<keycloak-client-secret>
 ```
+
+### 3b. ext-proc-delegation policy (UPDATED — now includes grant read)
+```hcl
+# File: platform/vault/policies/ext-proc-delegation.hcl  (ADD this path)
+# Read consent grants written by sandbox-launcher
+path "secret/data/sandbox-grants/*" {
+  capabilities = ["read"]
+}
+```
+
+Apply:
+```
+vault policy write ext-proc-delegation platform/vault/policies/ext-proc-delegation.hcl
+```
+
+### 3c. Grant path notes
+- Logical KV-v2 path: `secret/data/sandbox-grants/<sandbox-uid>`
+- Writer: sandbox-launcher SA via Vault k8s auth role `sandbox-launcher`
+- Reader: ext-proc-delegation SA via Vault k8s auth role `ext-proc-delegation`
+- Grant document is a CONSENT RECORD (not a credential): `{version, sandbox_uid, user, scope, ttl, nonce, created}`
+- `VAULT_ADDR` env var on the sandbox-launcher pod must be set (e.g. `https://vault.apps.anaeem.na-launch.com`)
+- `VAULT_SKIP_VERIFY=true` for PoC (self-signed ingress cert); use `VAULT_CACERT` in production
+- Launcher authenticates via in-cluster SA token (k8s auth, same mechanism as Vault Agent Injector)
+- To use SPIFFE SVID auth instead: set `VAULT_JWT_AUTH_PATH=jwt` + ensure `SVID_JWT_PATH` is populated by the workload API helper
 
 ## 4. Apply
 ```

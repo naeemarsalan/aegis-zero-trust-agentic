@@ -47,6 +47,14 @@ spec:
               value: "openshell"
             - name: KEYCLOAK_REALM_URL
               value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            # Component A: accept Keycloak-issued user tokens (e.g. from ida-cli)
+            # in addition to RHDH Backstage tokens. iss must match the route URL the
+            # CLI mints tokens against. JWKS fetched from the same self-signed route,
+            # so skip verify (PoC, mirrors LAUNCHER_OIDC_INSECURE above).
+            - name: KEYCLOAK_ISSUER
+              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            - name: KEYCLOAK_JWKS_INSECURE
+              value: "true"
             - name: MCP_GATEWAY_URL
               value: "https://mcp-gateway.apps.anaeem.na-launch.com"
             # Baseline policy ConfigMap mount path

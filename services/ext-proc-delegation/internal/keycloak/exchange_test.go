@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -152,5 +153,82 @@ func TestExchange_MissingSecretFile(t *testing.T) {
 	_, err := client.Exchange(context.Background(), "tok", "aud")
 	if err == nil {
 		t.Fatal("expected error for missing secret file")
+	}
+}
+
+// TestExchangeOnBehalf_HappyPath verifies that ExchangeOnBehalf sends
+// requested_subject=user and NO subject_token to Keycloak.
+func TestExchangeOnBehalf_HappyPath(t *testing.T) {
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", 400)
+			return
+		}
+		capturedForm = r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"on-behalf-tok","token_type":"bearer"}`))
+	}))
+	defer srv.Close()
+
+	secretFile := writeSecretFile(t, "my-secret")
+	client := keycloak.NewClientWithHTTP(srv.URL, config.ModeStandard, "client-id", secretFile, srv.Client())
+
+	tok, err := client.ExchangeOnBehalf(context.Background(), "arsalan", "mcp-downstream")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != "on-behalf-tok" {
+		t.Errorf("token=%q want on-behalf-tok", tok)
+	}
+	// Verify the form has requested_subject but NO subject_token.
+	if capturedForm.Get("requested_subject") != "arsalan" {
+		t.Errorf("requested_subject=%q want arsalan", capturedForm.Get("requested_subject"))
+	}
+	if capturedForm.Get("subject_token") != "" {
+		t.Errorf("subject_token must be absent in on-behalf exchange, got %q", capturedForm.Get("subject_token"))
+	}
+	if capturedForm.Get("grant_type") != "urn:ietf:params:oauth:grant-type:token-exchange" {
+		t.Errorf("grant_type=%q want token-exchange", capturedForm.Get("grant_type"))
+	}
+}
+
+// TestExchangeOnBehalf_EmptyUser_Errors ensures an empty user is rejected
+// before any network call.
+func TestExchangeOnBehalf_EmptyUser_Errors(t *testing.T) {
+	secretFile := writeSecretFile(t, "secret")
+	client := keycloak.NewClientWithHTTP("http://localhost", config.ModeStandard, "cid", secretFile, http.DefaultClient)
+	_, err := client.ExchangeOnBehalf(context.Background(), "", "mcp-downstream")
+	if err == nil {
+		t.Fatal("expected error for empty user")
+	}
+}
+
+// TestExchangeOnBehalf_5xx_Retry verifies retry on 5xx.
+func TestExchangeOnBehalf_5xx_Retry(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"retry-on-behalf-tok"}`))
+	}))
+	defer srv.Close()
+
+	secretFile := writeSecretFile(t, "secret")
+	client := keycloak.NewClientWithHTTP(srv.URL, config.ModeStandard, "cid", secretFile, srv.Client())
+
+	tok, err := client.ExchangeOnBehalf(context.Background(), "arsalan", "mcp-downstream")
+	if err != nil {
+		t.Fatalf("expected success after retry; got: %v", err)
+	}
+	if tok != "retry-on-behalf-tok" {
+		t.Errorf("token=%q want retry-on-behalf-tok", tok)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("expected 2 calls for 5xx retry, got %d", calls.Load())
 	}
 }

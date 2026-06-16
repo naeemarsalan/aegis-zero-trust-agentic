@@ -58,6 +58,25 @@ type Config struct {
 	JITIssuer   string
 	JITAudience string
 
+	// SPIRE OIDC JWT-SVID verification (sandbox agent path — Option D).
+	// SpireJWKSURL is the SPIRE OIDC discovery provider JWKS endpoint.
+	// When non-empty, ext-proc recognises inbound tokens whose iss matches
+	// SpireIssuer and routes them through the grant-read + RFC8693
+	// impersonation path instead of the legacy Keycloak user-token path.
+	SpireJWKSURL  string // e.g. https://spire-oidc.apps.anaeem.na-launch.com/keys
+	SpireIssuer   string // must match spire-oidc jwtIssuer config field
+	SpireAudience string // must be "mcp-gateway"
+	// SpireTLSInsecure skips TLS verification when fetching the SPIRE OIDC JWKS.
+	// The spire-oidc discovery route serves a self-signed (SPIRE-issued) cert not
+	// in the system trust store. PoC-only; production should mount the CA instead.
+	SpireTLSInsecure bool
+
+	// SandboxGrantPathPrefix is the Vault KV-v2 path prefix for consent grants
+	// written by sandbox-launcher.
+	// Default: "secret/data/sandbox-grants/".
+	// Full path = SandboxGrantPathPrefix + <sandbox-uid>
+	SandboxGrantPathPrefix string
+
 	// Safety invariant — only valid value is "closed".
 	FailMode string
 
@@ -94,10 +113,15 @@ func Load() (*Config, error) {
 		RestrictedGroup:       getEnv("RESTRICTED_GROUP", "restricted"),
 		AdminGroup:            getEnv("ADMIN_GROUP", "mcp-admins"),
 		UserGroup:             getEnv("USER_GROUP", "mcp-users"),
-		JITJWKSURL:            getEnv("JIT_JWKS_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"),
-		JITIssuer:             getEnv("JIT_ISSUER", "https://jit-approver.mcp-gateway.svc.cluster.local:8080"),
-		JITAudience:           getEnv("JIT_AUDIENCE", "kyverno-authz"),
-		FailMode:             getEnv("FAIL_MODE", "closed"),
+		JITJWKSURL:             getEnv("JIT_JWKS_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"),
+		JITIssuer:              getEnv("JIT_ISSUER", "https://jit-approver.mcp-gateway.svc.cluster.local:8080"),
+		JITAudience:            getEnv("JIT_AUDIENCE", "kyverno-authz"),
+		SpireJWKSURL:           getEnv("SPIRE_JWKS_URL", ""),
+		SpireIssuer:            getEnv("SPIRE_ISSUER", "https://spire-oidc.apps.anaeem.na-launch.com"),
+		SpireAudience:          getEnv("SPIRE_AUDIENCE", "mcp-gateway"),
+		SpireTLSInsecure:       getEnv("SPIRE_TLS_INSECURE", "") == "true",
+		SandboxGrantPathPrefix: getEnv("SANDBOX_GRANT_PATH_PREFIX", "secret/data/sandbox-grants/"),
+		FailMode:               getEnv("FAIL_MODE", "closed"),
 		GRPCAddr:             getEnv("GRPC_ADDR", ":9000"),
 		MetricsAddr:          getEnv("METRICS_ADDR", ":9090"),
 	}

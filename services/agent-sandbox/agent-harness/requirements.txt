@@ -1,0 +1,23 @@
+# Runtime dependencies for the in-sandbox agent harness.
+# Pin exact versions for reproducible container builds.
+
+# Claude agent SDK — provides the async query() runner, MCP server integration,
+# and on-disk skill loading from .claude/skills/.
+# NOTE: py_compile and unit tests do NOT require this to be installed locally
+# (all SDK imports are guarded inside functions). It is installed in the
+# container image by the Dockerfile.
+claude-agent-sdk==0.2.101
+
+# SPIFFE Workload API client (fallback path when the Go sidecar is absent).
+# The harness guards the import with try/except so it is optional at import
+# time; only required at runtime in a SPIRE-enrolled pod.
+# py-spiffe is the upstream canonical Python SPIFFE library.
+# (0.3.2 was never published; 0.3.0 is the latest on PyPI.)
+spiffe==0.3.0
+
+# Async HTTP client — used for health checks and any direct API calls.
+httpx==0.28.1
+
+# Structured logging helpers (JSON formatter for stderr).
+# Python's stdlib logging is used directly to avoid a heavy dependency.
+# No extra package required.

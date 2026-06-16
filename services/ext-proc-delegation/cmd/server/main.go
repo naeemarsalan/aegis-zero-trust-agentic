@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,6 +25,7 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/extproc"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/jwks"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/keycloak"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/spire"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/vault"
 )
 
@@ -102,9 +105,43 @@ func run() error {
 	kcClient := keycloak.NewClient(cfg)
 	vaultClient := vault.NewClient(cfg, jwtSource)
 
+	// Build SPIRE SVID verifier when configured. When SPIRE_JWKS_URL is set,
+	// ext-proc recognises SPIRE JWT-SVIDs from the agent-sandbox workload and
+	// routes them through the grant-read + RFC 8693 on-behalf path.
+	var spireVerifier *spire.Verifier
+	if cfg.SpireJWKSURL != "" {
+		// The spire-oidc discovery route serves a self-signed (SPIRE-issued)
+		// cert not in the system trust store; skip verification when configured
+		// (PoC). The JWKS content is still trust-anchored by the SVID signature.
+		var spireHTTP *http.Client
+		if cfg.SpireTLSInsecure {
+			spireHTTP = &http.Client{
+				Timeout:   5 * time.Second,
+				Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // PoC: self-signed spire-oidc route
+			}
+		}
+		sv, svErr := spire.New(jwks.Config{
+			JWKSURL:          cfg.SpireJWKSURL,
+			Issuer:           cfg.SpireIssuer,
+			ExpectedAudience: cfg.SpireAudience,
+			HTTPClient:       spireHTTP,
+		})
+		if svErr != nil {
+			slog.Warn("SPIRE verifier init failed — sandbox agent path disabled", "err", svErr)
+		} else {
+			spireVerifier = sv
+			slog.Info("SPIRE verifier enabled", "jwks_url", cfg.SpireJWKSURL, "issuer", cfg.SpireIssuer)
+		}
+	}
+
 	// Build gRPC server.
 	srv := grpc.NewServer()
-	extprocSrv := extproc.NewServer(cfg, kcClient, vaultClient, verifier, jitVerifier)
+	var extprocSrv *extproc.Server
+	if spireVerifier != nil {
+		extprocSrv = extproc.NewServerWithSpire(cfg, kcClient, vaultClient, verifier, jitVerifier, spireVerifier)
+	} else {
+		extprocSrv = extproc.NewServer(cfg, kcClient, vaultClient, verifier, jitVerifier)
+	}
 	extprocv3.RegisterExternalProcessorServer(srv, extprocSrv)
 
 	healthSrv := health.NewServer()

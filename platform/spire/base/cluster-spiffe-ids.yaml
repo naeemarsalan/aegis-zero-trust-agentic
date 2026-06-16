@@ -50,3 +50,24 @@ spec:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: agent-sandbox
+---
+# ClusterSPIFFEID for OpenShell launcher-created sandbox pods (ns openshell).
+# OpenShell stamps each sandbox pod with openshell.ai/managed-by=openshell and
+# openshell.ai/sandbox-id=<uuid> when providerTokenGrants.spiffe.enabled=true.
+# We encode that sandbox-id into the SVID PATH so each sandbox gets a UNIQUE,
+# cryptographically-bound identity. ext-proc parses <uuid> from the sub and reads
+# the matching Vault grant at secret/data/sandbox-grants/<uuid> — the per-sandbox
+# binding (no spoofable header, no per-sandbox registration needed).
+# SVID format: spiffe://anaeem.na-launch.com/ns/openshell/sandbox/<sandbox-uuid>
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: openshell-sandbox-workloads
+spec:
+  spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sandbox/{{ index .PodMeta.Labels "openshell.ai/sandbox-id" }}'
+  podSelector:
+    matchLabels:
+      openshell.ai/managed-by: openshell
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: openshell

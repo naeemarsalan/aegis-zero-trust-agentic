@@ -151,6 +151,52 @@ func (c *Client) Login(ctx context.Context) error {
 	return nil
 }
 
+// FetchGrant returns the KV data map for a sandbox consent grant at
+// secret/data/sandbox-grants/<sandboxUID>. The grantPathPrefix parameter is
+// the full prefix including the KV v2 "secret/data/" mount prefix
+// (e.g. "secret/data/sandbox-grants/").
+//
+// Returns nil data (not an error) when the Vault path returns 404 — callers
+// must treat nil as "grant absent" and deny accordingly (fail-closed).
+func (c *Client) FetchGrant(ctx context.Context, grantPathPrefix, sandboxUID string) (map[string]interface{}, error) {
+	if err := c.Login(ctx); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	tok := c.token
+	c.mu.Unlock()
+
+	path := strings.TrimRight(grantPathPrefix, "/") + "/" + sandboxUID
+	url := strings.TrimRight(c.addr, "/") + "/v1/" + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("vault: build grant request: %w", err)
+	}
+	req.Header.Set("X-Vault-Token", tok)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("vault: grant HTTP: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // grant absent — caller must deny
+	}
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("vault: grant HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var kv kvResponse
+	if err := json.NewDecoder(resp.Body).Decode(&kv); err != nil {
+		return nil, fmt.Errorf("vault: parse grant response: %w", err)
+	}
+	return kv.Data.Data, nil
+}
+
 // FetchToolSecret returns the KV data map for the named tool.
 // Automatically re-logins if the cached token has expired.
 func (c *Client) FetchToolSecret(ctx context.Context, tool string) (map[string]interface{}, error) {
