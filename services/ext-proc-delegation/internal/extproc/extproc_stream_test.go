@@ -1118,6 +1118,98 @@ func TestProcess_SpirePath_ExchangeFails_Deny(t *testing.T) {
 	_ = stream.CloseSend()
 }
 
+// TestProcess_SpirePath_StaticPath_ExchangeFails_AllowsStaticToken verifies the
+// non-fatal-exchange behaviour on the /mcp static-auth path: when the RFC 8693
+// on-behalf exchange fails, delegation STILL succeeds by injecting the per-user
+// pre-provisioned static token (the exchanged JWT was never the credential on
+// this path — it is audit-only). Contrast with TestProcess_SpirePath_
+// ExchangeFails_Deny, which has no :path (non-static, JWT-downstream) and so
+// stays fail-closed.
+func TestProcess_SpirePath_StaticPath_ExchangeFails_AllowsStaticToken(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const sandboxUID = "uid-abc-123"
+	const user = "arsalan"
+
+	// Exchange fails (simulating the Keycloak 26.6.3 v1 token-exchange NPE).
+	kc := &stubOnBehalfExchanger{err: errors.New("keycloak exchange: HTTP 500")}
+	vlt := &stubVault{
+		grantData: validGrantData(sandboxUID, "vestigial-nonce", user),
+		data:      map[string]interface{}{user: "pfsense-static-token"},
+	}
+	sv := &stubSpireVerifier{
+		claims: &spire.SVIDClaims{
+			SpiffeID:   "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/" + sandboxUID,
+			SandboxUID: sandboxUID,
+		},
+	}
+
+	client := startServerWithSpire(t, cfg, kc, vlt, okVerifier("ignored"), sv)
+	stream, err := client.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	// RequestHeaders with the /mcp (static-auth) path.
+	err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				Headers: headerMap(map[string]string{
+					"authorization": buildSpireBearerHeader(cfg.SpireIssuer),
+					":path":         "/mcp",
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("send RequestHeaders: %v", err)
+	}
+	if _, err = stream.Recv(); err != nil {
+		t.Fatalf("recv headers ack: %v", err)
+	}
+
+	// RequestBody — a read-only tool call.
+	err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestBody{
+			RequestBody: &extprocv3.HttpBody{
+				Body:        mcpBodyJSON(t, "search_firewall_rules"),
+				EndOfStream: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("send RequestBody: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv RequestBody response: %v", err)
+	}
+	// Must be an allow (body mutation), NOT an ImmediateResponse deny.
+	if imm, isImm := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse); isImm {
+		t.Fatalf("expected allow with static token, got deny %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+	bodyResp, ok := resp.Response.(*extprocv3.ProcessingResponse_RequestBody)
+	if !ok {
+		t.Fatalf("expected RequestBody response, got %T", resp.Response)
+	}
+	mut := bodyResp.RequestBody.GetResponse().GetHeaderMutation()
+	if mut == nil {
+		t.Fatal("expected header mutation")
+	}
+	var injectedToken string
+	for _, h := range mut.GetSetHeaders() {
+		if h.GetHeader().GetKey() == "Authorization" {
+			injectedToken = h.GetHeader().GetValue()
+		}
+	}
+	// The per-user static token is injected despite the exchange failure.
+	if injectedToken != "Bearer pfsense-static-token" {
+		t.Errorf("injected=%q want Bearer pfsense-static-token (static token injected despite exchange failure)", injectedToken)
+	}
+
+	_ = stream.CloseSend()
+}
+
 // TestProcess_SpirePath_MissingSandboxUID_Deny: SVID missing sandbox_uid -> 401.
 // Finding 6: VerifySVID now fails closed at the verification step itself when
 // sandbox_uid is empty, so the denial occurs at the RequestHeaders phase (401)

@@ -160,7 +160,8 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		spanID         string
 		mcpReq         *mcp.Request
 		downToken      string
-		delegationDone bool // true only after BOTH exchange legs minted a real downstream credential
+		delegationDone bool          // true only after BOTH exchange legs minted a real downstream credential
+		spireAudit     spireAuditCtx // populated on the SPIRE path; carries grant + exchange outcome to the final allow audit
 	)
 	_ = time.Now() // ensure time import used
 
@@ -276,7 +277,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				// SANDBOX AGENT PATH (Option D: SPIRE SVID + Vault grant)
 				// ----------------------------------------------------------------
 				tok, dErr := s.handleSandboxAgentPath(ctx, sessionID, traceID, spanID,
-					stream, svidClaims, tool, argsHash, reqPath)
+					stream, svidClaims, tool, argsHash, reqPath, &spireAudit)
 				if dErr != nil {
 					return dErr // stream.Send(immediateResponse) already sent inside
 				}
@@ -465,12 +466,6 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 
 			// Emit final allow audit (delegation succeeded — downToken is non-empty).
 			emitter := audit.NewEmitter(sessionID, traceID, spanID)
-			if identity != nil {
-				emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
-			}
-			if svidClaims != nil {
-				emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
-			}
 			tool := ""
 			argsHash := ""
 			if mcpReq != nil {
@@ -478,7 +473,23 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				argsHash = mcpReq.ArgsHash
 			}
 			emitter.SetMCP("", tool, argsHash)
-			emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, "success")
+			if svidClaims != nil {
+				// SPIRE / sandbox-agent path: there is no inbound Keycloak identity —
+				// the caller resolves to the grant user. Reflect the REAL grant and
+				// on-behalf exchange outcome captured during delegation (which may be
+				// a non-fatal exchange failure on the static-auth path) rather than a
+				// hardcoded success, so the allow audit never overstates the exchange.
+				emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
+				emitter.SetCallerUser("", spireAudit.callerUser, nil)
+				emitter.SetGrant(spireAudit.grantSandboxUID, spireAudit.grantScope, string(grant.ResultValid), spireAudit.grantNoncePresent)
+				emitter.SetVault("success", spireAudit.grantPath, "success")
+				emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, spireAudit.exchangeResult)
+			} else {
+				if identity != nil {
+					emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
+				}
+				emitter.SetKeycloakExchange(string(s.cfg.ExchangeMode), s.cfg.DownstreamAudience, "success")
+			}
 			emitter.Emit(ctx, "allow", "", true, true)
 
 		case *extprocv3.ProcessingRequest_ResponseBody:
@@ -497,6 +508,22 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			// Unknown message type — pass through.
 		}
 	}
+}
+
+// spireAuditCtx carries the SPIRE/sandbox-agent audit fields from
+// handleSandboxAgentPath (RequestBody leg) to the final allow emission
+// (ResponseHeaders leg). Without this, the final allow audit would have to
+// hardcode the exchange result — which becomes incorrect once an on-behalf
+// exchange failure is non-fatal on the static-auth path. These fields let the
+// allow audit faithfully record the resolved grant user and the real exchange
+// outcome.
+type spireAuditCtx struct {
+	callerUser        string // grant.user — the delegated end-user identity
+	grantSandboxUID   string
+	grantScope        string
+	grantPath         string // full Vault KV path the grant was read from
+	grantNoncePresent bool
+	exchangeResult    string // "success" or a safe error code (e.g. "exchange_5xx")
 }
 
 // handleSandboxAgentPath implements the SPIRE SVID + Vault grant delegation
@@ -520,7 +547,11 @@ func (s *Server) handleSandboxAgentPath(
 	svidClaims *spire.SVIDClaims,
 	tool, argsHash string,
 	reqPath string,
+	aud *spireAuditCtx,
 ) (string, error) {
+	if aud == nil { // defensive: callers always pass a non-nil carry struct
+		aud = &spireAuditCtx{}
+	}
 	emitter := audit.NewEmitter(sessionID, traceID, spanID)
 	emitter.SetAgent(svidClaims.SpiffeID, svidClaims.SpiffeID)
 	emitter.SetMCP("", tool, argsHash)
@@ -557,6 +588,7 @@ func (s *Server) handleSandboxAgentPath(
 		return deny(http.StatusForbidden, "grant_vault_error", string(grant.ResultAbsent))
 	}
 	emitter.SetVault("success", grantPath+svidClaims.SandboxUID, "success")
+	aud.grantPath = grantPath + svidClaims.SandboxUID
 
 	// nil rawData means 404 (grant not found in Vault).
 	if rawData == nil {
@@ -619,28 +651,62 @@ func (s *Server) handleSandboxAgentPath(
 		}
 	}
 
-	// Grant is valid. Record grant audit fields.
+	// Grant is valid. Record grant audit fields (on this emitter for any later
+	// deny, and on aud for the final allow emission in the ResponseHeaders leg).
 	emitter.SetGrant(g.SandboxUID, g.Scope, string(grant.ResultValid), g.Nonce != "")
 	emitter.SetCallerUser("", g.User, nil) // caller_username = grant.user for audit
+	aud.callerUser = g.User
+	aud.grantSandboxUID = g.SandboxUID
+	aud.grantScope = g.Scope
+	aud.grantNoncePresent = g.Nonce != ""
 
 	// (f) RFC 8693 Phase-1 impersonation: requested_subject=grant.user.
+	//
+	// Credential-injection split (see Config.StaticAuthPaths):
+	//   - Static-auth path (/mcp → pfsense-mcp): the injected downstream
+	//     credential is the per-user PRE-PROVISIONED static token selected
+	//     below from Vault by grant.user. The exchanged Keycloak JWT is NOT the
+	//     credential here — it is minted for the audit trail and for JWT-aware
+	//     downstreams only. An exchange failure on this path is therefore
+	//     NON-FATAL: it is recorded honestly in the audit, but delegation still
+	//     completes via the static token. (Without this, a transient/buggy
+	//     Keycloak token-exchange takes down a path whose real credential never
+	//     depended on the exchange.)
+	//   - JWT-downstream path (e.g. /echo): the exchanged token IS the injected
+	//     credential, so an exchange failure remains FATAL (fail-closed).
+	staticPath := s.cfg.IsStaticAuthPath(reqPath)
 	exchangedToken, exErr := s.kcOnBehalf.ExchangeOnBehalf(ctx, g.User, s.cfg.DownstreamAudience)
 	if exErr != nil {
-		slog.Error("ext_proc: on-behalf exchange failed", "user", "[redacted]", "err", exErr)
-		emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, exchangeErrorCode(exErr))
-		return deny(http.StatusForbidden, "on_behalf_exchange_failed", string(grant.ResultValid))
-	}
-	emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, "success")
+		exResult := exchangeErrorCode(exErr)
+		emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, exResult)
+		aud.exchangeResult = exResult
+		if !staticPath {
+			// JWT-downstream path: the exchanged token is the credential.
+			slog.Error("ext_proc: on-behalf exchange failed (fatal, jwt-downstream path)", "user", "[redacted]", "err", exErr)
+			return deny(http.StatusForbidden, "on_behalf_exchange_failed", string(grant.ResultValid))
+		}
+		// Static-auth path: exchange is audit-only; proceed to static-token
+		// injection. Discard the (empty) exchanged token.
+		slog.Warn("ext_proc: on-behalf exchange failed but non-fatal on static-auth path — injecting per-user static token",
+			"user", "[redacted]", "err", exErr)
+		exchangedToken = ""
+	} else {
+		emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, "success")
+		aud.exchangeResult = "success"
 
-	// Finding 4: defense-in-depth group check on the exchanged token.
-	// If Keycloak placed a groups claim in the issued token and it contains
-	// a privileged group (e.g. mcp-admins), deny. This is a belt-and-suspenders
-	// check; Keycloak's own impersonation policy is the primary gate.
-	// Fail-closed: deny if the minted token says the impersonated user is privileged.
-	if tokenGroups := peekJWTGroups(exchangedToken); isPrivilegedGroup(tokenGroups) {
-		slog.Error("ext_proc: on-behalf exchange returned privileged group — denying sandbox agent path",
-			"groups_count", len(tokenGroups))
-		return deny(http.StatusForbidden, "impersonation_target_is_privileged", string(grant.ResultScopeDenied))
+		// Finding 4: defense-in-depth group check on the exchanged token.
+		// If Keycloak placed a groups claim in the issued token and it contains
+		// a privileged group (e.g. mcp-admins), deny. This is a belt-and-suspenders
+		// check; Keycloak's own impersonation policy is the primary gate.
+		// Only meaningful when an exchanged token exists. On the static-auth path
+		// a privileged grant.user is independently neutralised by the read-only
+		// hard-pin (grantScopeGroups) enforced above, so skipping this check when
+		// the audit-only exchange failed does not widen access.
+		if tokenGroups := peekJWTGroups(exchangedToken); isPrivilegedGroup(tokenGroups) {
+			slog.Error("ext_proc: on-behalf exchange returned privileged group — denying sandbox agent path",
+				"groups_count", len(tokenGroups))
+			return deny(http.StatusForbidden, "impersonation_target_is_privileged", string(grant.ResultScopeDenied))
+		}
 	}
 
 	// The exchanged Keycloak token is recorded for audit only. For the static
@@ -648,7 +714,7 @@ func (s *Server) handleSandboxAgentPath(
 	// keyed by grant.user — NOT the Keycloak JWT.
 	downToken := exchangedToken
 
-	if s.cfg.IsStaticAuthPath(reqPath) {
+	if staticPath {
 		// (g) Select per-user pfSense static token from Vault by grant.user.
 		m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
 		if ferr != nil {
@@ -661,6 +727,15 @@ func (s *Server) handleSandboxAgentPath(
 			return deny(http.StatusForbidden, "no_user_token", string(grant.ResultValid))
 		}
 		downToken = ut
+	}
+
+	// Fail-closed invariant: never return an empty downstream credential. On the
+	// static-auth path downToken is the per-user static token (non-empty, checked
+	// above). On the JWT-downstream path downToken is the exchanged token, which
+	// is non-empty here because a failed exchange already returned a deny.
+	if downToken == "" {
+		slog.Error("ext_proc: empty downstream token on sandbox agent path", "static_path", staticPath)
+		return deny(http.StatusForbidden, "empty_downstream_token", string(grant.ResultValid))
 	}
 
 	return downToken, nil

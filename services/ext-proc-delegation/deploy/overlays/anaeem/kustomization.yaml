@@ -6,6 +6,6 @@ resources:
 
 images:
   - name: oci.arsalan.io/nvidia-ida/ext-proc-delegation
-    newTag: dev
+    newTag: grant-e2e-nonfatal
 
 namespace: mcp-gateway
