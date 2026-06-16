@@ -75,14 +75,18 @@ type tickMsg struct {
 	t time.Time
 }
 
-// logLineMsg carries a single log line from a streaming pod log.
+// logLineMsg carries a single log line from a streaming pod log. gen tags the
+// stream generation so a stale goroutine's messages (after a tab switch) are
+// ignored rather than corrupting a newer stream (mirrors shellExitMsg.gen).
 type logLineMsg struct {
 	line string
+	gen  int
 }
 
-// logEOFMsg signals the end of a pod log stream.
+// logEOFMsg signals the end of a pod log stream. gen tags the stream generation.
 type logEOFMsg struct {
 	err error
+	gen int
 }
 
 // tabChangedMsg signals that the user switched to a different tab.

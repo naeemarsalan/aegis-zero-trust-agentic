@@ -1306,11 +1306,60 @@ func TestApprovalsTab_Update_ConfirmedResult_IsReturnedDirectly(t *testing.T) {
 
 func TestApp_Update_LogLineMsg_AppendsToLogs(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
-	m, _ := app.Update(logLineMsg{line: "INFO startup"})
+	app.logCh = make(chan tea.Msg, 1) // simulate an active stream (gen 0 == logGen 0)
+	m, _ := app.Update(logLineMsg{line: "INFO startup", gen: app.logGen})
 	updated := m.(App)
 	v := updated.logs.View()
 	if !strings.Contains(v, "INFO startup") {
 		t.Errorf("logs View should contain appended line; got:\n%s", v)
+	}
+}
+
+// TestApp_Update_LogLineMsg_StaleGenIgnored: a line from a superseded stream
+// generation must NOT append (the dead-stream / cross-stream-corruption guard).
+func TestApp_Update_LogLineMsg_StaleGenIgnored(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	app.logCh = make(chan tea.Msg, 1)
+	app.logGen = 2 // current stream is gen 2
+	m, _ := app.Update(logLineMsg{line: "STALE line", gen: 1})
+	if strings.Contains(m.(App).logs.View(), "STALE line") {
+		t.Error("stale-generation log line must not append to the current stream")
+	}
+}
+
+// TestLoginForm_AcceptsKeystrokesAfterInit guards the focus bug: without
+// Form.Init() the huh form silently drops typed input. The pre-fix tests injected
+// result messages and never simulated a keystroke, so they missed this.
+func TestLoginForm_AcceptsKeystrokesAfterInit(t *testing.T) {
+	lf := newLoginForm()
+	lf.Open()
+	if c := lf.Init(); c != nil {
+		if msg := c(); msg != nil {
+			lf.Update(msg)
+		}
+	}
+	for _, r := range "operator" {
+		lf.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if lf.Username() != "operator" {
+		t.Fatalf("username=%q want operator — login form dropped keystrokes (Init/focus regressed)", lf.Username())
+	}
+}
+
+// TestWizard_AcceptsKeystrokesAfterInit guards the same focus bug for the launch wizard.
+func TestWizard_AcceptsKeystrokesAfterInit(t *testing.T) {
+	w := NewWizard()
+	w.Open()
+	if c := w.Init(); c != nil {
+		if msg := c(); msg != nil {
+			w.Update(msg)
+		}
+	}
+	for _, r := range "list rules" {
+		w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if w.goal != "list rules" {
+		t.Fatalf("wizard goal=%q want 'list rules' — wizard dropped keystrokes (Init/focus regressed)", w.goal)
 	}
 }
 

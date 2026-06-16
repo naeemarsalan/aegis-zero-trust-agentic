@@ -69,6 +69,17 @@ func (lf *LoginForm) Open() {
 	lf.active = true
 }
 
+// Init returns the huh form's init command, which focuses the first field so it
+// can receive keystrokes. It MUST be run whenever the form is opened (at startup
+// AND on every reopen) — huh only focuses a field via Form.Init(); without it
+// the form renders but silently drops all typed input.
+func (lf *LoginForm) Init() tea.Cmd {
+	if lf == nil || lf.form == nil {
+		return nil
+	}
+	return lf.form.Init()
+}
+
 // Close hides the form without emitting a result (used on Esc/abort).
 func (lf *LoginForm) Close() {
 	lf.active = false

@@ -92,6 +92,17 @@ func (w *Wizard) buildForm() {
 // Active returns true if the wizard is currently open.
 func (w *Wizard) Active() bool { return w.active }
 
+// Init returns the huh form's init command, which focuses the first field so it
+// can receive keystrokes. It MUST be run whenever the wizard is opened — huh only
+// focuses a field via Form.Init(); without it the form renders but silently drops
+// all typed input (the operator can't type the sandbox goal).
+func (w *Wizard) Init() tea.Cmd {
+	if w == nil || w.form == nil {
+		return nil
+	}
+	return w.form.Init()
+}
+
 // Open resets and opens the wizard.
 func (w *Wizard) Open() {
 	w.goal = ""

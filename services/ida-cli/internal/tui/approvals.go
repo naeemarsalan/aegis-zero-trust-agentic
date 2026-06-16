@@ -62,7 +62,9 @@ func (a *ApprovalsTab) SelectedSession() *api.JitSession {
 // the concrete JIT scope from detail so the approver gives informed consent.
 // detail MUST be fetched successfully before calling this method; if scope
 // loading failed, the caller must NOT call RequestMerge (fail-closed).
-func (a *ApprovalsTab) RequestMerge(prURL string, detail api.JitDetail) {
+// RequestMerge returns the huh form's Init cmd, which MUST be run so the confirm
+// widget receives key input (same focus-init requirement as the login/wizard forms).
+func (a *ApprovalsTab) RequestMerge(prURL string, detail api.JitDetail) tea.Cmd {
 	a.pendingPR = prURL
 	a.mergeConfirmed = false
 	a.showForm = true
@@ -79,6 +81,7 @@ func (a *ApprovalsTab) RequestMerge(prURL string, detail api.JitDetail) {
 				Value(&a.mergeConfirmed),
 		),
 	)
+	return a.mergeForm.Init()
 }
 
 // buildScopeDescription formats the confirmed JIT scope into the dialog body

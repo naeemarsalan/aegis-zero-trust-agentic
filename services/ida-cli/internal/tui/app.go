@@ -85,8 +85,9 @@ type App struct {
 	selectedName string // name of the currently selected sandbox
 
 	// log streaming (Logs tab)
-	logCh     chan tea.Msg      // buffered channel; one message per scanner line or EOF
+	logCh     chan tea.Msg       // buffered channel; one message per scanner line or EOF
 	logCancel context.CancelFunc // cancels the streaming goroutine context; nil when not streaming
+	logGen    int                // stream generation; bumped on each start so stale-stream msgs are ignored
 }
 
 // NewApp constructs the root App model. It does not perform any I/O.
@@ -155,11 +156,18 @@ func NewApp(
 // periodic refresh timer. When the openshell client is nil the sandbox load command
 // returns an error message immediately rather than panicking.
 func (a App) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		a.loadSandboxesCmd(),
 		tickCmd(refreshInterval),
 		a.spinner.Tick,
-	)
+	}
+	// NewApp opens the inline login form when there is no valid token. huh only
+	// focuses a field via Form.Init(); without running it here the form renders
+	// but silently drops every keystroke, so the operator can never log in.
+	if a.login.Active() {
+		cmds = append(cmds, a.login.Init())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
@@ -184,8 +192,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case loginAbortedMsg:
-		// User pressed Esc — skip login and show the dashboard with the
-		// existing footer cue (authStatus is unchanged).
+		// User pressed ctrl+c — skip login and show the dashboard (authStatus
+		// unchanged; press "L" on the dashboard to reopen the login form).
 		return a, nil
 
 	case loginResultMsg:
@@ -193,7 +201,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Login failed: show error in form description and reopen.
 			a.login.SetError(m.err.Error())
 			a.login.Open()
-			return a, nil
+			return a, a.login.Init()
 		}
 		// Login succeeded: persist token, update bearer, clear auth status.
 		tok := &oauth2.Token{
@@ -275,7 +283,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setStatus("Cannot load JIT scope; merge blocked: "+m.err.Error(), true)
 		} else {
 			// Only open the confirm dialog once we have verified scope data.
-			a.approvals.RequestMerge(m.detail.PRURL, m.detail)
+			// Init() focuses the huh confirm so it accepts key input.
+			cmds = append(cmds, a.approvals.RequestMerge(m.detail.PRURL, m.detail))
 		}
 
 	case receiptLoadedMsg:
@@ -305,7 +314,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wizardDoneMsg:
 		if m.confirmed {
-			cmds = append(cmds, a.launchCmd(m.req))
+			req := m.req
+			// The launcher rejects the launch (403 "Caller identity mismatch")
+			// unless body.user == the bearer's own entity ref
+			// (user:default/<preferred_username>). Derive it from the TOKEN, not
+			// cfg.Owner (a label, not the identity).
+			if req.UserRef == "" {
+				req.UserRef = entityRefFromBearer(a.bearer)
+			}
+			if req.UserRef == "" {
+				a.setStatus("Log in before launching — no identity in token", true)
+			} else {
+				cmds = append(cmds, a.launchCmd(req))
+			}
 		}
 
 	case attachFinishedMsg:
@@ -345,20 +366,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case logLineMsg:
-		a.logs.AppendLine(m.line)
-		// Keep draining: re-issue the wait cmd so the next line is delivered.
-		if a.logCh != nil {
-			cmds = append(cmds, waitForLogLineCmd(a.logCh))
+		// Ignore lines from a superseded stream (the user left + re-entered the
+		// Logs tab); only the current generation drains into the viewport.
+		if m.gen == a.logGen && a.logCh != nil {
+			a.logs.AppendLine(m.line)
+			cmds = append(cmds, waitForLogLineCmd(a.logCh)) // keep draining
 		}
 
 	case logEOFMsg:
-		a.logs.SetStreaming(false)
-		if m.err != nil && !isContextCanceled(m.err) {
-			a.logs.SetError(m.err)
+		// Only the current stream's EOF tears down state — a stale goroutine's
+		// EOF must NOT nil a newer stream's channel/cancel (that was the dead-stream bug).
+		if m.gen == a.logGen {
+			a.logs.SetStreaming(false)
+			if m.err != nil && !isContextCanceled(m.err) {
+				a.logs.SetError(m.err)
+			}
+			a.logCh = nil
+			a.logCancel = nil
 		}
-		// Channel is drained; nil it out so re-entering the tab starts fresh.
-		a.logCh = nil
-		a.logCancel = nil
 
 	case errMsg:
 		a.setStatus(m.Error(), true)
@@ -563,6 +588,7 @@ func (a *App) handleKey(m tea.KeyMsg) []tea.Cmd {
 		return a.onTabSwitch(prev)
 	case "n":
 		a.wizard.Open()
+		return []tea.Cmd{a.wizard.Init()}
 	case "enter":
 		if a.activeTab == TabApprovals {
 			if s := a.approvals.SelectedSession(); s != nil && s.PRURL != "" && s.ID != "" {
@@ -579,6 +605,11 @@ func (a *App) handleKey(m tea.KeyMsg) []tea.Cmd {
 		return a.onTabSwitch(prev)
 	case "r":
 		return []tea.Cmd{a.loadSandboxesCmd()}
+	case "L":
+		// Reopen the inline login form (recover from a skipped/expired login
+		// instead of being dead-ended into the external `ida login` path).
+		a.login.Open()
+		return []tea.Cmd{a.login.Init()}
 	}
 	return nil
 }
@@ -594,18 +625,25 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 		a.shellTab.Stop()
 	}
 
-	// Leaving the Logs tab — cancel the streaming goroutine.
+	// Leaving the Logs tab — cancel the streaming goroutine AND nil logCh now, so
+	// a fast re-entry starts a fresh stream. The cancelled goroutine's late
+	// logEOFMsg carries the old generation and is ignored by the handler.
 	if prev == TabLogs && a.activeTab != TabLogs {
 		if a.logCancel != nil {
 			a.logCancel()
 			a.logCancel = nil
 		}
+		a.logCh = nil
 		a.logs.SetStreaming(false)
 	}
 
 	switch a.activeTab {
 	case TabApprovals:
-		// Trigger JIT load.
+		// Load pending JIT sessions so the operator can see + approve them.
+		// (Without this the tab is empty until a merge happens — chicken/egg.)
+		if a.jitCli != nil {
+			cmds = append(cmds, a.loadJitCmd())
+		}
 
 	case TabReceipt:
 		if s := a.approvals.SelectedSession(); s != nil {
@@ -626,6 +664,8 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 			a.logCancel = cancel
 			ch := make(chan tea.Msg, 64)
 			a.logCh = ch
+			a.logGen++
+			gen := a.logGen
 			a.logs.SetStreaming(true)
 
 			kubeCli := a.kube
@@ -633,7 +673,7 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 				podName, err := kube.PodInNamespace(ctx, kubeCli, ns, selector)
 				if err != nil {
 					select {
-					case ch <- logEOFMsg{err: fmt.Errorf("harness pod not found: %w", err)}:
+					case ch <- logEOFMsg{err: fmt.Errorf("harness pod not found: %w", err), gen: gen}:
 					default:
 					}
 					return
@@ -654,12 +694,12 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 				for sc.Scan() {
 					line := sc.Text()
 					select {
-					case ch <- logLineMsg{line: line}:
+					case ch <- logLineMsg{line: line, gen: gen}:
 					case <-ctx.Done():
 						// Drain the stream error and exit.
 						<-errCh
 						select {
-						case ch <- logEOFMsg{err: ctx.Err()}:
+						case ch <- logEOFMsg{err: ctx.Err(), gen: gen}:
 						default:
 						}
 						return
@@ -676,7 +716,7 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 					finalErr = scanErr
 				}
 				select {
-				case ch <- logEOFMsg{err: finalErr}:
+				case ch <- logEOFMsg{err: finalErr, gen: gen}:
 				default:
 				}
 			}()
@@ -771,7 +811,12 @@ func (a App) loadJitCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		sessions, err := a.jitCli.List(ctx, a.selectedName, "")
+		// List ALL pending sessions, not filtered by the selected OpenShell
+		// sandbox name: jit-approver filters ?sandbox= by exact equality and a
+		// session's sandbox binding (the agent sandbox_uid) rarely equals the
+		// OpenShell sandbox name — an exact-match filter would silently hide the
+		// pending JIT the operator needs to approve.
+		sessions, err := a.jitCli.List(ctx, "", "")
 		return jitLoadedMsg{sessions: sessions, err: err}
 	}
 }
