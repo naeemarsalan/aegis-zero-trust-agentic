@@ -277,7 +277,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				// SANDBOX AGENT PATH (Option D: SPIRE SVID + Vault grant)
 				// ----------------------------------------------------------------
 				tok, dErr := s.handleSandboxAgentPath(ctx, sessionID, traceID, spanID,
-					stream, svidClaims, tool, argsHash, reqPath, &spireAudit)
+					stream, svidClaims, tool, argsHash, reqPath, jitJWT, &spireAudit)
 				if dErr != nil {
 					return dErr // stream.Send(immediateResponse) already sent inside
 				}
@@ -484,6 +484,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				emitter.SetGrant(spireAudit.grantSandboxUID, spireAudit.grantScope, string(grant.ResultValid), spireAudit.grantNoncePresent)
 				emitter.SetVault("success", spireAudit.grantPath, "success")
 				emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, spireAudit.exchangeResult)
+				emitter.SetJIT(spireAudit.jitElevated, spireAudit.jitSessionID)
 			} else {
 				if identity != nil {
 					emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
@@ -524,6 +525,8 @@ type spireAuditCtx struct {
 	grantPath         string // full Vault KV path the grant was read from
 	grantNoncePresent bool
 	exchangeResult    string // "success" or a safe error code (e.g. "exchange_5xx")
+	jitElevated       bool   // true when a sandbox-bound JIT session JWT elevated the tool
+	jitSessionID      string // jit-approver session id (vt.Sub) that authorised the elevation
 }
 
 // handleSandboxAgentPath implements the SPIRE SVID + Vault grant delegation
@@ -547,6 +550,7 @@ func (s *Server) handleSandboxAgentPath(
 	svidClaims *spire.SVIDClaims,
 	tool, argsHash string,
 	reqPath string,
+	jitJWT string,
 	aud *spireAuditCtx,
 ) (string, error) {
 	if aud == nil { // defensive: callers always pass a non-nil carry struct
@@ -632,24 +636,55 @@ func (s *Server) handleSandboxAgentPath(
 		return deny(http.StatusForbidden, "grant_expired", string(grant.ResultExpired))
 	}
 
-	// (e) Scope: grant.scope must permit the tool.
-	if sErr := g.CheckScope(tool, s.cfg.ReadOnlyToolPrefixes); sErr != nil {
-		slog.Error("ext_proc: grant scope denied", "tool", tool, "scope", g.Scope)
-		return deny(http.StatusForbidden, "grant_scope_denied", string(grant.ResultScopeDenied))
+	// JIT elevation (optional): a sandbox-bound jit-approver session JWT that
+	// covers THIS tool is itself the authorization to run it, lifting the
+	// read-only baseline for that one tool.
+	//
+	// SECURITY: the session JWT is independently verified (signature/iss/aud/exp
+	// via s.jit) AND must be cryptographically bound to THIS sandbox — its
+	// sandbox_uid claim must equal the SVID's sandbox_uid — AND must list the
+	// requested tool in tool_scope. Any miss (bad signature, no/!= sandbox_uid,
+	// tool not in scope) is ignored and we fall back to the read-only baseline
+	// (fail-closed). A JIT grant minted for one sandbox can never elevate another,
+	// and elevation is only ever a per-tool exception — it never widens the grant.
+	jitElevatesTool := false
+	if jitJWT != "" && s.jit != nil {
+		vt, jErr := s.jit.Verify(ctx, jitJWT)
+		switch {
+		case jErr != nil:
+			slog.Warn("ext_proc: JIT session JWT verification failed — ignoring for elevation", "err", jErr.Error())
+		case vt.SandboxUID == "" || vt.SandboxUID != svidClaims.SandboxUID:
+			slog.Warn("ext_proc: JIT session JWT not bound to this sandbox — ignoring for elevation",
+				"jit_has_sandbox_uid", vt.SandboxUID != "")
+		case !containsTool(vt.ToolScope, tool):
+			slog.Warn("ext_proc: JIT session JWT does not cover this tool — ignoring for elevation", "tool", tool)
+		default:
+			jitElevatesTool = true
+			aud.jitElevated = true
+			aud.jitSessionID = vt.Sub
+			slog.Info("ext_proc: sandbox-bound JIT session elevated tool", "tool", tool, "jit_session", vt.Sub)
+		}
 	}
 
-	// Also run standard RBAC policy — defense-in-depth alongside scope check.
-	// For the sandbox path, the agent has no group membership; treat as mcp-users
-	// (read-only user). The scope check above already enforces read-only on the
-	// grant; RBAC here uses the tool prefix tables.
-	{
-		// Use "mcp-users" equivalent group check: read-only tools only.
-		// We synthesise a groups slice from the grant scope to reuse the policy.
+	if !jitElevatesTool {
+		// No JIT elevation → enforce the read-only baseline.
+		// (e) Scope: grant.scope must permit the tool.
+		if sErr := g.CheckScope(tool, s.cfg.ReadOnlyToolPrefixes); sErr != nil {
+			slog.Error("ext_proc: grant scope denied", "tool", tool, "scope", g.Scope)
+			return deny(http.StatusForbidden, "grant_scope_denied", string(grant.ResultScopeDenied))
+		}
+		// Standard RBAC policy — defense-in-depth. grantScopeGroups hard-pins the
+		// sandbox path to mcp-users (read-only); without a JIT session the agent
+		// has no group that can run a dangerous tool.
 		groups := grantScopeGroups(g.Scope, s.cfg)
 		if reason, allow := s.policy.Decide(groups, tool, false, nil); !allow {
 			return deny(http.StatusForbidden, reason, string(grant.ResultScopeDenied))
 		}
 	}
+	// else: the tool is explicitly authorised by a verified, sandbox-bound JIT
+	// session covering it — allowed, bypassing the read-only baseline for THIS
+	// tool only. The downstream credential selection + privileged-target check
+	// below still apply.
 
 	// Grant is valid. Record grant audit fields (on this emitter for any later
 	// deny, and on aud for the final allow emission in the ResponseHeaders leg).
@@ -757,6 +792,16 @@ func grantScopeGroups(scope string, cfg *config.Config) []string {
 	// available on the SPIRE/sandbox-agent path in this slice).
 	_ = scope
 	return []string{cfg.UserGroup}
+}
+
+// containsTool reports whether tool is present in the JIT session's tool_scope.
+func containsTool(scope []string, tool string) bool {
+	for _, t := range scope {
+		if t == tool {
+			return true
+		}
+	}
+	return false
 }
 
 // privilegedGroups is the set of group names that must never be the target of

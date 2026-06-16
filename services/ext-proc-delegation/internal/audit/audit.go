@@ -96,6 +96,8 @@ type Event struct {
 	MCP                            MCPInfo        `json:"mcp"`
 	Exchange                       ExchangeInfo   `json:"exchange"`
 	Grant                          GrantInfo      `json:"grant,omitempty"`
+	JITElevated                    bool           `json:"jit_elevated"`              // true when a sandbox-bound JIT session JWT lifted the read-only baseline
+	JITSessionID                   string         `json:"jit_session_id,omitempty"` // jit-approver session id that authorised the elevation
 	Decision                       string         `json:"decision"`  // "allow" | "deny"
 	Reason                         string         `json:"reason,omitempty"`
 	CredentialInjected             bool           `json:"credential_injected"`
@@ -166,6 +168,14 @@ func (e *Emitter) SetGrant(sandboxUID, scope, result string, noncePresent bool) 
 	}
 }
 
+// SetJIT records that a sandbox-bound JIT session JWT elevated this call, and
+// the jit-approver session id that authorised it. Recorded so a dangerous-tool
+// allow on the sandbox-agent path is self-explanatory in the audit trail.
+func (e *Emitter) SetJIT(elevated bool, sessionID string) {
+	e.ev.JITElevated = elevated
+	e.ev.JITSessionID = sessionID
+}
+
 // Emit finalizes the event (decision + credential flags + latency) and writes
 // it to stdout via slog.  Also updates Prometheus metrics.
 func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected, credStripped bool) {
@@ -206,6 +216,8 @@ func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected,
 		slog.String("grant_scope", e.ev.Grant.Scope),
 		slog.Bool("grant_nonce_present", e.ev.Grant.NoncePresent),
 		slog.String("grant_result", e.ev.Grant.Result),
+		slog.Bool("jit_elevated", e.ev.JITElevated),
+		slog.String("jit_session_id", e.ev.JITSessionID),
 		slog.String("decision", decision),
 		slog.String("reason", reason),
 		slog.Bool("credential_injected", credInjected),

@@ -260,6 +260,9 @@ async def issue_credentials(
             issued_at=issued_at,
             duration_minutes=req.duration_minutes,
             requester_sub=getattr(req, "requester_sub", ""),
+            # Bind the session to the requesting sandbox so ext-proc's SVID path
+            # can verify jwt.sandbox_uid == svid.sandbox_uid before elevating.
+            sandbox_uid=signing.sandbox_uid_from_spiffe(getattr(req, "agent_spiffe_id", "")),
         )
 
         # 6. Record expiry + the credentials to be handed back ONLY via the

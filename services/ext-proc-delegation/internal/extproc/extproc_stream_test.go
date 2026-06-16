@@ -625,6 +625,48 @@ func startServerWithSpire(
 	return extprocv3.NewExternalProcessorClient(conn)
 }
 
+// startServerWithSpireJIT is startServerWithSpire plus a jit-approver session-JWT
+// verifier (exercises the sandbox-agent JIT-elevation path).
+func startServerWithSpireJIT(
+	t *testing.T,
+	cfg *config.Config,
+	kc *stubOnBehalfExchanger,
+	vlt *stubVault,
+	kcVer *stubVerifier,
+	sv *stubSpireVerifier,
+	jit *stubVerifier,
+) extprocv3.ExternalProcessorClient {
+	t.Helper()
+	srv := grpc.NewServer()
+	extprocv3.RegisterExternalProcessorServer(srv,
+		extproc.NewServerWithSpire(cfg, kc, vlt, kcVer, jit, sv))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.GracefulStop)
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return extprocv3.NewExternalProcessorClient(conn)
+}
+
+// jitVerifier returns a stub JIT verifier yielding a session token bound to
+// sandboxUID with the given tool_scope.
+func jitVerifier(sandboxUID string, toolScope []string) *stubVerifier {
+	return &stubVerifier{vt: &jwks.VerifiedToken{
+		Raw:        "jit-session-jwt",
+		Sub:        "jit-session-" + sandboxUID,
+		Issuer:     "https://jit-approver",
+		ToolScope:  toolScope,
+		SandboxUID: sandboxUID,
+	}}
+}
+
 // validGrantData returns a valid Vault grant data map for sandbox-uid/nonce.
 func validGrantData(sandboxUID, nonce, user string) map[string]interface{} {
 	return map[string]interface{}{
@@ -1208,6 +1250,148 @@ func TestProcess_SpirePath_StaticPath_ExchangeFails_AllowsStaticToken(t *testing
 	}
 
 	_ = stream.CloseSend()
+}
+
+// runSpireJITToolCall drives the SVID + x-jit-session-jwt flow on /mcp for the
+// given tool and returns the RequestBody-phase response (allow mutation or deny).
+func runSpireJITToolCall(t *testing.T, client extprocv3.ExternalProcessorClient, cfg *config.Config, tool string) *extprocv3.ProcessingResponse {
+	t.Helper()
+	stream, err := client.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				Headers: headerMap(map[string]string{
+					"authorization":     buildSpireBearerHeader(cfg.SpireIssuer),
+					":path":             "/mcp",
+					"x-jit-session-jwt": "jit.session.jwt",
+				}),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send headers: %v", err)
+	}
+	if _, err = stream.Recv(); err != nil {
+		t.Fatalf("recv headers ack: %v", err)
+	}
+	if err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestBody{
+			RequestBody: &extprocv3.HttpBody{Body: mcpBodyJSON(t, tool), EndOfStream: true},
+		},
+	}); err != nil {
+		t.Fatalf("send body: %v", err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv body: %v", err)
+	}
+	_ = stream.CloseSend()
+	return resp
+}
+
+func spireJITFixtures(uid string) (*stubOnBehalfExchanger, *stubVault, *stubSpireVerifier) {
+	return &stubOnBehalfExchanger{tok: "exchanged"},
+		&stubVault{
+			grantData: validGrantData(uid, "nonce", "arsalan"),
+			data:      map[string]interface{}{"arsalan": "pfsense-static-token"},
+		},
+		&stubSpireVerifier{claims: &spire.SVIDClaims{
+			SpiffeID:   "spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/" + uid,
+			SandboxUID: uid,
+		}}
+}
+
+// TestProcess_SpirePath_JITBoundElevation_Allows: a dangerous tool denied under
+// the read-only grant is ALLOWED when a sandbox-bound JIT session JWT whose
+// tool_scope covers it is presented — proving JIT escalation on the delegated
+// SVID path. The per-user static token is still the injected credential.
+func TestProcess_SpirePath_JITBoundElevation_Allows(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-abc-123"
+	const tool = "create_firewall_rule_advanced"
+	kc, vlt, sv := spireJITFixtures(uid)
+	jit := jitVerifier(uid, []string{tool}) // bound to THIS sandbox + covers the tool
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	if imm, isImm := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse); isImm {
+		t.Fatalf("expected JIT-elevated allow, got deny %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+	br, ok := resp.Response.(*extprocv3.ProcessingResponse_RequestBody)
+	if !ok {
+		t.Fatalf("expected RequestBody response, got %T", resp.Response)
+	}
+	var injected string
+	for _, h := range br.RequestBody.GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.GetHeader().GetKey() == "Authorization" {
+			injected = h.GetHeader().GetValue()
+		}
+	}
+	if injected != "Bearer pfsense-static-token" {
+		t.Errorf("injected=%q want Bearer pfsense-static-token", injected)
+	}
+}
+
+// TestProcess_SpirePath_JITSandboxMismatch_Denies: a JIT session JWT bound to a
+// DIFFERENT sandbox must NOT elevate this one (fail-closed cross-sandbox binding).
+func TestProcess_SpirePath_JITSandboxMismatch_Denies(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-abc-123"
+	const tool = "create_firewall_rule_advanced"
+	kc, vlt, sv := spireJITFixtures(uid)
+	jit := jitVerifier("a-different-sandbox-uid", []string{tool}) // bound elsewhere
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	imm, ok := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected deny for cross-sandbox JIT JWT, got %T", resp.Response)
+	}
+	if imm.ImmediateResponse.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+		t.Errorf("expected 403, got %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+}
+
+// TestProcess_SpirePath_JITToolNotInScope_Denies: a sandbox-bound JIT session
+// JWT that does not list the requested tool must NOT elevate it.
+func TestProcess_SpirePath_JITToolNotInScope_Denies(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-abc-123"
+	const tool = "create_firewall_rule_advanced"
+	kc, vlt, sv := spireJITFixtures(uid)
+	jit := jitVerifier(uid, []string{"some_other_tool"}) // bound but wrong tool
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	imm, ok := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected deny when tool not in JIT scope, got %T", resp.Response)
+	}
+	if imm.ImmediateResponse.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+		t.Errorf("expected 403, got %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+}
+
+// TestProcess_SpirePath_JITEmptySandboxUID_Denies: a session JWT with an EMPTY
+// sandbox_uid claim carries no binding and must NOT elevate (fail-closed).
+func TestProcess_SpirePath_JITEmptySandboxUID_Denies(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-abc-123"
+	const tool = "create_firewall_rule_advanced"
+	kc, vlt, sv := spireJITFixtures(uid)
+	jit := jitVerifier("", []string{tool}) // unbound (empty sandbox_uid)
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	imm, ok := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected deny for empty-sandbox_uid JIT JWT, got %T", resp.Response)
+	}
+	if imm.ImmediateResponse.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+		t.Errorf("expected 403, got %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
 }
 
 // TestProcess_SpirePath_MissingSandboxUID_Deny: SVID missing sandbox_uid -> 401.

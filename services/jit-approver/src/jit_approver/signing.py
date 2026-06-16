@@ -196,6 +196,22 @@ def tool_scope_for(req: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def sandbox_uid_from_spiffe(spiffe_id: str) -> str:
+    """Extract the sandbox UUID from a SPIFFE ID of the form
+
+        spiffe://<trust-domain>/ns/<ns>/sandbox/<uuid>
+
+    Returns "" when the SPIFFE ID is not sandbox-pathed (e.g. an SA-based ID).
+    ext-proc binds JIT elevation on this value == the SVID's sandbox_uid, so a
+    session JWT minted for a non-sandbox principal cannot elevate a sandbox.
+    """
+    marker = "/sandbox/"
+    idx = (spiffe_id or "").find(marker)
+    if idx < 0:
+        return ""
+    return spiffe_id[idx + len(marker):].split("/", 1)[0]
+
+
 def mint_session_jwt(
     *,
     session_id: str,
@@ -203,6 +219,7 @@ def mint_session_jwt(
     issued_at: int,
     duration_minutes: int,
     requester_sub: str = "",
+    sandbox_uid: str = "",
 ) -> str:
     """Mint the RS256 X-JIT-Session-JWT for an issued session.
 
@@ -212,10 +229,13 @@ def mint_session_jwt(
       sub = session_id               (the session is the subject of the capability)
       tool_scope = [approved tool names]
       iat = nbf = issued_at, exp = issued_at + duration_minutes*60
+      sandbox_uid = <uuid>           (present only for sandbox-agent sessions;
+                                      ext-proc's SVID path binds elevation on it)
     Header: alg=RS256, kid=JIT_SIGNING_KID.
 
     ``requester_sub`` is recorded in a non-authoritative ``requester`` claim for
-    audit correlation only; the gate keys on iss/exp/tool_scope.
+    audit correlation only; the gate keys on iss/exp/tool_scope (+ sandbox_uid on
+    the delegated SVID path).
     """
     exp = issued_at + duration_minutes * 60
     claims: dict[str, Any] = {
@@ -230,6 +250,8 @@ def mint_session_jwt(
     }
     if requester_sub:
         claims["requester"] = requester_sub
+    if sandbox_uid:
+        claims["sandbox_uid"] = sandbox_uid
     token = jwt.encode(
         claims,
         _keys().private_pem,
