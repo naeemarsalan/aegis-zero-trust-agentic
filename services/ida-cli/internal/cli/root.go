@@ -180,7 +180,9 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	}
 	app := tui.NewApp(cfg, oshCli, jitCli, launcher, giteaCli, kubeCli, bearer, authErrMsg, clusterErrMsg, tuiStore)
 
-	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// No mouse capture: the TUI handles no MouseMsg, and WithMouseCellMotion only
+	// steals the terminal's native click-drag selection/copy. Keep AltScreen.
+	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("root: tui: %w", err)
 	}
