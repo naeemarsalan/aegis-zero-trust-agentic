@@ -76,9 +76,16 @@ spec:
     headers: xforwarded           # trust X-Forwarded-* from OpenShift ingress
 
   additionalOptions:
-    # Preview flags — see header comment above.
+    # token-exchange ONLY. admin-fine-grained-authz was REMOVED: on RHBK/Keycloak
+    # 26.6.3 it makes the v1 (legacy) token-exchange impersonation path crash with
+    # NullPointerException in UserPermissionsV2.canImpersonate (realm null) — which
+    # breaks ext-proc's Option-D on-behalf exchange (requested_subject, no
+    # subject_token). Without the feature, v1 impersonation uses the classic v1
+    # UserPermissions and honours the realm-management `impersonation` role granted
+    # to service-account-mcp-gateway. The v2 STANDARD token exchange still works via
+    # the client's standard.token.exchange.enabled attribute (no fgap needed).
     - name: features
-      value: "token-exchange,admin-fine-grained-authz"
+      value: "token-exchange"
 
   resources:
     requests:
