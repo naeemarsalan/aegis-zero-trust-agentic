@@ -11,7 +11,11 @@ package tui
 //     verify that formActive/Active state is correctly reported.
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -556,7 +560,7 @@ func TestBuildScopeDescription_ContainsAllFields(t *testing.T) {
 // TestApp_Update_JitDetailLoadedMsg_Success_OpensDialog verifies that a successful
 // jitDetailLoadedMsg triggers the merge confirm form.
 func TestApp_Update_JitDetailLoadedMsg_Success_OpensDialog(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	detail := api.JitDetail{
 		ID:              "sess-x",
 		PRURL:           "http://gitea/o/r/pulls/1",
@@ -575,7 +579,7 @@ func TestApp_Update_JitDetailLoadedMsg_Success_OpensDialog(t *testing.T) {
 // TestApp_Update_JitDetailLoadedMsg_Error_BlocksDialog verifies fail-closed:
 // if detail loading fails, the merge confirm dialog must NOT open.
 func TestApp_Update_JitDetailLoadedMsg_Error_BlocksDialog(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(jitDetailLoadedMsg{err: errorString("detail fetch failed")})
 	updated := m.(App)
 	if updated.approvals.FormActive() {
@@ -1052,7 +1056,7 @@ func TestSplitTrim(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewApp_Defaults(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	if app.activeTab != TabOverview {
 		t.Errorf("activeTab = %d; want TabOverview (%d)", app.activeTab, TabOverview)
 	}
@@ -1064,7 +1068,7 @@ func TestNewApp_Defaults(t *testing.T) {
 func TestApp_Init_ReturnsCmd(t *testing.T) {
 	// Init must return a non-nil Cmd (at minimum the ticker + spinner).
 	// We can't call the cmd (it would hit the gateway), but we confirm non-nil.
-	app := NewApp(nil, nil, nil, nil, nil, "token-xyz", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "token-xyz", "", "", nil)
 	// osh is nil so loadSandboxesCmd returns an error msg rather than panicking.
 	app.osh = nil
 	cmd := app.Init()
@@ -1074,7 +1078,7 @@ func TestApp_Init_ReturnsCmd(t *testing.T) {
 }
 
 func TestApp_Update_WindowSizeMsg_UpdatesDimensions(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	updated := m.(App)
 	if updated.width != 120 {
@@ -1086,7 +1090,7 @@ func TestApp_Update_WindowSizeMsg_UpdatesDimensions(t *testing.T) {
 }
 
 func TestApp_Update_QuitKey_ReturnsQuitCmd(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("'q' key should return a non-nil cmd")
@@ -1113,7 +1117,7 @@ func TestApp_Update_QuitKey_ReturnsQuitCmd(t *testing.T) {
 }
 
 func TestApp_Update_TabKey_CyclesTabs(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.activeTab = TabOverview
 
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1130,7 +1134,7 @@ func TestApp_Update_TabKey_CyclesTabs(t *testing.T) {
 }
 
 func TestApp_Update_NumberKey_SwitchesTab(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 
 	cases := []struct {
 		key string
@@ -1151,7 +1155,7 @@ func TestApp_Update_NumberKey_SwitchesTab(t *testing.T) {
 }
 
 func TestApp_Update_NKey_OpensWizard(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	updated := m.(App)
 	if !updated.wizard.Active() {
@@ -1160,7 +1164,7 @@ func TestApp_Update_NKey_OpensWizard(t *testing.T) {
 }
 
 func TestApp_Update_SandboxesLoaded_UpdatesSidebar(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	sandboxes := makeSandboxes(3)
 	m, _ := app.Update(sandboxesLoadedMsg{sandboxes: sandboxes})
 	updated := m.(App)
@@ -1170,7 +1174,7 @@ func TestApp_Update_SandboxesLoaded_UpdatesSidebar(t *testing.T) {
 }
 
 func TestApp_Update_SandboxesLoaded_WithError_SetsStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(sandboxesLoadedMsg{err: errorString("kube unreachable")})
 	updated := m.(App)
 	if !updated.statusIsErr {
@@ -1182,7 +1186,7 @@ func TestApp_Update_SandboxesLoaded_WithError_SetsStatus(t *testing.T) {
 }
 
 func TestApp_Update_LaunchedMsg_Success_SetsStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.osh = nil // will fail when cmd is actually called — that's ok for unit test
 	m, _ := app.Update(launchedMsg{response: api.LaunchResponse{SandboxName: "sb-new"}})
 	updated := m.(App)
@@ -1195,7 +1199,7 @@ func TestApp_Update_LaunchedMsg_Success_SetsStatus(t *testing.T) {
 }
 
 func TestApp_Update_LaunchedMsg_Error_SetsErrStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(launchedMsg{err: errorString("quota exceeded")})
 	updated := m.(App)
 	if !updated.statusIsErr {
@@ -1204,7 +1208,7 @@ func TestApp_Update_LaunchedMsg_Error_SetsErrStatus(t *testing.T) {
 }
 
 func TestApp_Update_MergedMsg_Success_SetsStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	_ = app // jitCli is nil; cmd will fail when called — that's ok
 	m, _ := app.Update(mergedMsg{prURL: "http://git/pr/1"})
 	updated := m.(App)
@@ -1217,7 +1221,7 @@ func TestApp_Update_MergedMsg_Success_SetsStatus(t *testing.T) {
 }
 
 func TestApp_Update_MergedMsg_Error_SetsErrStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(mergedMsg{err: errorString("forbidden")})
 	updated := m.(App)
 	if !updated.statusIsErr {
@@ -1226,7 +1230,7 @@ func TestApp_Update_MergedMsg_Error_SetsErrStatus(t *testing.T) {
 }
 
 func TestApp_Update_JitLoadedMsg_WithError_SetsApprovalsError(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(jitLoadedMsg{err: errorString("jit down")})
 	updated := m.(App)
 	if updated.approvals.lastErr == nil {
@@ -1235,7 +1239,7 @@ func TestApp_Update_JitLoadedMsg_WithError_SetsApprovalsError(t *testing.T) {
 }
 
 func TestApp_Update_JitLoadedMsg_Success_SetsSessions(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	sessions := []api.JitSession{makeSession("s1", "pending", "")}
 	m, _ := app.Update(jitLoadedMsg{sessions: sessions})
 	updated := m.(App)
@@ -1245,7 +1249,7 @@ func TestApp_Update_JitLoadedMsg_Success_SetsSessions(t *testing.T) {
 }
 
 func TestApp_Update_ReceiptLoadedMsg_Success_SetsReceipt(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	rc := makeReceipt("r1", "allow")
 	m, _ := app.Update(receiptLoadedMsg{receipt: rc})
 	updated := m.(App)
@@ -1258,7 +1262,7 @@ func TestApp_Update_ReceiptLoadedMsg_Success_SetsReceipt(t *testing.T) {
 }
 
 func TestApp_Update_WizardDoneMsg_NotConfirmed_DoesNotLaunch(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	_, cmd := app.Update(wizardDoneMsg{confirmed: false})
 	// When not confirmed, no launch cmd should be returned.
 	// cmd may be nil or a batch of other cmds (sidebar, etc.) — but not the launcher.
@@ -1267,7 +1271,7 @@ func TestApp_Update_WizardDoneMsg_NotConfirmed_DoesNotLaunch(t *testing.T) {
 }
 
 func TestApp_Update_ConfirmMergeMsg_NotConfirmed_DoesNotMerge(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// confirmMergeMsg is no longer dispatched as a tea.Msg (dead branch was
 	// removed); it is returned directly from ApprovalsTab.Update. Injecting it
 	// as a msg here exercises the default no-op path and must not panic.
@@ -1301,7 +1305,7 @@ func TestApprovalsTab_Update_ConfirmedResult_IsReturnedDirectly(t *testing.T) {
 }
 
 func TestApp_Update_LogLineMsg_AppendsToLogs(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(logLineMsg{line: "INFO startup"})
 	updated := m.(App)
 	v := updated.logs.View()
@@ -1311,7 +1315,7 @@ func TestApp_Update_LogLineMsg_AppendsToLogs(t *testing.T) {
 }
 
 func TestApp_Update_SpinnerTick_DoesNotPanic(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	// Just ensure spinner tick message is handled without panic.
@@ -1319,7 +1323,7 @@ func TestApp_Update_SpinnerTick_DoesNotPanic(t *testing.T) {
 }
 
 func TestApp_View_ReturnsNonEmpty(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1329,7 +1333,7 @@ func TestApp_View_ReturnsNonEmpty(t *testing.T) {
 }
 
 func TestApp_View_WizardActive_ReturnsWizardView(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.wizard.Open()
 	v := app.View()
 	// When wizard is active, the whole view is replaced by the wizard.
@@ -1339,7 +1343,7 @@ func TestApp_View_WizardActive_ReturnsWizardView(t *testing.T) {
 }
 
 func TestApp_Update_ShiftTabKey_ReversesCycle(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.activeTab = TabOverview // = 0
 
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -1378,7 +1382,7 @@ func TestTabConstants(t *testing.T) {
 // TestApp_NoToken_AuthBannerInView verifies that when authErr is non-empty the
 // main pane renders the "not logged in" banner and does not render tab content.
 func TestApp_NoToken_AuthBannerInView(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no valid token — run 'ida login' first", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no valid token — run 'ida login' first", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1394,7 +1398,7 @@ func TestApp_NoToken_AuthBannerInView(t *testing.T) {
 
 // TestApp_NoToken_FooterCueShown verifies the not-logged-in footer cue appears.
 func TestApp_NoToken_FooterCueShown(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "token missing", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "token missing", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1408,7 +1412,7 @@ func TestApp_NoToken_FooterCueShown(t *testing.T) {
 // (The condition is intentionally NOT stacked as a sidebar banner, which would
 // push the layout past the terminal height and scroll the header off-screen.)
 func TestApp_ClusterUnreachable_SurfacedInFooter(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "tok", "", "dial tcp: connection refused", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "tok", "", "dial tcp: connection refused", nil)
 	app.width = 120
 	app.height = 40
 	// The nil kube client makes loadSandboxesCmd report a cluster-unreachable
@@ -1425,7 +1429,7 @@ func TestApp_ClusterUnreachable_SurfacedInFooter(t *testing.T) {
 // loadSandboxesCmd returns a sandboxesLoadedMsg with an error when kubeCli is nil,
 // instead of panicking.
 func TestApp_ClusterUnreachable_SandboxesLoadCmd_ReturnsError(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "no cluster", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "no cluster", nil)
 	// kubeCli is nil; the cmd must return an error message, not panic.
 	cmd := app.loadSandboxesCmd()
 	if cmd == nil {
@@ -1444,7 +1448,7 @@ func TestApp_ClusterUnreachable_SandboxesLoadCmd_ReturnsError(t *testing.T) {
 // TestApp_NoToken_Init_DoesNotPanic verifies that Init() completes without
 // panicking when both auth and cluster status are degraded.
 func TestApp_NoToken_Init_DoesNotPanic(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "no cluster", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "no cluster", nil)
 	// Init must not panic even when all backends are nil.
 	cmd := app.Init()
 	if cmd == nil {
@@ -1455,7 +1459,7 @@ func TestApp_NoToken_Init_DoesNotPanic(t *testing.T) {
 // TestApp_NoToken_AuthBannerContainsBothLoginHints verifies that both the
 // normal login hint and the browserless ROPC hint appear in the banner.
 func TestApp_NoToken_AuthBannerContainsBothLoginHints(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no valid token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no valid token", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1470,7 +1474,7 @@ func TestApp_NoToken_AuthBannerContainsBothLoginHints(t *testing.T) {
 // TestApp_NoToken_FooterCueVisibleWithNoWidth verifies that even at zero
 // terminal size (before WindowSizeMsg) the not-logged-in footer cue renders.
 func TestApp_NoToken_AuthBannerIsVisibleWithNoWidth(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no valid token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no valid token", "", nil)
 	// No width/height set (zero values — initial state before terminal resize).
 	v := app.View()
 	if !strings.Contains(v, "not logged in") {
@@ -1481,7 +1485,7 @@ func TestApp_NoToken_AuthBannerIsVisibleWithNoWidth(t *testing.T) {
 // TestApp_AuthAndClusterOK_NobannerInView verifies that when both auth and
 // cluster are healthy (non-empty bearer, no error strings) no banners appear.
 func TestApp_AuthAndClusterOK_NoBannerInView(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "valid-bearer-token", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "valid-bearer-token", "", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1497,7 +1501,7 @@ func TestApp_AuthAndClusterOK_NoBannerInView(t *testing.T) {
 // a sandbox-load error (e.g. from a nil kube client) is reflected in the status
 // bar rather than panicking or hiding the error.
 func TestApp_NoToken_Update_SandboxesLoaded_WithError_SetsErrStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "no cluster", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "no cluster", nil)
 	m, _ := app.Update(sandboxesLoadedMsg{err: errorString("cluster unreachable: no kube client")})
 	updated := m.(App)
 	if !updated.statusIsErr {
@@ -1528,7 +1532,7 @@ func mustPipe(t *testing.T) (*os.File, *os.File) {
 // the embedded terminal. Error handling (nil kubeCli etc.) now lives in
 // ShellTab.Start, which is exercised separately.
 func TestApp_SKey_SwitchesToShellTab(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// 's' should switch to TabShell, not set an error.
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	updated := m.(App)
@@ -1541,7 +1545,7 @@ func TestApp_SKey_SwitchesToShellTab(t *testing.T) {
 // 's' with a nil openshell client switches to TabShell and the shellTab stores
 // the unreachable-gateway error (shown in View) rather than setting a global status.
 func TestApp_SKey_WithNilOshCli_GoesToShellTabWithError(t *testing.T) {
-	app := NewApp(nil, nil /*osh*/, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil /*osh*/, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	updated := m.(App)
 	// Must be on the Shell tab.
@@ -1559,7 +1563,7 @@ func TestApp_SKey_WithNilOshCli_GoesToShellTabWithError(t *testing.T) {
 // rather than panicking.
 func TestApp_SKey_WithNoSelection_GoesToShellTabShowingHint(t *testing.T) {
 	cfg := &config.Config{Owner: "alice", SandboxNamespace: "openshell"}
-	app := NewApp(cfg, nil /*osh*/, nil, nil, nil, "", "", "", nil)
+	app := NewApp(cfg, nil /*osh*/, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	updated := m.(App)
 	if updated.activeTab != TabShell {
@@ -1575,7 +1579,7 @@ func TestApp_SKey_WithNoSelection_GoesToShellTabShowingHint(t *testing.T) {
 // TestApp_AttachFinishedMsg_Success_SetsInfoStatus verifies that a successful
 // attachFinishedMsg (err==nil) sets a non-error status containing the sandbox name.
 func TestApp_AttachFinishedMsg_Success_SetsInfoStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, cmd := app.Update(attachFinishedMsg{name: "sb-a", err: nil})
 	updated := m.(App)
 	if updated.statusIsErr {
@@ -1596,7 +1600,7 @@ func TestApp_AttachFinishedMsg_Success_SetsInfoStatus(t *testing.T) {
 // TestApp_AttachFinishedMsg_Error_SetsErrStatus verifies that an
 // attachFinishedMsg with a non-nil error sets an error status.
 func TestApp_AttachFinishedMsg_Error_SetsErrStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(attachFinishedMsg{name: "sb-b", err: errorString("exec failed")})
 	updated := m.(App)
 	if !updated.statusIsErr {
@@ -1614,7 +1618,7 @@ func TestApp_AttachFinishedMsg_Error_SetsErrStatus(t *testing.T) {
 // the '5:shell' keybinding hint and 'ctrl+b:back' alongside the other standard
 // hints.
 func TestApp_Footer_ContainsShellHint(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.width = 120
 	app.height = 40
 	v := app.View()
@@ -1632,7 +1636,7 @@ func TestApp_Footer_ContainsShellHint(t *testing.T) {
 // TestApp_SKey_WizardActive_DoesNotTriggerShell verifies that pressing 's'
 // while the wizard is active does not attempt an exec (wizard intercepts input).
 func TestApp_SKey_WizardActive_DoesNotTriggerShell(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// Load a sandbox so there is a selection.
 	m, _ := app.Update(sandboxesLoadedMsg{sandboxes: makeSandboxes(1)})
 	app = m.(App)
@@ -1898,7 +1902,7 @@ func TestKeyToBytes_UnknownKey_ReturnsNil(t *testing.T) {
 
 // TestApp_ShellTab_5Key_SwitchesToShellTab verifies key '5' switches to TabShell.
 func TestApp_ShellTab_5Key_SwitchesToShellTab(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	updated := m.(App)
 	if updated.activeTab != TabShell {
@@ -1909,7 +1913,7 @@ func TestApp_ShellTab_5Key_SwitchesToShellTab(t *testing.T) {
 // TestApp_ShellTab_NilOshCli_ErrorShownInView verifies that when the Shell tab
 // is activated with a nil openshell client, View shows an error rather than panicking.
 func TestApp_ShellTab_NilOshCli_ErrorShownInView(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.width = 120
 	app.height = 40
 	// Switch to shell tab.
@@ -1925,7 +1929,7 @@ func TestApp_ShellTab_NilOshCli_ErrorShownInView(t *testing.T) {
 // TestApp_ShellTab_CtrlB_ReturnsToOverview verifies that ctrl+b while on the
 // Shell tab switches back to TabOverview.
 func TestApp_ShellTab_CtrlB_ReturnsToOverview(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// Go to Shell tab.
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	app = m.(App)
@@ -1944,7 +1948,7 @@ func TestApp_ShellTab_CtrlB_ReturnsToOverview(t *testing.T) {
 // keys (like 'q') while on the Shell tab are consumed by the shell and do NOT
 // trigger global actions (e.g. quit).
 func TestApp_ShellTab_RegularKeys_NotRoutedToGlobalHandler(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// Go to Shell tab.
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	app = m.(App)
@@ -1963,7 +1967,7 @@ func TestApp_ShellTab_RegularKeys_NotRoutedToGlobalHandler(t *testing.T) {
 
 // TestApp_ShellTab_QKey_OnShellTab_StaysOnShell verifies activeTab stays Shell.
 func TestApp_ShellTab_QKey_OnShellTab_StaysOnShell(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	app = m.(App)
 	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
@@ -1976,7 +1980,7 @@ func TestApp_ShellTab_QKey_OnShellTab_StaysOnShell(t *testing.T) {
 // TestShellRedrawMsg_ReissuesWaitCmd verifies that shellRedrawMsg causes a new
 // waitForShellRedraw Cmd to be emitted (so the loop continues).
 func TestShellRedrawMsg_ReissuesWaitCmd(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	// The redraw msg carries the channel it came from; the handler re-issues the
 	// wait loop on THAT channel so each session's reader stays alive.
 	ch := make(chan shellEvent, 1)
@@ -1992,7 +1996,7 @@ func TestShellRedrawMsg_ReissuesWaitCmd(t *testing.T) {
 // TestShellExitMsg_StaleGenIgnored verifies a stale-session exit does not tear
 // down the current session (the switch-away/back panic+hang fix).
 func TestShellExitMsg_StaleGenIgnored(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
 	app.shellTab.gen = 5
 	app.shellTab.started = true
 	app.shellTab.connected = true
@@ -2136,7 +2140,7 @@ func TestNewApp_NoToken_WithKeycloakAndStore_OpensLoginForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	app := NewApp(cfg, nil, nil, nil, nil, "", "no token", "", store)
+	app := NewApp(cfg, nil, nil, nil, nil, nil, "", "no token", "", store)
 	if !app.login.Active() {
 		t.Error("login form should be active when bearer is empty and Keycloak + store are configured")
 	}
@@ -2155,7 +2159,7 @@ func TestNewApp_WithBearer_DoesNotOpenLoginForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	app := NewApp(cfg, nil, nil, nil, nil, "valid-token", "", "", store)
+	app := NewApp(cfg, nil, nil, nil, nil, nil, "valid-token", "", "", store)
 	if app.login.Active() {
 		t.Error("login form must NOT be active when a bearer token is already present")
 	}
@@ -2168,7 +2172,7 @@ func TestNewApp_NilStore_DoesNotOpenLoginForm(t *testing.T) {
 		KeycloakRealmURL: "http://kc.example.com/realms/r",
 		KeycloakClientID: "ida-cli",
 	}
-	app := NewApp(cfg, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(cfg, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	if app.login.Active() {
 		t.Error("login form must NOT be active when tokenStore is nil")
 	}
@@ -2178,7 +2182,7 @@ func TestNewApp_NilStore_DoesNotOpenLoginForm(t *testing.T) {
 // Keycloak configuration the login form is skipped even if store is non-nil.
 func TestNewApp_NoKeycloakConfig_DoesNotOpenLoginForm(t *testing.T) {
 	// Pass store=nil (easy) and empty config — the guard checks both.
-	app := NewApp(&config.Config{}, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(&config.Config{}, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	if app.login.Active() {
 		t.Error("login form must NOT be active when KeycloakRealmURL is empty")
 	}
@@ -2188,7 +2192,7 @@ func TestNewApp_NoKeycloakConfig_DoesNotOpenLoginForm(t *testing.T) {
 // that a successful loginResultMsg sets bearer, clears authStatus, closes the
 // login form, and sets an info status without crashing.
 func TestApp_Update_LoginResultMsg_Success_SetsBearerAndClearsAuthStatus(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	app.authStatus = "no valid token"
 
 	msg := loginResultMsg{
@@ -2223,7 +2227,7 @@ func TestApp_Update_LoginResultMsg_Success_SetsBearerAndClearsAuthStatus(t *test
 // loginResultMsg reopens the login form with the error message — the user can
 // retry without restarting the TUI.
 func TestApp_Update_LoginResultMsg_Error_KeepsFormOpen(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	// Manually open the login form to simulate the in-progress state.
 	app.login.Open()
 
@@ -2245,7 +2249,7 @@ func TestApp_Update_LoginResultMsg_Error_KeepsFormOpen(t *testing.T) {
 // loginAbortedMsg (Esc key in form) closes the form and returns the user to
 // the dashboard without changing bearer or authStatus.
 func TestApp_Update_LoginAbortedMsg_FallsThroughToDashboard(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	app.authStatus = "no valid token"
 	// The form is not active here; we inject the message directly to test the handler.
 	m, _ := app.Update(loginAbortedMsg{})
@@ -2269,7 +2273,7 @@ func TestApp_Update_LoginAbortedMsg_FallsThroughToDashboard(t *testing.T) {
 // form is active, regular key events (e.g. 'q') are routed to the form and
 // do NOT trigger global actions like quit.
 func TestApp_Update_LoginActive_InterceptsAllMsgs(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	app.login.Open()
 
 	// Press 'q' — while login form is active this must NOT quit.
@@ -2287,7 +2291,7 @@ func TestApp_Update_LoginActive_InterceptsAllMsgs(t *testing.T) {
 // TestApp_View_LoginActive_ReturnsLoginView verifies that while the login form
 // is active the entire screen is taken over by the login form (like the wizard).
 func TestApp_View_LoginActive_ReturnsLoginView(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, nil, "", "no token", "", nil)
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "no token", "", nil)
 	app.login.Open()
 	app.width = 120
 	app.height = 40
@@ -2683,6 +2687,301 @@ func TestLogsTab_SetSandbox_ResetsRenderedBuffer(t *testing.T) {
 	v := l.View()
 	if strings.Contains(v, "Old session text.") {
 		t.Errorf("View() after SetSandbox should not contain old session text; got:\n%s", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap 1 — loadReceiptCmd produces receiptLoadedMsg
+// ---------------------------------------------------------------------------
+
+// tuiJitServer builds an httptest server that serves a receipt JSON at
+// /requests/{id}/receipt. Used only in tui package tests.
+func tuiJitServer(t *testing.T, receiptBody any) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/requests/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(receiptBody)
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestLoadReceiptCmd_HappyPath verifies that loadReceiptCmd calls jitCli.Receipt
+// and returns a receiptLoadedMsg with the correct receipt data (no error).
+func TestLoadReceiptCmd_HappyPath(t *testing.T) {
+	want := api.JitReceipt{
+		ID:      "receipt-001",
+		State:   "issued",
+		Outcome: "allow",
+		Allowed: []string{"list pods"},
+		Denied:  []string{},
+		Errors:  []string{},
+	}
+	srv := tuiJitServer(t, want)
+	defer srv.Close()
+
+	jitCli, err := api.NewJitClient(srv.URL, "", false)
+	if err != nil {
+		t.Fatalf("NewJitClient: %v", err)
+	}
+
+	app := NewApp(nil, nil, jitCli, nil, nil, nil, "", "", "", nil)
+	cmd := app.loadReceiptCmd("receipt-001")
+	if cmd == nil {
+		t.Fatal("loadReceiptCmd returned nil")
+	}
+
+	msg := cmd()
+	rm, ok := msg.(receiptLoadedMsg)
+	if !ok {
+		t.Fatalf("loadReceiptCmd() returned %T; want receiptLoadedMsg", msg)
+	}
+	if rm.err != nil {
+		t.Fatalf("receiptLoadedMsg.err = %v; want nil", rm.err)
+	}
+	if rm.receipt.ID != want.ID {
+		t.Errorf("receipt.ID = %q; want %q", rm.receipt.ID, want.ID)
+	}
+	if rm.receipt.Outcome != want.Outcome {
+		t.Errorf("receipt.Outcome = %q; want %q", rm.receipt.Outcome, want.Outcome)
+	}
+}
+
+// TestLoadReceiptCmd_Error verifies that loadReceiptCmd returns a receiptLoadedMsg
+// carrying a non-nil error when the jit-approver is unreachable.
+func TestLoadReceiptCmd_Error(t *testing.T) {
+	// Point at a port that refuses connections.
+	jitCli, err := api.NewJitClient("http://127.0.0.1:1", "", false)
+	if err != nil {
+		t.Fatalf("NewJitClient: %v", err)
+	}
+
+	app := NewApp(nil, nil, jitCli, nil, nil, nil, "", "", "", nil)
+	cmd := app.loadReceiptCmd("any-id")
+	msg := cmd()
+
+	rm, ok := msg.(receiptLoadedMsg)
+	if !ok {
+		t.Fatalf("loadReceiptCmd error path returned %T; want receiptLoadedMsg", msg)
+	}
+	if rm.err == nil {
+		t.Error("receiptLoadedMsg.err should be non-nil on connection failure")
+	}
+}
+
+// TestOnTabSwitch_Receipt_WithSession_LoadsReceipt verifies that switching to
+// TabReceipt with a selected session issues loadReceiptCmd (receipt.loading=true
+// is a side-effect of the nil-jitCli guard, but the important thing is no panic).
+func TestOnTabSwitch_Receipt_WithSession_SetsLoading(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	// Inject a session into the approvals tab.
+	sess := makeSession("s1", "issued", "http://gitea/o/r/pulls/1")
+	app.approvals.SetSessions([]api.JitSession{sess})
+
+	// Switch to receipt tab (jitCli is nil so loadReceiptCmd is skipped, but
+	// SetLoading(true) is still called).
+	app.activeTab = TabReceipt
+	cmds := app.onTabSwitch(TabApprovals)
+	_ = cmds // may be empty because jitCli is nil
+
+	if !app.receipt.loading {
+		t.Error("receipt.loading should be true after switching to TabReceipt with a selected session")
+	}
+}
+
+// TestOnTabSwitch_Receipt_NilJitCli_NoCmd verifies that when jitCli is nil no
+// loadReceiptCmd is issued (nil guard is respected — fail-closed).
+func TestOnTabSwitch_Receipt_NilJitCli_NoCmd(t *testing.T) {
+	app := NewApp(nil, nil, nil /*jitCli*/, nil, nil, nil, "", "", "", nil)
+	sess := makeSession("s1", "issued", "")
+	app.approvals.SetSessions([]api.JitSession{sess})
+	app.activeTab = TabReceipt
+
+	cmds := app.onTabSwitch(TabApprovals)
+	// With nil jitCli no cmd should be returned for receipt loading.
+	if len(cmds) != 0 {
+		t.Errorf("onTabSwitch(TabReceipt) with nil jitCli returned %d cmds; want 0", len(cmds))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap 2 — Logs tab streaming: nil-kube degrades gracefully
+// ---------------------------------------------------------------------------
+
+// TestOnTabSwitch_Logs_NilKube_SetsError verifies that switching to the Logs
+// tab when kube is nil results in a "kube unavailable" error on the LogsTab
+// rather than a panic.
+func TestOnTabSwitch_Logs_NilKube_SetsError(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil /*kube*/, "", "", "", nil)
+	app.activeTab = TabLogs
+	cmds := app.onTabSwitch(TabOverview)
+
+	// No streaming cmd should be returned.
+	if len(cmds) != 0 {
+		t.Errorf("onTabSwitch(TabLogs) with nil kube returned %d cmds; want 0", len(cmds))
+	}
+	// LogsTab should have an error set.
+	if app.logs.err == nil {
+		t.Error("LogsTab.err should be set when kube is nil")
+	}
+	if !strings.Contains(app.logs.err.Error(), "kube unavailable") {
+		t.Errorf("LogsTab.err = %v; want it to contain 'kube unavailable'", app.logs.err)
+	}
+}
+
+// TestApp_Update_NilKube_LogsTab_Via4Key verifies the full path: pressing '4'
+// with nil kube puts a "kube unavailable" error on the Logs tab and the view
+// shows it, without panicking.
+func TestApp_Update_NilKube_LogsTab_Via4Key(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil /*kube*/, "", "", "", nil)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	updated := m.(App)
+
+	if updated.activeTab != TabLogs {
+		t.Errorf("activeTab = %d; want TabLogs (%d)", updated.activeTab, TabLogs)
+	}
+	v := updated.View()
+	if !strings.Contains(v, "kube unavailable") {
+		t.Errorf("View() should show 'kube unavailable'; got:\n%s", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap 2 — Logs tab streaming: log-line pump drains a fake reader to logLineMsg
+// ---------------------------------------------------------------------------
+
+// fakeReadCloser wraps a string as an io.ReadCloser for use in streaming tests.
+type fakeReadCloser struct {
+	r io.Reader
+}
+
+func newFakeLogStream(content string) io.ReadCloser {
+	return &fakeReadCloser{r: strings.NewReader(content)}
+}
+
+func (f *fakeReadCloser) Read(p []byte) (int, error) { return f.r.Read(p) }
+func (f *fakeReadCloser) Close() error               { return nil }
+
+// TestWaitForLogLineCmd_DrainsTwoLinesThenEOF exercises the waitForLogLineCmd /
+// goroutine pump pattern. Two logLineMsg values followed by a logEOFMsg must be
+// produced by the channel in order; each waitForLogLineCmd call returns exactly
+// one message. The test drives the bubbletea message loop manually.
+func TestWaitForLogLineCmd_DrainsTwoLinesThenEOF(t *testing.T) {
+	line1 := `{"type":"assistant","ts":"2026-06-15T10:00:00Z","session_id":"s1","text":"hello"}`
+	line2 := `{"type":"result","ts":"2026-06-15T10:00:01Z","session_id":"s1","status":"success","summary":"done"}`
+
+	// Simulate the goroutine: fill the channel synchronously.
+	ch := make(chan tea.Msg, 4)
+	ch <- logLineMsg{line: line1}
+	ch <- logLineMsg{line: line2}
+	ch <- logEOFMsg{err: nil}
+
+	// --- First call: should return logLineMsg for line1 ---
+	msg1 := waitForLogLineCmd(ch)()
+	ll1, ok := msg1.(logLineMsg)
+	if !ok {
+		t.Fatalf("first msg = %T; want logLineMsg", msg1)
+	}
+	if ll1.line != line1 {
+		t.Errorf("line1 = %q; want %q", ll1.line, line1)
+	}
+
+	// --- Verify Update(logLineMsg) re-issues waitForLogLineCmd ---
+	// Use a fresh App (empty strings.Builder so no copy-of-non-zero-Builder panic).
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	app.logCh = ch
+	m, cmd2 := app.Update(ll1)
+	updatedApp := m.(App)
+
+	// The logLineMsg handler must have appended the line.
+	v := updatedApp.logs.View()
+	if !strings.Contains(v, "hello") {
+		t.Errorf("LogsTab.View() should contain 'hello' after first logLineMsg; got:\n%s", v)
+	}
+	// A non-nil cmd must be returned so the next message is fetched.
+	if cmd2 == nil {
+		t.Error("Update(logLineMsg) should return a non-nil cmd (waitForLogLineCmd re-issue)")
+	}
+
+	// --- Second call (from re-issued cmd): should return logLineMsg for line2 ---
+	msg2 := cmd2()
+	if _, ok := msg2.(logLineMsg); !ok {
+		t.Fatalf("second msg = %T; want logLineMsg", msg2)
+	}
+
+	// --- Third call: should return logEOFMsg ---
+	msg3 := waitForLogLineCmd(ch)()
+	eof, ok := msg3.(logEOFMsg)
+	if !ok {
+		t.Fatalf("third msg = %T; want logEOFMsg", msg3)
+	}
+	if eof.err != nil {
+		t.Errorf("logEOFMsg.err = %v; want nil on clean EOF", eof.err)
+	}
+
+	// --- Process logEOFMsg on a fresh App (avoids Builder copy panic) ---
+	// The logEOFMsg handler clears streaming flag + logCh — test that directly.
+	app2 := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	app2.logs.SetStreaming(true)
+	app2.logCh = make(chan tea.Msg, 1)
+
+	m2, _ := app2.Update(eof)
+	finalApp := m2.(App)
+	if finalApp.logs.streaming {
+		t.Error("logs.streaming should be false after logEOFMsg with nil error")
+	}
+	if finalApp.logCh != nil {
+		t.Error("app.logCh should be nil after logEOFMsg")
+	}
+}
+
+// TestLogEOFMsg_WithError_SetsLogsError verifies that a logEOFMsg carrying a
+// non-context-cancel error propagates to LogsTab.SetError.
+func TestLogEOFMsg_WithError_SetsLogsError(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	app.logs.SetStreaming(true)
+	app.logCh = make(chan tea.Msg, 1) // non-nil channel
+
+	m, _ := app.Update(logEOFMsg{err: errorString("stream reset")})
+	updated := m.(App)
+
+	if updated.logs.streaming {
+		t.Error("logs.streaming should be false after logEOFMsg with error")
+	}
+	if updated.logs.err == nil {
+		t.Error("logs.err should be set after logEOFMsg with non-nil error")
+	}
+	if !strings.Contains(updated.logs.err.Error(), "stream reset") {
+		t.Errorf("logs.err = %v; want 'stream reset'", updated.logs.err)
+	}
+	// logCh must be cleared.
+	if updated.logCh != nil {
+		t.Error("logCh should be nil after logEOFMsg")
+	}
+}
+
+// TestOnTabSwitch_LeavingLogs_CancelsStream verifies that leaving the Logs tab
+// calls logCancel (via the cancelFunc being set) and clears streaming state.
+func TestOnTabSwitch_LeavingLogs_CancelsStream(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil, "", "", "", nil)
+	app.logs.SetStreaming(true)
+
+	cancelCalled := false
+	app.logCancel = func() { cancelCalled = true }
+
+	// Switch away from Logs tab.
+	app.activeTab = TabOverview
+	_ = app.onTabSwitch(TabLogs)
+
+	if !cancelCalled {
+		t.Error("logCancel should have been called when leaving the Logs tab")
+	}
+	if app.logCancel != nil {
+		t.Error("logCancel should be nil after the stream is cancelled")
+	}
+	if app.logs.streaming {
+		t.Error("logs.streaming should be false after leaving the Logs tab")
 	}
 }
 

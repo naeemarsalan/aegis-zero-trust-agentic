@@ -12,10 +12,13 @@ import (
 )
 
 const (
-	defaultConfigDir       = ".config/ida"
-	defaultConfigFile      = "config.yaml"
-	defaultSandboxNS       = "openshell"
-	envPrefix              = "IDA_"
+	defaultConfigDir         = ".config/ida"
+	defaultConfigFile        = "config.yaml"
+	defaultSandboxNS         = "openshell"
+	defaultHarnessNamespace  = "agent-sandbox"
+	defaultHarnessPodSelector = "nvidia-ida/e2e-harness=true"
+	defaultHarnessContainer  = "agent"
+	envPrefix                = "IDA_"
 )
 
 // Config holds all runtime configuration for the ida-cli.
@@ -51,6 +54,17 @@ type Config struct {
 	OpenShellGateway string `yaml:"openshell_gateway"`
 	// OpenShellGatewayInsecure passes --gateway-insecure to openshell. For PoC/dev only.
 	OpenShellGatewayInsecure bool `yaml:"openshell_gateway_insecure"`
+
+	// Harness pod config for the Variant-B e2e harness pod log streaming (Logs tab).
+	// HarnessNamespace is the Kubernetes namespace where the harness pod runs.
+	// Default: "agent-sandbox".
+	HarnessNamespace string `yaml:"harness_namespace"`
+	// HarnessPodSelector is a Kubernetes label selector used to locate the harness pod.
+	// Default: "nvidia-ida/e2e-harness=true".
+	HarnessPodSelector string `yaml:"harness_pod_selector"`
+	// HarnessContainer is the container name inside the harness pod whose logs are streamed.
+	// Default: "agent".
+	HarnessContainer string `yaml:"harness_container"`
 }
 
 // configPath returns the default path to the config file.
@@ -71,7 +85,10 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		SandboxNamespace: defaultSandboxNS,
+		SandboxNamespace:   defaultSandboxNS,
+		HarnessNamespace:   defaultHarnessNamespace,
+		HarnessPodSelector: defaultHarnessPodSelector,
+		HarnessContainer:   defaultHarnessContainer,
 	}
 
 	data, err := os.ReadFile(path)
@@ -126,6 +143,9 @@ func applyEnvOverrides(cfg *Config) {
 	overrideString(&cfg.OpenShellGatewayEndpoint, "IDA_OPENSHELL_GATEWAY_ENDPOINT")
 	overrideString(&cfg.OpenShellGateway, "IDA_OPENSHELL_GATEWAY")
 	overrideBool(&cfg.OpenShellGatewayInsecure, "IDA_OPENSHELL_GATEWAY_INSECURE")
+	overrideString(&cfg.HarnessNamespace, "IDA_HARNESS_NAMESPACE")
+	overrideString(&cfg.HarnessPodSelector, "IDA_HARNESS_POD_SELECTOR")
+	overrideString(&cfg.HarnessContainer, "IDA_HARNESS_CONTAINER")
 }
 
 func overrideString(dst *string, key string) {

@@ -16,6 +16,7 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/api"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/auth"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/config"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/kube"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/openshell"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/tui"
 )
@@ -161,13 +162,23 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("root: gitea client: %w", err)
 	}
 
+	// --- Kube client: best-effort; failures degrade the Logs tab, never abort ---
+	// The kube client is used only for streaming harness pod logs in the Logs tab.
+	// If kubeconfig is absent or invalid, kubeCli is nil and the Logs tab shows
+	// a "kube unavailable" error banner rather than panicking.
+	kubeCli, kubeErr := kube.NewClient(cfg.HarnessNamespace, cfg.Kubeconfig)
+	if kubeErr != nil {
+		slog.Warn("runTUI: kube client unavailable; Logs tab will show error", "error", kubeErr)
+		kubeCli = nil
+	}
+
 	// store is nil when storeErr != nil; NewApp handles nil gracefully (inline
 	// login is skipped and the footer cue remains).
 	var tuiStore *auth.TokenStore
 	if storeErr == nil {
 		tuiStore = store
 	}
-	app := tui.NewApp(cfg, oshCli, jitCli, launcher, giteaCli, bearer, authErrMsg, clusterErrMsg, tuiStore)
+	app := tui.NewApp(cfg, oshCli, jitCli, launcher, giteaCli, kubeCli, bearer, authErrMsg, clusterErrMsg, tuiStore)
 
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {

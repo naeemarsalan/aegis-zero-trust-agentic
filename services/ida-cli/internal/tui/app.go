@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/api"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/auth"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/config"
+	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/kube"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/openshell"
 	"git.arsalan.io/anaeem/nvidia-ida/services/ida-cli/internal/tui/theme"
 )
@@ -50,6 +53,7 @@ type App struct {
 	jitCli     *api.JitClient
 	launcher   *api.LauncherClient
 	giteaCli   *api.GiteaClient
+	kube       *kube.Client     // nil when kubeconfig unavailable; Logs tab degrades gracefully
 	bearer     string          // current Keycloak access token; may be empty
 	tokenStore *auth.TokenStore // nil when store could not be built
 
@@ -79,6 +83,10 @@ type App struct {
 	statusMsg    string
 	statusIsErr  bool
 	selectedName string // name of the currently selected sandbox
+
+	// log streaming (Logs tab)
+	logCh     chan tea.Msg      // buffered channel; one message per scanner line or EOF
+	logCancel context.CancelFunc // cancels the streaming goroutine context; nil when not streaming
 }
 
 // NewApp constructs the root App model. It does not perform any I/O.
@@ -91,12 +99,15 @@ type App struct {
 // shown as a banner in the main pane.
 // tokenStore may be nil when the store could not be constructed; in that case
 // inline login is disabled (the "ida login" footer cue remains).
+// kubeCli may be nil when the kubeconfig is unavailable or malformed; in that
+// case the Logs tab degrades gracefully (shows an error banner, never panics).
 func NewApp(
 	cfg *config.Config,
 	osh *openshell.Client,
 	jitCli *api.JitClient,
 	launcher *api.LauncherClient,
 	giteaCli *api.GiteaClient,
+	kubeCli *kube.Client,
 	bearer string,
 	authErr string,
 	clusterErr string,
@@ -122,6 +133,7 @@ func NewApp(
 		jitCli:        jitCli,
 		launcher:      launcher,
 		giteaCli:      giteaCli,
+		kube:          kubeCli,
 		bearer:        bearer,
 		tokenStore:    tokenStore,
 		authStatus:    authErr,
@@ -334,6 +346,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logLineMsg:
 		a.logs.AppendLine(m.line)
+		// Keep draining: re-issue the wait cmd so the next line is delivered.
+		if a.logCh != nil {
+			cmds = append(cmds, waitForLogLineCmd(a.logCh))
+		}
+
+	case logEOFMsg:
+		a.logs.SetStreaming(false)
+		if m.err != nil && !isContextCanceled(m.err) {
+			a.logs.SetError(m.err)
+		}
+		// Channel is drained; nil it out so re-entering the tab starts fresh.
+		a.logCh = nil
+		a.logCancel = nil
 
 	case errMsg:
 		a.setStatus(m.Error(), true)
@@ -569,6 +594,15 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 		a.shellTab.Stop()
 	}
 
+	// Leaving the Logs tab — cancel the streaming goroutine.
+	if prev == TabLogs && a.activeTab != TabLogs {
+		if a.logCancel != nil {
+			a.logCancel()
+			a.logCancel = nil
+		}
+		a.logs.SetStreaming(false)
+	}
+
 	switch a.activeTab {
 	case TabApprovals:
 		// Trigger JIT load.
@@ -576,6 +610,78 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 	case TabReceipt:
 		if s := a.approvals.SelectedSession(); s != nil {
 			a.receipt.SetLoading(true)
+			if a.jitCli != nil {
+				cmds = append(cmds, a.loadReceiptCmd(s.ID))
+			}
+		}
+
+	case TabLogs:
+		// Start streaming harness pod logs. Only launch a new goroutine when not
+		// already streaming (logCh == nil means no active stream).
+		if a.kube == nil {
+			a.logs.SetError(fmt.Errorf("kube unavailable: no kubeconfig — set IDA_KUBECONFIG or ~/.kube/config"))
+		} else if a.logCh == nil {
+			ns, selector, container := a.harnessConfig()
+			ctx, cancel := context.WithCancel(context.Background())
+			a.logCancel = cancel
+			ch := make(chan tea.Msg, 64)
+			a.logCh = ch
+			a.logs.SetStreaming(true)
+
+			kubeCli := a.kube
+			go func() {
+				podName, err := kube.PodInNamespace(ctx, kubeCli, ns, selector)
+				if err != nil {
+					select {
+					case ch <- logEOFMsg{err: fmt.Errorf("harness pod not found: %w", err)}:
+					default:
+					}
+					return
+				}
+
+				// Use StreamLogs (Follow=true) for live tailing; it blocks until ctx
+				// is cancelled or the pod stream ends.
+				pr, pw := newPipeOrDiscard()
+				defer pr.Close()
+
+				errCh := make(chan error, 1)
+				go func() {
+					errCh <- kube.StreamLogs(ctx, kubeCli, podName, ns, container, pw)
+					pw.Close()
+				}()
+
+				sc := bufio.NewScanner(pr)
+				for sc.Scan() {
+					line := sc.Text()
+					select {
+					case ch <- logLineMsg{line: line}:
+					case <-ctx.Done():
+						// Drain the stream error and exit.
+						<-errCh
+						select {
+						case ch <- logEOFMsg{err: ctx.Err()}:
+						default:
+						}
+						return
+					}
+				}
+				// Scanner done: collect the stream error (may be nil on clean EOF or
+				// context cancellation).
+				streamErr := <-errCh
+				scanErr := sc.Err()
+				var finalErr error
+				if streamErr != nil && !isContextCanceled(streamErr) {
+					finalErr = streamErr
+				} else if scanErr != nil {
+					finalErr = scanErr
+				}
+				select {
+				case ch <- logEOFMsg{err: finalErr}:
+				default:
+				}
+			}()
+
+			cmds = append(cmds, waitForLogLineCmd(ch))
 		}
 
 	case TabShell:
@@ -596,6 +702,26 @@ func (a *App) onTabSwitch(prev int) []tea.Cmd {
 	}
 
 	return cmds
+}
+
+// harnessConfig returns the namespace, pod label selector, and container name
+// for the Variant-B harness pod, with safe fallbacks when cfg is nil.
+func (a *App) harnessConfig() (ns, selector, container string) {
+	ns = "agent-sandbox"
+	selector = "nvidia-ida/e2e-harness=true"
+	container = "agent"
+	if a.cfg != nil {
+		if a.cfg.HarnessNamespace != "" {
+			ns = a.cfg.HarnessNamespace
+		}
+		if a.cfg.HarnessPodSelector != "" {
+			selector = a.cfg.HarnessPodSelector
+		}
+		if a.cfg.HarnessContainer != "" {
+			container = a.cfg.HarnessContainer
+		}
+	}
+	return
 }
 
 // ---------------------------------------------------------------------------
@@ -668,6 +794,26 @@ func (a App) mergeCmd(prURL string) tea.Cmd {
 	}
 }
 
+// loadReceiptCmd fetches the receipt for a completed JIT session.
+// Mirrors loadJitCmd: 10-second context, fail-closed on error.
+func (a App) loadReceiptCmd(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rec, err := a.jitCli.Receipt(ctx, sessionID)
+		return receiptLoadedMsg{receipt: rec, err: err}
+	}
+}
+
+// waitForLogLineCmd returns a tea.Cmd that blocks until the next log message
+// (logLineMsg or logEOFMsg) is available on ch. It is re-issued after every
+// logLineMsg so the Logs tab keeps draining the goroutine's channel.
+func waitForLogLineCmd(ch chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-ch
+	}
+}
+
 // loadJitDetailCmd fetches the full JIT detail for sessionID so that the merge
 // confirm dialog can display the concrete scope before the user confirms.
 // On any error the returned message carries a non-nil err and the caller MUST
@@ -722,6 +868,13 @@ func (a App) doLoginCmd(username, password string) tea.Cmd {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// newPipeOrDiscard returns an io.Pipe reader/writer pair. It never fails;
+// the name is intentional: if os.Pipe were used it could fail, but io.Pipe
+// is in-memory and always succeeds.
+func newPipeOrDiscard() (*io.PipeReader, *io.PipeWriter) {
+	return io.Pipe()
+}
 
 func max(a, b int) int {
 	if a > b {
