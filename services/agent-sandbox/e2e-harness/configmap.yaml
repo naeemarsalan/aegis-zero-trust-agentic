@@ -1,0 +1,121 @@
+# GENERATED from services/agent-sandbox/agent-harness/bin/mcp-call — regenerate with:
+#   oc create configmap ztp-helpers --from-file=mcp-call=../agent-harness/bin/mcp-call --dry-run=client -o yaml
+apiVersion: v1
+data:
+  mcp-call: |
+    #!/usr/bin/env python3
+    """mcp-call — call an MCP tool through the gateway using ONLY this workload's own
+    SPIFFE SVID. No user credential and no downstream secret ever enter this process;
+    the platform resolves the SVID to the consenting user and injects the real
+    downstream credential server-side.
+
+    Run this INSIDE the agent sandbox (where the SPIFFE Workload API socket lives).
+
+    Usage:
+      mcp-call                                   # default: search_firewall_rules (read-only -> allowed)
+      mcp-call <tool>                            # e.g. mcp-call create_alias  (dangerous -> 403 under read-only)
+      mcp-call <tool> '{"json":"args"}'          # tool with arguments
+    """
+    from __future__ import annotations
+
+    import base64
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, "/app/src")
+    try:
+        from agent_harness.svid_bearer import fetch_agent_svid
+    except Exception as exc:  # noqa: BLE001
+        sys.exit(f"cannot load the SVID fetcher ({exc}); run this INSIDE the agent sandbox")
+
+    import httpx
+
+    CYAN, RESET = "\033[36m", "\033[0m"
+
+
+    def _claims(jwt: str) -> dict:
+        payload = jwt.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+
+
+    def _fetch_svid_with_retry(attempts: int = 8, delay: float = 3.0) -> str:
+        """SPIRE may take a few seconds to issue the SVID on a freshly-started pod;
+        retry the Workload API fetch instead of failing on the first attempt."""
+        import time
+        last: Exception | None = None
+        for i in range(attempts):
+            try:
+                return fetch_agent_svid()
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                if i < attempts - 1:
+                    time.sleep(delay)
+        raise SystemExit(f"could not fetch SVID after {attempts} attempts ({last}); is SPIRE issuing for this pod?")
+
+
+    def _parse(resp: httpx.Response):
+        if "text/event-stream" in resp.headers.get("content-type", ""):
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    return json.loads(line[5:].strip())
+            return None
+        return resp.json()
+
+
+    def main() -> int:
+        tool = sys.argv[1] if len(sys.argv) > 1 else "search_firewall_rules"
+        args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+        base = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com").rstrip("/")
+        url = base + "/mcp"
+
+        svid = _fetch_svid_with_retry()
+        c = _claims(svid)
+        print(f"{CYAN}▶ identity I present :{RESET} {c.get('sub')}")
+        print(f"{CYAN}▶ audience           :{RESET} {c.get('aud')}")
+        print(f"{CYAN}▶ credentials I hold :{RESET} ONLY this SVID — no user token, no downstream secret\n")
+
+        h = {
+            "Authorization": f"Bearer {svid}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        client = httpx.Client(verify=False, timeout=30)
+
+        r = client.post(url, headers=h, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                       "clientInfo": {"name": "mcp-call", "version": "1"}},
+        })
+        if r.status_code != 200:
+            print(f"{CYAN}▶ initialize         :{RESET} HTTP {r.status_code} — {r.text[:160]}")
+            return 1
+        h["Mcp-Session-Id"] = r.headers.get("mcp-session-id", "")
+        client.post(url, headers=h, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+        r = client.post(url, headers=h, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": tool, "arguments": args},
+        })
+        print(f"{CYAN}▶ tools/call {tool} :{RESET} HTTP {r.status_code}")
+        if r.status_code != 200:
+            print(f"  DENIED: {r.text[:200]}  (this is fail-closed authz — e.g. a dangerous tool under a read-only grant)")
+            return 0
+
+        data = _parse(r)
+        try:
+            inner = json.loads(data["result"]["content"][0]["text"])
+            print(json.dumps(inner, indent=2)[:1800])
+        except Exception:  # noqa: BLE001
+            print(json.dumps(data, indent=2)[:1800] if isinstance(data, (dict, list)) else str(data)[:1800])
+        return 0
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: ztp-helpers
+  namespace: agent-sandbox

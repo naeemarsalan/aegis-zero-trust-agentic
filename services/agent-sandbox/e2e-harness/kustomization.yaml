@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Variant-B zero-trust demo harness: the SVID-bearing keepalive pod + the
+# ConfigMap-delivered helper scripts (mcp-call). The ConfigMap is generated from
+# services/agent-sandbox/agent-harness/bin/* (single source of truth); configmap.yaml
+# is a regenerated artifact — see its header for the regen command. Delivering the
+# helpers via ConfigMap (not the image) means they can be edited without a rebuild.
+namespace: agent-sandbox
+
+resources:
+  - configmap.yaml
+  - pod.yaml

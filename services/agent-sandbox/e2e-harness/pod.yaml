@@ -1,0 +1,56 @@
+# Variant-B zero-trust demo harness pod.
+#
+# A keepalive pod that carries the SPIRE JWT-SVID (via the csi.spiffe.io volume)
+# and the zero-trust helper scripts (mounted from the ztp-helpers ConfigMap, which
+# is generated from services/agent-sandbox/agent-harness/bin/* — NOT baked into the
+# image, so helpers can be edited without a rebuild).
+#
+# Exec in and run `mcp-call` to prove delegated, no-credential MCP access:
+#   oc -n agent-sandbox exec -it e2e-harness -c agent -- bash
+#   mcp-call                      # read-only search_firewall_rules -> allowed (200)
+#   mcp-call create_alias '{"name":"x","type":"host"}'   # dangerous -> 403 (fail-closed)
+#
+# The sandbox_uid in the SVID path is stamped by ClusterSPIFFEID agent-sandbox-e2e-harness
+# (selects pods labelled nvidia-ida/e2e-harness=true). The Vault consent grant at
+# secret/data/sandbox-grants/<uid> resolves that SVID to user=arsalan.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2e-harness
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    nvidia-ida/e2e-harness: "true"
+    nvidia-ida/sandbox-id: e2e0a1b2-c3d4-4e5f-8a9b-000000000001
+spec:
+  restartPolicy: Never
+  containers:
+    - name: agent
+      image: oci.arsalan.io/nvidia-ida/agent-harness:dev
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "-c", "sleep 10800"]
+      env:
+        # Prepend the ConfigMap-mounted helper dir so `mcp-call` is on PATH.
+        - name: PATH
+          value: "/opt/ztp/bin:/opt/app-root/src/.local/bin/:/opt/app-root/src/bin:/opt/app-root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        - name: MCP_GATEWAY_URL
+          value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+      envFrom:
+        - secretRef:
+            name: agent-harness-inference
+      volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+        - name: ztp-helpers
+          mountPath: /opt/ztp/bin
+          readOnly: true
+  volumes:
+    - name: spiffe-workload-api
+      csi:
+        driver: csi.spiffe.io
+        readOnly: true
+    - name: ztp-helpers
+      configMap:
+        name: ztp-helpers
+        defaultMode: 0755   # executable
