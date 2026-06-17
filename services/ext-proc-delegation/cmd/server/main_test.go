@@ -18,25 +18,10 @@ import (
 	"git.arsalan.io/anaeem/nvidia-ida/services/ext-proc-delegation/internal/config"
 )
 
-// fakeX509Source satisfies the interface consumed by buildSpireHTTPClient
-// without requiring a live SPIFFE workload API socket.
-type fakeX509Source struct {
-	svidErr   error
-	bundleErr error
-	certs     []*x509.Certificate
-}
-
-func (f *fakeX509Source) GetX509SVID() (interface{}, error) {
-	// buildSpireHTTPClient only calls GetX509SVID in the default branch.
-	// We proxy via the real X509Source interface; use a small shim instead.
-	return nil, f.svidErr
-}
-
-// In the default case buildSpireHTTPClient calls src.GetX509SVID() then
-// src.GetX509BundleForTrustDomain(). Since those are concrete methods on
-// *workloadapi.X509Source (not an interface), we test the two explicit-config
-// branches (insecure + CA file) directly, and test the default branch
-// with an integration tag separately.
+// In the default case buildSpireHTTPClient now uses system root CAs (RootCAs:
+// nil), so no workload API socket is needed to exercise that path. The two
+// explicit-config branches (insecure + CA file) and the default branch are all
+// covered by unit tests below without any live cluster dependency.
 
 // selfSignedCA generates a minimal self-signed CA certificate and returns
 // both the DER bytes and the parsed *x509.Certificate.
@@ -171,6 +156,43 @@ func TestBuildSpireHTTPClient_CAFile_InvalidPEM(t *testing.T) {
 	}
 	if client != nil {
 		t.Error("expected nil client on error")
+	}
+}
+
+// TestBuildSpireHTTPClient_Default_SystemRoots verifies that when neither
+// SPIRE_TLS_INSECURE nor SPIRE_CA_FILE is set, the returned client uses
+// system root CAs (RootCAs == nil) with InsecureSkipVerify == false and
+// MinVersion == TLS 1.2. This is the correct configuration for the LE-fronted
+// OpenShift reencrypt Route (*.apps.anaeem.na-launch.com). No workload API
+// socket is required; src may be nil.
+func TestBuildSpireHTTPClient_Default_SystemRoots(t *testing.T) {
+	cfg := &config.Config{} // neither SpireTLSInsecure nor SpireCAFile set
+	client, err := buildSpireHTTPClient(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error in default branch: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil http.Client")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	tlsCfg := tr.TLSClientConfig
+	if tlsCfg == nil {
+		t.Fatal("expected non-nil TLSClientConfig in default branch")
+	}
+	if tlsCfg.InsecureSkipVerify { //nolint:gosec // test assertion only
+		t.Error("InsecureSkipVerify must be false in default (system-roots) mode")
+	}
+	if tlsCfg.RootCAs != nil {
+		t.Error("RootCAs must be nil in default mode (system roots via Go TLS default)")
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Errorf("expected MinVersion TLS1.2, got %v", tlsCfg.MinVersion)
+	}
+	if client.Timeout != 5*time.Second {
+		t.Errorf("expected 5s timeout, got %v", client.Timeout)
 	}
 }
 

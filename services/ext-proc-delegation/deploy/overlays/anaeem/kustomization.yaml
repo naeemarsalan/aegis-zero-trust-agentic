@@ -5,12 +5,13 @@ resources:
   - ../../base
 
 images:
-  # grant-e2e-jit-tlsverify = grant-e2e-jit (Phase-3 per-tool JIT + non-fatal RFC8693 on /mcp)
-  # PLUS the SPIRE-JWKS TLS-verify fix (review 2026-06-16 finding A). Pinned by DIGEST for
-  # reproducibility + to close the mutable-tag provenance gap (finding D).
-  # tag for humans: grant-e2e-jit-tlsverify
+  # grant-e2e-jit-sysroot = grant-e2e-jit-tlsverify PLUS the SPIRE-JWKS TLS anchor fix:
+  # default case now uses system root CAs (RootCAs: nil) instead of the SPIFFE X.509 bundle,
+  # which correctly validates the LE wildcard cert on the reencrypt Route. Pinned by DIGEST for
+  # reproducibility + to close the mutable-tag provenance gap.
+  # tag for humans: grant-e2e-jit-sysroot
   - name: oci.arsalan.io/nvidia-ida/ext-proc-delegation
-    digest: sha256:0488968457c3a52a1592283d0e35ca0d07abb6068933806a2a337082e763d163
+    digest: sha256:2a66aa0aa647631a2264f245090b9908a334a30c5f427f1fe03aaf43e95e2aa6
 
 patches:
   # Activate the SPIRE delegated-credential path (grant backend) — see deployment-patch.yaml.

@@ -27,11 +27,13 @@ spec:
               value: "https://spire-oidc.apps.anaeem.na-launch.com"
             - name: SPIRE_AUDIENCE
               value: "mcp-gateway"
-            # TLS to the spire-oidc JWKS endpoint is verified against the in-pod SPIFFE trust
-            # bundle by default (the route serves a SPIRE-issued cert under passthrough) — NOT
-            # skipped. SPIRE_TLS_INSECURE is intentionally unset (defaults false). To override the
-            # anchor (e.g. a reencrypt route serving the ingress cert), mount a CA and set
-            # SPIRE_CA_FILE. Fixes the JWKS-spoofing/SVID-forgery finding (review 2026-06-16).
+            # TLS to the spire-oidc JWKS endpoint is verified against the system root CAs
+            # (RootCAs: nil = Go/Mozilla bundle shipped by distroless/static). The route is an
+            # OpenShift reencrypt Route serving a Let's Encrypt wildcard cert
+            # (*.apps.anaeem.na-launch.com); LE is trusted by the system bundle, so full chain
+            # and hostname verification succeed. SPIRE_TLS_INSECURE is intentionally unset
+            # (defaults false — secure). For a private/internal CA not in the system bundle,
+            # mount the CA PEM and set SPIRE_CA_FILE instead.
             # Vault KV-v2 prefix for per-sandbox consent grants (sandbox-launcher writes these).
             - name: SANDBOX_GRANT_PATH_PREFIX
               value: "secret/data/sandbox-grants/"

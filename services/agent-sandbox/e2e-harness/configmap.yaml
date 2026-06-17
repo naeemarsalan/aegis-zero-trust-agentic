@@ -15,6 +15,11 @@ data:
       mcp-call                                   # default: search_firewall_rules (read-only -> allowed)
       mcp-call <tool>                            # e.g. mcp-call create_alias  (dangerous -> 403 under read-only)
       mcp-call <tool> '{"json":"args"}'          # tool with arguments
+
+    JIT elevation:
+      JIT_SESSION_JWT=<jwt> mcp-call create_firewall_rule_advanced '{...}'
+      The JWT is forwarded as X-JIT-Session-JWT header; ext-proc validates it and
+      sets jit_elevated=true in the audit log.
     """
     from __future__ import annotations
 
@@ -69,18 +74,25 @@ data:
         args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
         base = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com").rstrip("/")
         url = base + "/mcp"
+        jit_jwt = os.environ.get("JIT_SESSION_JWT", "")
 
         svid = _fetch_svid_with_retry()
         c = _claims(svid)
         print(f"{CYAN}▶ identity I present :{RESET} {c.get('sub')}")
         print(f"{CYAN}▶ audience           :{RESET} {c.get('aud')}")
-        print(f"{CYAN}▶ credentials I hold :{RESET} ONLY this SVID — no user token, no downstream secret\n")
+        print(f"{CYAN}▶ credentials I hold :{RESET} ONLY this SVID — no user token, no downstream secret")
+        if jit_jwt:
+            jc = _claims(jit_jwt)
+            print(f"{CYAN}▶ JIT session JWT    :{RESET} present (jti={jc.get('jti')}, scope={jc.get('tool_scope')})")
+        print()
 
         h = {
             "Authorization": f"Bearer {svid}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        if jit_jwt:
+            h["X-JIT-Session-JWT"] = jit_jwt
         client = httpx.Client(verify=False, timeout=30)
 
         r = client.post(url, headers=h, json={

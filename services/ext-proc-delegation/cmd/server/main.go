@@ -113,10 +113,10 @@ func run() error {
 		// Three cases, evaluated in order:
 		//   1. SPIRE_TLS_INSECURE=true  — explicit opt-in escape hatch only.
 		//   2. SPIRE_CA_FILE non-empty  — pin a PEM CA bundle from disk.
-		//   3. Default (secure)         — trust-anchor to the in-pod SPIFFE
-		//      X.509 bundle obtained from the already-initialised x509Source.
-		//      This pins the JWKS endpoint to the same trust domain the SVID
-		//      originates from, without relying on system roots.
+		//   3. Default (secure)         — verify against system root CAs
+		//      (RootCAs: nil). Correct for the LE-fronted reencrypt Route
+		//      (*.apps.anaeem.na-launch.com). x509Source passed for API
+		//      compatibility; not used for TLS anchor in the default path.
 		spireHTTP, tlsErr := buildSpireHTTPClient(cfg, x509Source)
 		if tlsErr != nil {
 			return fmt.Errorf("SPIRE JWKS HTTP client: %w", tlsErr)
@@ -189,16 +189,24 @@ func run() error {
 }
 
 // buildSpireHTTPClient constructs the HTTP client used to fetch the SPIRE OIDC
-// JWKS endpoint. It is fail-closed: any misconfiguration or missing trust
-// material returns an error rather than silently falling back to an insecure
-// or system-trust configuration.
+// JWKS endpoint.
 //
-// Priority:
-//  1. SPIRE_TLS_INSECURE=true  — InsecureSkipVerify (explicit opt-in only).
+// Priority (evaluated in order):
+//  1. SPIRE_TLS_INSECURE=true  — InsecureSkipVerify; explicit operator opt-in
+//     escape hatch only. Never set in production.
 //  2. SPIRE_CA_FILE non-empty  — PEM CA file pinned as the sole trust anchor.
-//  3. Default                  — SPIFFE X.509 bundle from x509Source used as
-//     trust anchor; ties the JWKS TLS verification to the same trust domain
-//     that issued the SVIDs being verified.
+//     Use this when the JWKS endpoint is fronted by a private/internal CA that
+//     is not in the system root store (e.g. a passthrough Route with a
+//     SPIRE-issued leaf cert, or an internal corporate CA).
+//  3. Default (secure)         — RootCAs left nil, which instructs Go's TLS
+//     stack to verify against the system root CA bundle (Mozilla/distroless
+//     static image ships the Mozilla bundle). This is correct for this
+//     deployment where the spire-oidc JWKS endpoint is fronted by an OpenShift
+//     reencrypt Route serving a Let's Encrypt wildcard cert
+//     (*.apps.anaeem.na-launch.com). LE is trusted by the system bundle;
+//     full chain + hostname verification is performed. The SPIFFE X.509 bundle
+//     is NOT used here — it would never validate an LE-issued cert and would
+//     cause TLS failures that disable the SPIRE verifier (fail-closed).
 func buildSpireHTTPClient(cfg *config.Config, src *workloadapi.X509Source) (*http.Client, error) {
 	var tlsCfg *tls.Config
 
@@ -221,24 +229,15 @@ func buildSpireHTTPClient(cfg *config.Config, src *workloadapi.X509Source) (*htt
 		slog.Info("SPIRE JWKS TLS anchored to CA file", "path", cfg.SpireCAFile)
 
 	default:
-		// Use the in-pod SPIFFE trust bundle as the TLS trust anchor.
-		// Obtain the trust domain from the local SVID, then fetch the
-		// corresponding X.509 bundle from the already-live X509Source.
-		svid, err := src.GetX509SVID()
-		if err != nil {
-			return nil, fmt.Errorf("get local X509-SVID for trust domain lookup: %w", err)
-		}
-		td := svid.ID.TrustDomain()
-		bundle, err := src.GetX509BundleForTrustDomain(td)
-		if err != nil {
-			return nil, fmt.Errorf("get X.509 bundle for trust domain %q: %w", td, err)
-		}
-		pool := x509.NewCertPool()
-		for _, cert := range bundle.X509Authorities() {
-			pool.AddCert(cert)
-		}
-		tlsCfg = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-		slog.Info("SPIRE JWKS TLS anchored to in-pod SPIFFE trust bundle", "trust_domain", td.String())
+		// Verify against the system root CA bundle (RootCAs: nil = Go default).
+		// The spire-oidc JWKS endpoint is fronted by an OpenShift reencrypt Route
+		// serving a Let's Encrypt wildcard cert; system roots (distroless static
+		// image ships the Mozilla bundle) trust LE. Full chain and hostname
+		// verification are performed; InsecureSkipVerify remains false.
+		// The x509Source SPIFFE bundle is intentionally not used here — it
+		// validates SPIRE-issued certs only and would reject the LE leaf cert.
+		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12}
+		slog.Info("SPIRE JWKS TLS anchored to system root CAs (trusts LE reencrypt route)")
 	}
 
 	return &http.Client{
