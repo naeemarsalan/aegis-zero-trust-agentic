@@ -5,7 +5,18 @@ resources:
   - ../../base
 
 images:
+  # grant-e2e-jit-tlsverify = grant-e2e-jit (Phase-3 per-tool JIT + non-fatal RFC8693 on /mcp)
+  # PLUS the SPIRE-JWKS TLS-verify fix (review 2026-06-16 finding A). Pinned by DIGEST for
+  # reproducibility + to close the mutable-tag provenance gap (finding D).
+  # tag for humans: grant-e2e-jit-tlsverify
   - name: oci.arsalan.io/nvidia-ida/ext-proc-delegation
-    newTag: grant-e2e-nonfatal
+    digest: sha256:0488968457c3a52a1592283d0e35ca0d07abb6068933806a2a337082e763d163
+
+patches:
+  # Activate the SPIRE delegated-credential path (grant backend) — see deployment-patch.yaml.
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ext-proc-delegation
 
 namespace: mcp-gateway

@@ -16,6 +16,8 @@ resources:
   - vault.yaml
   - kyverno.yaml
   - agentgateway.yaml
+  - ext-proc-delegation.yaml
+  - jit-approver.yaml
   - isolation.yaml
   - rhoai.yaml
   - observability.yaml

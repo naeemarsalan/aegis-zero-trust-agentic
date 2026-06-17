@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -72,8 +73,6 @@ func run() error {
 	}
 	defer jwtSource.Close()
 
-	_ = x509Source // available for mTLS if needed in future
-
 	// Build the inbound JWT verifier (independent verification — the gateway
 	// is NOT trusted as the identity source).
 	verifier, err := jwks.New(jwks.Config{
@@ -110,15 +109,17 @@ func run() error {
 	// routes them through the grant-read + RFC 8693 on-behalf path.
 	var spireVerifier *spire.Verifier
 	if cfg.SpireJWKSURL != "" {
-		// The spire-oidc discovery route serves a self-signed (SPIRE-issued)
-		// cert not in the system trust store; skip verification when configured
-		// (PoC). The JWKS content is still trust-anchored by the SVID signature.
-		var spireHTTP *http.Client
-		if cfg.SpireTLSInsecure {
-			spireHTTP = &http.Client{
-				Timeout:   5 * time.Second,
-				Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // PoC: self-signed spire-oidc route
-			}
+		// Build the TLS config for the SPIRE OIDC JWKS HTTP client.
+		// Three cases, evaluated in order:
+		//   1. SPIRE_TLS_INSECURE=true  — explicit opt-in escape hatch only.
+		//   2. SPIRE_CA_FILE non-empty  — pin a PEM CA bundle from disk.
+		//   3. Default (secure)         — trust-anchor to the in-pod SPIFFE
+		//      X.509 bundle obtained from the already-initialised x509Source.
+		//      This pins the JWKS endpoint to the same trust domain the SVID
+		//      originates from, without relying on system roots.
+		spireHTTP, tlsErr := buildSpireHTTPClient(cfg, x509Source)
+		if tlsErr != nil {
+			return fmt.Errorf("SPIRE JWKS HTTP client: %w", tlsErr)
 		}
 		sv, svErr := spire.New(jwks.Config{
 			JWKSURL:          cfg.SpireJWKSURL,
@@ -185,4 +186,63 @@ func run() error {
 	case err := <-errCh:
 		return fmt.Errorf("gRPC serve: %w", err)
 	}
+}
+
+// buildSpireHTTPClient constructs the HTTP client used to fetch the SPIRE OIDC
+// JWKS endpoint. It is fail-closed: any misconfiguration or missing trust
+// material returns an error rather than silently falling back to an insecure
+// or system-trust configuration.
+//
+// Priority:
+//  1. SPIRE_TLS_INSECURE=true  — InsecureSkipVerify (explicit opt-in only).
+//  2. SPIRE_CA_FILE non-empty  — PEM CA file pinned as the sole trust anchor.
+//  3. Default                  — SPIFFE X.509 bundle from x509Source used as
+//     trust anchor; ties the JWKS TLS verification to the same trust domain
+//     that issued the SVIDs being verified.
+func buildSpireHTTPClient(cfg *config.Config, src *workloadapi.X509Source) (*http.Client, error) {
+	var tlsCfg *tls.Config
+
+	switch {
+	case cfg.SpireTLSInsecure:
+		//nolint:gosec // explicit operator opt-in via SPIRE_TLS_INSECURE=true; not a default
+		tlsCfg = &tls.Config{InsecureSkipVerify: true}
+		slog.Warn("SPIRE JWKS TLS verification disabled — SPIRE_TLS_INSECURE=true is set; use only in non-production environments")
+
+	case cfg.SpireCAFile != "":
+		pemBytes, err := os.ReadFile(cfg.SpireCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read SPIRE_CA_FILE %q: %w", cfg.SpireCAFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("SPIRE_CA_FILE %q: no valid PEM certificates found", cfg.SpireCAFile)
+		}
+		tlsCfg = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+		slog.Info("SPIRE JWKS TLS anchored to CA file", "path", cfg.SpireCAFile)
+
+	default:
+		// Use the in-pod SPIFFE trust bundle as the TLS trust anchor.
+		// Obtain the trust domain from the local SVID, then fetch the
+		// corresponding X.509 bundle from the already-live X509Source.
+		svid, err := src.GetX509SVID()
+		if err != nil {
+			return nil, fmt.Errorf("get local X509-SVID for trust domain lookup: %w", err)
+		}
+		td := svid.ID.TrustDomain()
+		bundle, err := src.GetX509BundleForTrustDomain(td)
+		if err != nil {
+			return nil, fmt.Errorf("get X.509 bundle for trust domain %q: %w", td, err)
+		}
+		pool := x509.NewCertPool()
+		for _, cert := range bundle.X509Authorities() {
+			pool.AddCert(cert)
+		}
+		tlsCfg = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+		slog.Info("SPIRE JWKS TLS anchored to in-pod SPIFFE trust bundle", "trust_domain", td.String())
+	}
+
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}, nil
 }

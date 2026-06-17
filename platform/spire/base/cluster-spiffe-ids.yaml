@@ -71,3 +71,24 @@ spec:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: openshell
+---
+# ClusterSPIFFEID for the Variant-B demo harness (ns agent-sandbox). Mirrors the
+# openshell-sandbox-workloads binding but for the bolt-on harness pod, which carries the
+# sandbox uuid in the label nvidia-ida/sandbox-id. Encodes that uuid into the SVID PATH so the
+# harness gets a unique sandbox-bound identity; ext-proc parses <uuid> from the sub and reads the
+# matching Vault grant at secret/data/sandbox-grants/<uuid> (resolves to user=arsalan).
+# SVID format: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/<uuid>
+# This was created live before (CSID agent-sandbox-e2e-harness) but never committed — pinning it
+# here makes the harness SVID GitOps-durable.
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: agent-sandbox-e2e-harness
+spec:
+  spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sandbox/{{ index .PodMeta.Labels "nvidia-ida/sandbox-id" }}'
+  podSelector:
+    matchLabels:
+      nvidia-ida/e2e-harness: "true"
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: agent-sandbox

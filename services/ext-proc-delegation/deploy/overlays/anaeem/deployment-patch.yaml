@@ -1,0 +1,41 @@
+# anaeem overlay — activate the SPIRE delegated-credential path (Variant-B grant backend).
+#
+# These env vars were previously set ONLY on the live deployment (via `oc set image`/manual
+# edits) and were NOT in git — so an ArgoCD sync stripped them and broke the SPIRE path. Pinning
+# them here makes the grant backend GitOps-durable.
+#
+# Strategic-merge: kustomize merges container env by name (additive — leaves the base env intact).
+#
+# SECURITY (no-credential-passing invariant): setting SPIRE_JWKS_URL only ENABLES ext-proc to
+# verify inbound JWT-SVIDs and route them through the grant-read + RFC8693 path. No user/downstream
+# credential is introduced here — the injected credential is still selected server-side from the
+# Vault consent grant keyed by the SVID's sandbox_uid. FAIL_MODE stays "closed" (base).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ext-proc-delegation
+spec:
+  template:
+    spec:
+      containers:
+        - name: ext-proc-delegation
+          env:
+            # SPIRE OIDC discovery JWKS — enabling this turns ON the sandbox-agent SVID path.
+            - name: SPIRE_JWKS_URL
+              value: "https://spire-oidc.apps.anaeem.na-launch.com/keys"
+            - name: SPIRE_ISSUER
+              value: "https://spire-oidc.apps.anaeem.na-launch.com"
+            - name: SPIRE_AUDIENCE
+              value: "mcp-gateway"
+            # TLS to the spire-oidc JWKS endpoint is verified against the in-pod SPIFFE trust
+            # bundle by default (the route serves a SPIRE-issued cert under passthrough) — NOT
+            # skipped. SPIRE_TLS_INSECURE is intentionally unset (defaults false). To override the
+            # anchor (e.g. a reencrypt route serving the ingress cert), mount a CA and set
+            # SPIRE_CA_FILE. Fixes the JWKS-spoofing/SVID-forgery finding (review 2026-06-16).
+            # Vault KV-v2 prefix for per-sandbox consent grants (sandbox-launcher writes these).
+            - name: SANDBOX_GRANT_PATH_PREFIX
+              value: "secret/data/sandbox-grants/"
+            # The pfSense MCP static-auth path: the RFC8693 exchange is audit-only here; the
+            # injected credential is the grant-selected static token. (Matches code default.)
+            - name: STATIC_AUTH_PATHS
+              value: "/mcp"

@@ -7,8 +7,10 @@ resources:
   - ../../base
 
 images:
+  # e2e-jit stamps sandbox_uid into the session JWT (signing.sandbox_uid_from_spiffe) so
+  # ext-proc can bind the JIT exception to the calling sandbox (live-proven; in the registry).
   - name: oci.arsalan.io/nvidia-ida/jit-approver
-    newTag: dev
+    newTag: e2e-jit
 
 patches:
   - path: deployment-patch.yaml

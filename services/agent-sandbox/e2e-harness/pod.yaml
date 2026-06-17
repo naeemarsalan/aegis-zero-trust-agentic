@@ -24,6 +24,7 @@ metadata:
     nvidia-ida/sandbox-id: e2e0a1b2-c3d4-4e5f-8a9b-000000000001
 spec:
   restartPolicy: Never
+  serviceAccountName: e2e-harness
   containers:
     - name: agent
       image: oci.arsalan.io/nvidia-ida/agent-harness:dev

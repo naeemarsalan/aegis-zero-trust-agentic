@@ -1,0 +1,15 @@
+# The proven Variant-B journey drives `mcp-call` MANUALLY from a shell in the harness — it does
+# NOT run an autonomous agent, so the OpenRouter inference creds are not required to boot. Mark
+# the secretRef optional so the keepalive pod starts even when agent-harness-inference is absent
+# (it is not in git/.env). Replaces the single-entry envFrom list with the optional variant.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2e-harness
+spec:
+  containers:
+    - name: agent
+      envFrom:
+        - secretRef:
+            name: agent-harness-inference
+            optional: true

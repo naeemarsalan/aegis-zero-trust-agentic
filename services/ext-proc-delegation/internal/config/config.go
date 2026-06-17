@@ -67,9 +67,18 @@ type Config struct {
 	SpireIssuer   string // must match spire-oidc jwtIssuer config field
 	SpireAudience string // must be "mcp-gateway"
 	// SpireTLSInsecure skips TLS verification when fetching the SPIRE OIDC JWKS.
-	// The spire-oidc discovery route serves a self-signed (SPIRE-issued) cert not
-	// in the system trust store. PoC-only; production should mount the CA instead.
+	// This is an explicit, default-off escape hatch for environments where the
+	// SPIRE OIDC route cert cannot be verified (e.g. local PoC without a CA
+	// bundle). Set SPIRE_TLS_INSECURE=true only when strictly necessary.
+	// In production, set SPIRE_CA_FILE instead to pin the trust anchor.
 	SpireTLSInsecure bool
+
+	// SpireCAFile is the path to a PEM-encoded CA certificate file used to
+	// verify the SPIRE OIDC JWKS endpoint TLS certificate. When set, the JWKS
+	// HTTP client uses this CA as the sole trust anchor instead of the in-pod
+	// SPIFFE bundle. Mutually exclusive with SpireTLSInsecure (insecure wins if
+	// both are set). Set via env SPIRE_CA_FILE.
+	SpireCAFile string
 
 	// SandboxGrantPathPrefix is the Vault KV-v2 path prefix for consent grants
 	// written by sandbox-launcher.
@@ -120,6 +129,7 @@ func Load() (*Config, error) {
 		SpireIssuer:            getEnv("SPIRE_ISSUER", "https://spire-oidc.apps.anaeem.na-launch.com"),
 		SpireAudience:          getEnv("SPIRE_AUDIENCE", "mcp-gateway"),
 		SpireTLSInsecure:       getEnv("SPIRE_TLS_INSECURE", "") == "true",
+		SpireCAFile:            getEnv("SPIRE_CA_FILE", ""),
 		SandboxGrantPathPrefix: getEnv("SANDBOX_GRANT_PATH_PREFIX", "secret/data/sandbox-grants/"),
 		FailMode:               getEnv("FAIL_MODE", "closed"),
 		GRPCAddr:             getEnv("GRPC_ADDR", ":9000"),

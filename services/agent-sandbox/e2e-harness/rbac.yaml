@@ -1,0 +1,55 @@
+# RBAC posture for the e2e-harness ServiceAccount in namespace agent-sandbox.
+#
+# SECURITY NOTE — SVID IMPERSONATION RISK:
+#   The ClusterSPIFFEID 'agent-sandbox-e2e-harness' issues SVIDs based on the
+#   pod label nvidia-ida/e2e-harness=true. Any principal that can CREATE pods in
+#   namespace agent-sandbox can set that label and thereby receive an SVID for an
+#   arbitrary sandbox-id, impersonating another sandbox's identity and obtaining
+#   its Vault-granted downstream credentials.
+#
+#   THEREFORE: pod create/update in namespace agent-sandbox MUST remain
+#   admin/launcher-only. No RoleBinding in this file (or any other) shall grant
+#   pods:create, pods:update, or pods:* to service accounts in this namespace.
+#   Violations of this rule must be reviewed as security incidents.
+#
+# The e2e-harness SA itself needs ZERO Kubernetes API permissions. Its only
+# runtime access is to the SPIFFE workload API socket via the csi.spiffe.io
+# CSI volume, which is established by the kubelet/CSI driver — not by RBAC.
+#
+# We define an empty Role to make the intent explicit and auditable. It grants
+# nothing, which is correct. Having an explicit zero-permission Role and a
+# matching RoleBinding is preferable to leaving the SA with no Role at all,
+# because it documents that the SA's privilege surface was deliberately evaluated
+# and found to require no Kubernetes API access.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: e2e-harness
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: e2e-harness
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # No API access is intentional. The harness uses the SPIFFE CSI socket only.
+    # DO NOT add verbs here without a security review — see the SVID impersonation
+    # risk note above before granting any pod-mutating permissions in this namespace.
+rules: []
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: e2e-harness
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: e2e-harness
+    app.kubernetes.io/part-of: nvidia-ida
+subjects:
+  - kind: ServiceAccount
+    name: e2e-harness
+    namespace: agent-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: e2e-harness

@@ -6,6 +6,7 @@ resources:
   - disallow-default-sa-automount.yaml
   - require-networkpolicy.yaml
   - restrict-image-registries.yaml
+  - require-e2e-harness-serviceaccount.yaml
 
 labels:
   - pairs:

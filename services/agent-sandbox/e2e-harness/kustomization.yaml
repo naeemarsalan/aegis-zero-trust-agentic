@@ -6,8 +6,22 @@ kind: Kustomization
 # services/agent-sandbox/agent-harness/bin/* (single source of truth); configmap.yaml
 # is a regenerated artifact — see its header for the regen command. Delivering the
 # helpers via ConfigMap (not the image) means they can be edited without a rebuild.
+#
+# NOTE: the harness is a bare Pod (restartPolicy: Never, `sleep 10800`) — a demo fixture, NOT a
+# long-lived service. It is intentionally NOT wired into the ArgoCD app-of-apps (a Never-pod under
+# auto-sync+prune churns once it self-terminates). Apply it on-demand when running the journey:
+#   oc apply -k services/agent-sandbox/e2e-harness
 namespace: agent-sandbox
 
 resources:
+  - serviceaccount.yaml
+  - rbac.yaml
   - configmap.yaml
   - pod.yaml
+
+patches:
+  # Let the keepalive pod boot without the OpenRouter creds (manual mcp-call needs no inference).
+  - path: inference-optional-patch.yaml
+    target:
+      kind: Pod
+      name: e2e-harness

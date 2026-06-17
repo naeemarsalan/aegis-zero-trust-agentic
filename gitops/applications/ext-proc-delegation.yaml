@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-ida-ext-proc-delegation
+  namespace: openshift-gitops
+  annotations:
+    # wave 5: after agentgateway (wave 4) — the gateway opens the ext_proc stream to this service.
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: nvidia-ida
+
+  source:
+    repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
+    targetRevision: main
+    path: services/ext-proc-delegation/deploy/overlays/anaeem
+
+  destination:
+    server: https://api.anaeem.na-launch.com:6443
+    namespace: mcp-gateway
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
