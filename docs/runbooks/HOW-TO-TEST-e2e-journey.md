@@ -20,11 +20,17 @@ The consent grant has a **3600 s TTL** and the harness pod (`restartPolicy: Neve
 self-terminates after 3 h. Refresh both:
 
 ```sh
-# (a) rewrite the consent grant with a fresh timestamp (working Vault token is in the k8s secret)
-RT=$(oc -n vault get secret vault-init -o jsonpath='{.data.root-token}' | base64 -d)
-oc -n vault exec vault-0 -- sh -c "export VAULT_TOKEN='$RT'; vault kv put secret/sandbox-grants/$UID \
-  version=1 sandbox_uid=$UID user=arsalan scope=read-only ttl=3600 \
-  nonce=\$(od -An -N16 -tx1 /dev/urandom|tr -d ' \n') created=\$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+# (a) rewrite the consent grant with a fresh timestamp.
+#  ⚠️ Use the Vault HTTP API (or `vault kv put @file.json`) — do NOT use `vault kv put version=1
+#  ttl=3600`: the CLI serializes scalars as JSON *strings*, and ext-proc's grant parser only accepts
+#  *integer* version/ttl → otherwise the read leg fails with `grant_malformed: unsupported grant
+#  version 0`. The working root token is VAULT_ROOT_TOKEN in environment/.env.
+VT=$(grep -E '^VAULT_ROOT_TOKEN=' environment/.env | cut -d= -f2- | tr -d '"')
+NONCE=$(openssl rand -hex 16); NOW=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+curl -sk -H "X-Vault-Token: $VT" -H 'Content-Type: application/json' -X POST \
+  https://vault.apps.anaeem.na-launch.com/v1/secret/data/sandbox-grants/$UID \
+  -d "{\"data\":{\"version\":1,\"sandbox_uid\":\"$UID\",\"user\":\"arsalan\",\"scope\":\"read-only\",\"ttl\":3600,\"nonce\":\"$NONCE\",\"created\":\"$NOW\"}}" \
+  | python3 -m json.tool   # expect "data":{...} with no "errors"
 
 # (b) recreate the harness pod (if Completed) and wait for its SVID
 oc -n agent-sandbox delete pod e2e-harness --ignore-not-found
@@ -65,14 +71,22 @@ ida                      # TUI: sidebar = sandboxes; tabs = Approvals / Receipt 
   Vault/pfSense creds; SVID via `/spiffe-workload-api` socket.)
 - Forged/absent SVID → 401; expired grant → 403; out-of-scope tool → 403 (fail-closed).
 
-## Open follow-ups (non-blocking; tracked in memory project-e2e-handoff)
-1. **Verify the corrected ext-proc** (`grant-e2e-jit-sysroot`, digest `sha256:2a66aa0…`): it's
-   applied (system-roots TLS, no `SPIRE_TLS_INSECURE`) but the read leg wasn't re-verified under the
-   apiserver flapping. Check the boot log once stable: `oc -n mcp-gateway logs deploy/ext-proc-delegation | grep -i "SPIRE verifier"` — expect **"SPIRE verifier enabled"**. If instead "init failed/disabled" (system-roots didn't validate the LE cert), set `SPIRE_CA_FILE` to the ingress CA or temporarily add `SPIRE_TLS_INSECURE=true` to the overlay and re-apply. (Evidence says system-roots works: the route serves a Let's Encrypt cert, distroless ships the Mozilla CA, and Vault validates the same endpoint via system CAs.)
-2. **Gitea webhook HMAC:** webhook id=6 exists (pull_request events, `jit-approval` label) but has
-   **no HMAC secret** — set it to `vault kv get -field=secret secret/jit-approver/webhook-secret`
-   so jit-approver enforces the `X-Gitea-Signature` (the journey passed without it, but it should be enforced).
+## Status of prior follow-ups (verified 2026-06-18)
+1. ✅ **ext-proc finding-A CLOSED + verified.** Live ext-proc runs `grant-e2e-jit-sysroot`
+   (`sha256:2a66aa0…`) with `SPIRE_TLS_INSECURE` **removed**; boot log: *"SPIRE JWKS TLS anchored to
+   system root CAs (trusts LE reencrypt route)"* + *"SPIRE verifier enabled"*. System-roots validates
+   the Let's Encrypt route cert — TLS verification is real, not bypassed. The read leg returned 200
+   under this config.
+2. ✅ **Gitea webhook HMAC verified.** Hook id=6 has the secret matching
+   `secret/jit-approver/webhook-secret`; a live test delivery returned 200 and a bad-HMAC probe
+   returned 401 (signature enforced).
+
+## Open follow-ups (non-blocking)
 3. **Keycloak on-behalf exchange** returns 5xx (26.6.3 NPE) — non-fatal static fallback works;
    root-cause to restore true RFC8693 OBO.
-4. **Cleanup:** disabled demo rule `E2E-LEG5-JIT-ELEVATED-RULE` (id=48) — delete in the pfSense UI
-   (MCP `delete_firewall_rule` is broken: `AsyncClient.delete() json kwarg`).
+4. **sandbox-launcher Vault policy** lacks `create`/`update` on `secret/data/sandbox-grants/*` (only
+   deny), so the launcher can't write grants itself — extend the role in
+   `platform/vault/config/ext-proc.hcl` (per the comment in `sandbox-launcher/vault.py`).
+5. **Cleanup:** disabled demo rules `id=48` + `id=49` (`jit-e2e-test-leg5`) — delete in the pfSense
+   UI (MCP `delete_firewall_rule` is broken: `AsyncClient.delete() json kwarg`). JIT demo PRs #15,
+   #16 were merged to `main` (by design — the grant-file approval mechanism).
