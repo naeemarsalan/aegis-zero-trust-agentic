@@ -1,0 +1,59 @@
+# Egress allow-list for the Variant-B e2e-harness agent.
+#
+# The agent-sandbox namespace carries a namespace-wide `default-deny-all`
+# NetworkPolicy, so the harness pod can only reach what is explicitly allowed
+# here. Selected by the same label the SVID/ClusterSPIFFEID uses
+# (nvidia-ida/e2e-harness=true) so it tracks the harness pod template exactly.
+#
+# Egress rules:
+#   - DNS (53/udp+tcp)            — name resolution.
+#   - 443/tcp -> 0.0.0.0/0        — HTTPS LLM/MCP endpoints reachable over TLS
+#                                   (e.g. OpenRouter, the mcp-gateway Route).
+#   - 4000/tcp -> 172.16.2.251/32 — the homelab LiteLLM proxy that fronts the
+#                                   agent's LLM (model anthropic/claude-sonnet-4).
+#
+# NOTE: the LiteLLM endpoint is **plaintext HTTP** on :4000 (homelab convenience).
+# Because it is not :443 it is NOT covered by the broad HTTPS rule above and must
+# be allow-listed explicitly — without this rule the pod's LLM calls are silently
+# dropped by default-deny (curl returns HTTP 000 / exit 28 timeout). Any non-lab
+# deployment should put LiteLLM behind TLS and fold it into the 443 rule instead.
+#
+# In-cluster MCP egress (k8s-mcp-view :8080 / jit-gate-k8s :8000, mcp-gateway,
+# Vault, SPIRE, kube-apiserver) is granted by the other allow-egress-* policies
+# in this namespace, not here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-e2e-harness
+  namespace: agent-sandbox
+  labels:
+    nvidia-ida/purpose: e2e-variant-b
+    app.kubernetes.io/name: e2e-harness
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      nvidia-ida/e2e-harness: "true"
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS egress to anywhere (e.g. OpenRouter, mcp-gateway Route)
+    - ports:
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+    # Homelab LiteLLM proxy (plaintext HTTP) — scoped to the single host
+    - ports:
+        - port: 4000
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 172.16.2.251/32

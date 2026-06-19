@@ -13,6 +13,11 @@ kind: Kustomization
 # any time. The inference Secret (agent-harness-inference) is optional=true so the
 # Deployment schedules even when the Secret is absent.
 #
+# networkpolicy.yaml is the egress allow-list for the harness pod (DNS + HTTPS +
+# the homelab LiteLLM proxy on :4000). The agent's LLM creds live in the
+# agent-harness-inference Secret — created out-of-band, NOT in git; see
+# inference-secret.example.yaml for its shape and the create command.
+#
 # NOTE: not wired into ArgoCD auto-sync — the ClusterSPIFFEID sandbox-id label is
 # demo-specific and the Vault grant is applied manually. Apply on-demand:
 #   oc apply -k services/agent-sandbox/e2e-harness
@@ -23,3 +28,4 @@ resources:
   - rbac.yaml
   - configmap.yaml
   - deployment.yaml
+  - networkpolicy.yaml
