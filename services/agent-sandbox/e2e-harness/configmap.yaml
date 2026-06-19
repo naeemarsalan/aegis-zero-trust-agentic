@@ -77,18 +77,37 @@ data:
         "JIT_APPROVER_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080").rstrip("/")
     APPROVAL_CONSOLE_URL = os.environ.get(
         "APPROVAL_CONSOLE_URL", "https://approval-console.apps.anaeem.na-launch.com")
+    # Target namespace for the JIT escalation request. pfSense default 'agentic-mcp';
+    # the OpenShift-troubleshoot session sets JIT_TARGET_NAMESPACE=mcp-demo.
+    JIT_TARGET_NAMESPACE = os.environ.get("JIT_TARGET_NAMESPACE", "agentic-mcp")
+    # pfSense's ext-proc verifies the agent SVID (Bearer) for identity; the k8s-mcp server
+    # instead uses its OWN ServiceAccount and would (wrongly) try to use a presented Bearer
+    # as a cluster credential. So the OpenShift session sets MCP_SEND_SVID=false.
+    SEND_SVID = os.environ.get("MCP_SEND_SVID", "true").lower() == "true"
     _WRITE_TOOL_RESOURCES = {
+        # pfSense MCP (UC2)
         "create_firewall_rule_advanced": ("create", "networkpolicies"),
         "add_firewall_rule": ("create", "networkpolicies"),
+        # OpenShift / Kubernetes MCP — verb/resource the jit-approver maps back to the tool_scope
+        "resources_scale": ("update", "deployments"),
+        "resources_create_or_update": ("patch", "deployments"),
+        "pods_run": ("create", "pods"),
+        "pods_exec": ("create", "pods/exec"),
     }
 
 
     def _file_jit_request(client: httpx.Client, svid_sub: str, tool: str) -> str:
         verb, resource = _WRITE_TOOL_RESOURCES.get(tool, ("create", "networkpolicies"))
+        # agent_spiffe_id stays bound to the sandbox SVID — the capability grant is
+        # scoped to this workload identity. requester_sub is the human who launched the
+        # session (forwarded by the approval-console as AGENT_USER); fall back to the
+        # SVID subject when the console is running without an oauth2-proxy sidecar.
+        human_user = os.environ.get("AGENT_USER", "").strip()
+        requester_sub = human_user if human_user else svid_sub
         body = {
             "agent_spiffe_id": svid_sub,        # binds the issued JWT to THIS sandbox
-            "requester_sub": svid_sub,
-            "namespace": "agentic-mcp",
+            "requester_sub": requester_sub,
+            "namespace": JIT_TARGET_NAMESPACE,
             "verbs": [verb],
             "resources": [resource],
             "duration_minutes": 30,
@@ -137,10 +156,11 @@ data:
         """Run the MCP handshake + a single tools/call. Returns (phase, response):
         phase is 'initialize' only when the handshake itself fails, else 'tools/call'."""
         h = {
-            "Authorization": f"Bearer {svid}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        if SEND_SVID:
+            h["Authorization"] = f"Bearer {svid}"
         if jit_jwt:
             h["X-JIT-Session-JWT"] = jit_jwt
         r = client.post(url, headers=h, json={
@@ -232,8 +252,12 @@ data:
     def main() -> int:
         tool = sys.argv[1] if len(sys.argv) > 1 else "search_firewall_rules"
         args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-        base = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com").rstrip("/")
-        url = base + "/mcp"
+        # Read tools go to the read endpoint (e.g. k8s view-SA MCP), write tools to the
+        # write/gate endpoint (JIT-gated). pfSense uses one gateway for both (defaults).
+        _gw = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com")
+        read_url = os.environ.get("MCP_READ_URL", _gw).rstrip("/") + "/mcp"
+        write_url = os.environ.get("MCP_WRITE_URL", _gw).rstrip("/") + "/mcp"
+        url = write_url if tool in _WRITE_TOOL_RESOURCES else read_url
         jit_jwt = os.environ.get("JIT_SESSION_JWT", "")
 
         svid = _fetch_svid_with_retry()
@@ -262,7 +286,7 @@ data:
         # request (reusing an already-pending one rather than duplicating) -> WAIT for the
         # human to click Approve -> auto-retry the SAME call. The user never touches a
         # credential; their only action is approving.
-        if r.status_code == 403 and "grant_scope_denied" in r.text and not jit_jwt:
+        if r.status_code == 403 and not jit_jwt:
             svid_sub = c.get("sub", "")
             token = _reusable_token(client, _sandbox_uid_of(svid_sub), tool)
             if token:
