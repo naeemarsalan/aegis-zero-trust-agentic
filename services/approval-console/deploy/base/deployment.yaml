@@ -18,7 +18,7 @@ spec:
         app: approval-console
     spec:
       serviceAccountName: approval-console
-      automountServiceAccountToken: false
+      automountServiceAccountToken: true
       # Gitea (git.arsalan.io) resolves to a public IP outside the cluster; pin it
       # to the private homelab address so egress stays within 172.16.0.0/12 and the
       # NetworkPolicy allows the call. Mirrors jit-approver's hostAliases convention.
@@ -79,6 +79,66 @@ spec:
             capabilities:
               drop:
                 - ALL
+
+        # oauth2-proxy: Keycloak-OIDC authentication sidecar.
+        # All external traffic enters on :4180; oauth2-proxy validates the session
+        # with Keycloak (realm agentic) and proxies authenticated requests to the
+        # approval-console on 127.0.0.1:8090. The Route targets port 4180 (proxy).
+        # Credentials are sourced from Secret approval-console-oauth2 (created
+        # out-of-band; see oauth2-secret.example.yaml). No credentials in git.
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          args:
+            - --provider=oidc
+            - --oidc-issuer-url=https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+            - --client-id=approval-console-oauth2
+            - --redirect-url=https://approval-console.apps.anaeem.na-launch.com/oauth2/callback
+            - --upstream=http://127.0.0.1:8090
+            - --http-address=0.0.0.0:4180
+            - --email-domain=*
+            - --scope=openid email profile
+            - --set-xauthrequest=true
+            - --pass-user-headers=true
+            - --pass-access-token=false
+            - --cookie-secure=true
+            - --skip-provider-button=true
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: approval-console-oauth2
+                  key: client-secret
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: approval-console-oauth2
+                  key: cookie-secret
+          ports:
+            - containerPort: 4180
+              name: proxy
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
       securityContext:
         seccompProfile:
           type: RuntimeDefault

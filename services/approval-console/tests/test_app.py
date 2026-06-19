@@ -343,7 +343,7 @@ async def test_index_contains_troubleshoot_panel():
 def _make_fake_exec(lines: list[str], delay: float = 0.0):
     """Return a _do_k8s_exec replacement that injects synthetic lines."""
 
-    def _fake(sid: str, goal: str) -> None:  # noqa: ANN001
+    def _fake(sid: str, goal: str, actor: str = "anonymous") -> None:  # noqa: ANN001
         if delay:
             time.sleep(delay)
         from approval_console.app import _append_line  # local import avoids circular
@@ -375,7 +375,7 @@ async def test_create_session_uses_default_goal_when_goal_omitted(monkeypatch):
     """POST /api/sessions with no body should use Config.default_goal()."""
     captured: list[str] = []
 
-    def _capture(sid: str, goal: str) -> None:  # noqa: ANN001
+    def _capture(sid: str, goal: str, actor: str = "anonymous") -> None:  # noqa: ANN001
         captured.append(goal)
 
     monkeypatch.setattr(_app_module, "_do_k8s_exec", _capture)
@@ -487,7 +487,7 @@ async def test_list_sessions_reflects_created_sessions(monkeypatch):
 async def test_create_session_exec_error_marks_done(monkeypatch):
     """If _do_k8s_exec raises, the session must be marked done with an error line."""
 
-    def _boom(sid: str, goal: str) -> None:  # noqa: ANN001
+    def _boom(sid: str, goal: str, actor: str = "anonymous") -> None:  # noqa: ANN001
         raise RuntimeError("no pod found")
 
     monkeypatch.setattr(_app_module, "_do_k8s_exec", _boom)
@@ -516,3 +516,222 @@ async def test_create_session_exec_error_marks_done(monkeypatch):
     err_obj = json.loads(session["lines"][0])
     assert err_obj["type"] == "error"
     assert "no pod found" in err_obj["msg"]
+
+
+# ---------------------------------------------------------------------------
+# _actor helper — identity resolution from forwarded headers
+# ---------------------------------------------------------------------------
+
+
+async def test_actor_reads_preferred_username():
+    """_actor must return X-Forwarded-Preferred-Username when present."""
+    from approval_console.app import _actor as actor_fn
+
+    async with _ac() as c:
+        resp = await c.get(
+            "/api/whoami",
+            headers={"X-Forwarded-Preferred-Username": "arsalan"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"user": "arsalan"}
+
+
+async def test_actor_falls_back_to_email():
+    """_actor must fall back to X-Forwarded-Email when preferred-username is absent."""
+    async with _ac() as c:
+        resp = await c.get(
+            "/api/whoami",
+            headers={"X-Forwarded-Email": "arsalan@example.com"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"user": "arsalan@example.com"}
+
+
+async def test_actor_falls_back_to_user_header():
+    """_actor must fall back to X-Forwarded-User when the first two are absent."""
+    async with _ac() as c:
+        resp = await c.get(
+            "/api/whoami",
+            headers={"X-Forwarded-User": "uid-9999"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"user": "uid-9999"}
+
+
+async def test_actor_anonymous_when_no_headers():
+    """_actor must return 'anonymous' when no proxy headers are present."""
+    async with _ac() as c:
+        resp = await c.get("/api/whoami")
+    assert resp.status_code == 200
+    assert resp.json() == {"user": "anonymous"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/whoami — direct endpoint tests
+# ---------------------------------------------------------------------------
+
+
+async def test_whoami_with_username_header():
+    async with _ac() as c:
+        resp = await c.get(
+            "/api/whoami",
+            headers={"X-Forwarded-Preferred-Username": "operator-jane"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["user"] == "operator-jane"
+
+
+async def test_whoami_anonymous_fallback():
+    async with _ac() as c:
+        resp = await c.get("/api/whoami")
+    assert resp.status_code == 200
+    assert resp.json()["user"] == "anonymous"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions — AGENT_USER threaded into the exec command
+# ---------------------------------------------------------------------------
+
+
+async def test_create_session_threads_agent_user_into_cmd(monkeypatch):
+    """When X-Forwarded-Preferred-Username is set, AGENT_USER=<actor> must appear
+    in the command string received by _do_k8s_exec."""
+    captured_calls: list[dict] = []
+
+    def _capture(sid: str, goal: str, actor: str = "anonymous") -> None:
+        captured_calls.append({"sid": sid, "goal": goal, "actor": actor})
+
+    monkeypatch.setattr(_app_module, "_do_k8s_exec", _capture)
+
+    async with _ac() as c:
+        resp = await c.post(
+            "/api/sessions",
+            json={"goal": "scale broken-app"},
+            headers={"X-Forwarded-Preferred-Username": "arsalan"},
+        )
+
+    assert resp.status_code == 202
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    # _do_k8s_exec must receive the authenticated actor, not "anonymous"
+    assert call["actor"] == "arsalan"
+    assert call["goal"] == "scale broken-app"
+
+
+async def test_create_session_agent_user_anonymous_when_no_header(monkeypatch):
+    """Without forwarded headers, AGENT_USER defaults to 'anonymous'."""
+    captured_calls: list[dict] = []
+
+    def _capture(sid: str, goal: str, actor: str = "anonymous") -> None:
+        captured_calls.append({"actor": actor})
+
+    monkeypatch.setattr(_app_module, "_do_k8s_exec", _capture)
+
+    async with _ac() as c:
+        resp = await c.post("/api/sessions", json={"goal": "test"})
+
+    assert resp.status_code == 202
+    assert captured_calls[0]["actor"] == "anonymous"
+
+
+async def test_create_session_owner_stored_on_session(monkeypatch):
+    """The session dict must carry 'owner' matching the resolved actor."""
+    monkeypatch.setattr(_app_module, "_do_k8s_exec", lambda sid, goal, actor="anonymous": None)
+
+    async with _ac() as c:
+        resp = await c.post(
+            "/api/sessions",
+            json={"goal": "owner test"},
+            headers={"X-Forwarded-Email": "jane@example.com"},
+        )
+
+    assert resp.status_code == 202
+    sid = resp.json()["session_id"]
+
+    with _app_module._SESSIONS_LOCK:
+        session = _app_module._SESSIONS[sid]
+
+    assert session["owner"] == "jane@example.com"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/approve/{id} — approver identity in audit
+# ---------------------------------------------------------------------------
+
+
+async def test_approve_audits_real_approver(monkeypatch):
+    """POST /api/approve must log the approver from forwarded headers, not a
+    hardcoded literal.  We verify this indirectly: if the handler calls _actor()
+    correctly, the correct actor string is threaded through.  We verify by
+    intercepting the _audit call."""
+    audit_records: list[dict] = []
+
+    original_audit = _app_module._audit
+
+    def _capture_audit(event: str, actor: str, outcome: str, latency_ms: float, **kw):
+        audit_records.append({"event": event, "actor": actor, "outcome": outcome})
+        # Don't call original — it just logs; we don't need the side-effect here.
+
+    monkeypatch.setattr(_app_module, "_audit", _capture_audit)
+
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(
+            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
+        ).mock(return_value=Response(200, json={}))
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(
+                200,
+                json={
+                    "id": SESSION_ID,
+                    "state": "issued",
+                    "pr_url": PR_URL,
+                    "expires_at": "2026-06-19T12:00:00Z",
+                },
+            )
+        )
+        async with _ac() as c:
+            resp = await c.post(
+                f"/api/approve/{SESSION_ID}",
+                headers={"X-Forwarded-Preferred-Username": "approver-bob"},
+            )
+
+    assert resp.status_code == 200
+    # Find the allow audit record for jit.approve
+    approve_records = [r for r in audit_records if r["event"] == "jit.approve"]
+    assert approve_records, "expected at least one jit.approve audit record"
+    final = approve_records[-1]
+    assert final["outcome"] == "allow"
+    assert final["actor"] == "approver-bob", (
+        f"approver actor must be 'approver-bob', got {final['actor']!r}"
+    )
+
+
+async def test_approve_approver_anonymous_without_header(monkeypatch):
+    """Without forwarded headers, approve audit actor must be 'anonymous'."""
+    audit_records: list[dict] = []
+
+    def _capture_audit(event: str, actor: str, outcome: str, latency_ms: float, **kw):
+        audit_records.append({"event": event, "actor": actor, "outcome": outcome})
+
+    monkeypatch.setattr(_app_module, "_audit", _capture_audit)
+
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(
+            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
+        ).mock(return_value=Response(200, json={}))
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(200, json={"state": "issued", "expires_at": None})
+        )
+        async with _ac() as c:
+            resp = await c.post(f"/api/approve/{SESSION_ID}")
+
+    assert resp.status_code == 200
+    approve_records = [r for r in audit_records if r["event"] == "jit.approve" and r["outcome"] == "allow"]
+    assert approve_records
+    assert approve_records[-1]["actor"] == "anonymous"

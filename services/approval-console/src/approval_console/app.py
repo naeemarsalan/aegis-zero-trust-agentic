@@ -27,7 +27,7 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from approval_console.config import Config
@@ -52,7 +52,7 @@ _SESSIONS_LOCK = threading.Lock()
 _SESSION_COUNTER = 0
 
 
-def _new_session(goal: str) -> str:
+def _new_session(goal: str, owner: str = "anonymous") -> str:
     """Allocate a new session entry; return its ID."""
     global _SESSION_COUNTER  # noqa: PLW0603
     sid = uuid.uuid4().hex
@@ -63,6 +63,7 @@ def _new_session(goal: str) -> str:
             "done": False,
             "goal": goal,
             "seq": _SESSION_COUNTER,
+            "owner": owner,
         }
     return sid
 
@@ -82,14 +83,14 @@ def _get_session(sid: str) -> dict[str, Any] | None:
         return _SESSIONS.get(sid)
 
 
-def _launch_agent_thread(sid: str, goal: str) -> None:
+def _launch_agent_thread(sid: str, goal: str, actor: str = "anonymous") -> None:
     """Background daemon thread: exec the agent in the harness pod and pump its stdout."""
 
     def _run() -> None:
         try:
             # Import kubernetes here so unit tests can monkeypatch _do_k8s_exec
             # without needing a real cluster at import time.
-            _do_k8s_exec(sid, goal)
+            _do_k8s_exec(sid, goal, actor)
         except Exception as exc:  # noqa: BLE001
             logger.error("agent_session.launch_error", extra={"sid": sid, "error": str(exc)})
             _append_line(sid, json.dumps({"type": "error", "msg": str(exc)}))
@@ -100,11 +101,16 @@ def _launch_agent_thread(sid: str, goal: str) -> None:
     t.start()
 
 
-def _do_k8s_exec(sid: str, goal: str) -> None:
+def _do_k8s_exec(sid: str, goal: str, actor: str = "anonymous") -> None:
     """Perform the actual Kubernetes pod exec and pump lines into the session store.
 
     Extracted as a standalone function so tests can monkeypatch it without
     touching the full threading machinery.
+
+    ``actor`` is the authenticated human identity resolved by _actor() from the
+    oauth2-proxy headers. It is forwarded into the agent's execution environment
+    as AGENT_USER so that mcp-call can file the JIT request with the requester's
+    real identity rather than the sandbox SVID.
     """
     from kubernetes import client as k8sclient  # type: ignore[import-untyped]
     from kubernetes import config as k8sconfig  # type: ignore[import-untyped]
@@ -126,6 +132,9 @@ def _do_k8s_exec(sid: str, goal: str) -> None:
     pod_name = pods.items[-1].metadata.name
 
     goal_shell = shlex.quote(goal)
+    # shlex.quote the actor so a rogue username (containing spaces or shell
+    # metacharacters) cannot break the sh -c string.
+    actor_shell = shlex.quote(actor)
     cmd = (
         "cd /app && PYTHONPATH=/app/src "
         f"MCP_READ_URL={Config.k8s_mcp_read_url()} "
@@ -134,6 +143,7 @@ def _do_k8s_exec(sid: str, goal: str) -> None:
         "MCP_SEND_SVID=false "
         f"AGENT_ALLOWED_TOOLS={Config.agent_allowed_tools()} "
         f"AGENT_MAX_TURNS={Config.agent_max_turns()} "
+        f"AGENT_USER={actor_shell} "
         f"AGENT_GOAL={goal_shell} "
         "python3 -m agent_harness.agent_runner"
     )
@@ -194,6 +204,29 @@ def _audit(event: str, actor: str, outcome: str, latency_ms: float, **extra: Any
     }
     record.update(extra)
     logger.info(json.dumps(record))
+
+
+def _actor(request: Request) -> str:
+    """Resolve the authenticated human's identity from oauth2-proxy injected headers.
+
+    Resolution order (first non-empty wins):
+      X-Forwarded-Preferred-Username  — OIDC preferred_username claim
+      X-Forwarded-Email               — OIDC email claim
+      X-Forwarded-User                — oauth2-proxy fallback (usually same as username)
+
+    FastAPI's Request.headers dict is case-insensitive. When none of the headers
+    are present (local development / no proxy) the function returns "anonymous" so
+    tests and non-proxied runs continue to work without any authentication sidecar.
+    """
+    for header in (
+        "x-forwarded-preferred-username",
+        "x-forwarded-email",
+        "x-forwarded-user",
+    ):
+        value = request.headers.get(header, "").strip()
+        if value:
+            return value
+    return "anonymous"
 
 
 def _jit_headers() -> dict[str, str]:
@@ -347,6 +380,14 @@ _HTML = """\
   }
   .empty-row td { color: #555; text-align: center; padding: 2rem; }
   #refresh-counter { color: #555; }
+  /* --- Identity banner (oauth2-proxy) --- */
+  #identity-bar {
+    font-size: 0.8rem;
+    color: #888;
+    margin-bottom: 1rem;
+  }
+  #identity-bar a { color: #5bc8f5; text-decoration: none; margin-left: 0.75rem; }
+  #identity-bar a:hover { text-decoration: underline; }
   /* --- Troubleshoot panel --- */
   .ts-panel {
     background: #13161f;
@@ -415,8 +456,9 @@ _HTML = """\
 </head>
 <body>
 <h1>JIT Approval Console</h1>
+<div id="identity-bar">Loading identity&hellip;</div>
 <p class="subtitle">
-  Zero-trust PoC &mdash; approve by merging the Gitea PR. No auth on this console (PoC caveat; behind cluster route).
+  Zero-trust PoC &mdash; approve by merging the Gitea PR.
 </p>
 
 <!-- ===== Troubleshoot panel ===== -->
@@ -472,6 +514,24 @@ _HTML = """\
 </div>
 
 <script>
+// ---- Identity banner ----
+(async function() {
+  const bar = document.getElementById('identity-bar');
+  try {
+    const r = await fetch('/api/whoami');
+    const d = await r.json();
+    const user = d.user || 'anonymous';
+    if (user === 'anonymous') {
+      bar.innerHTML = 'Signed in as <b>anonymous</b> (no auth proxy detected)';
+    } else {
+      bar.innerHTML = 'Signed in as <b>' + user + '</b>'
+        + '<a href="/oauth2/sign_out">Sign out</a>';
+    }
+  } catch (e) {
+    bar.textContent = 'Could not resolve identity.';
+  }
+})();
+
 // ---- Troubleshoot session ----
 let _tsSource = null;
 
@@ -861,7 +921,7 @@ async def get_status(session_id: str) -> JSONResponse:
 
 
 @app.post("/api/approve/{session_id}")
-async def approve(session_id: str) -> JSONResponse:
+async def approve(session_id: str, request: Request) -> JSONResponse:
     """Approve a JIT session by merging its Gitea PR.
 
     Flow:
@@ -885,6 +945,8 @@ async def approve(session_id: str) -> JSONResponse:
     """
     t0 = time.monotonic()
     args_hash = _hash_args({"session_id": session_id})
+    # Capture who is performing the approval — separation of duties from the requester.
+    approver = _actor(request)
 
     # Step 1: fetch session detail to get pr_url
     jit_url = Config.jit_approver_url()
@@ -896,13 +958,13 @@ async def approve(session_id: str) -> JSONResponse:
             )
     except httpx.RequestError as exc:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="error",
+        _audit("jit.approve", actor=approver, outcome="error",
                latency_ms=latency, tool_args_hash=args_hash, error=str(exc))
         raise HTTPException(status_code=502, detail=f"jit-approver unreachable: {exc}") from exc
 
     if not detail_resp.is_success:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="deny",
+        _audit("jit.approve", actor=approver, outcome="deny",
                latency_ms=latency, tool_args_hash=args_hash,
                error=f"detail returned {detail_resp.status_code}")
         raise HTTPException(
@@ -916,7 +978,7 @@ async def approve(session_id: str) -> JSONResponse:
 
     if not pr_url:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="deny",
+        _audit("jit.approve", actor=approver, outcome="deny",
                latency_ms=latency, tool_args_hash=args_hash, error="no pr_url on session")
         raise HTTPException(
             status_code=422,
@@ -925,7 +987,7 @@ async def approve(session_id: str) -> JSONResponse:
 
     if state not in {"pending", "approved"}:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="deny",
+        _audit("jit.approve", actor=approver, outcome="deny",
                latency_ms=latency, tool_args_hash=args_hash,
                error=f"session not approvable (state={state})")
         raise HTTPException(
@@ -938,7 +1000,7 @@ async def approve(session_id: str) -> JSONResponse:
         pr_number = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
     except (ValueError, IndexError) as exc:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="error",
+        _audit("jit.approve", actor=approver, outcome="error",
                latency_ms=latency, tool_args_hash=args_hash,
                error=f"cannot parse PR number from {pr_url!r}")
         raise HTTPException(
@@ -968,13 +1030,13 @@ async def approve(session_id: str) -> JSONResponse:
             )
     except httpx.RequestError as exc:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="error",
+        _audit("jit.approve", actor=approver, outcome="error",
                latency_ms=latency, tool_args_hash=args_hash, error=str(exc))
         raise HTTPException(status_code=502, detail=f"Gitea unreachable: {exc}") from exc
 
     if not merge_resp.is_success:
         latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor="console-operator", outcome="error",
+        _audit("jit.approve", actor=approver, outcome="error",
                latency_ms=latency, tool_args_hash=args_hash,
                error=f"Gitea merge returned {merge_resp.status_code}: {merge_resp.text[:200]}")
         raise HTTPException(
@@ -1003,7 +1065,7 @@ async def approve(session_id: str) -> JSONResponse:
         pass
 
     latency = (time.monotonic() - t0) * 1000
-    _audit("jit.approve", actor="console-operator", outcome="allow",
+    _audit("jit.approve", actor=approver, outcome="allow",
            latency_ms=latency, tool_args_hash=args_hash,
            pr_number=pr_number, session_state=session_state)
 
@@ -1026,7 +1088,7 @@ async def approve(session_id: str) -> JSONResponse:
 
 
 @app.post("/api/sessions")
-async def create_session(body: dict[str, Any] | None = None) -> JSONResponse:
+async def create_session(request: Request, body: dict[str, Any] | None = None) -> JSONResponse:
     """Launch the Claude agent in the harness pod and return a streaming session ID.
 
     The agent is exec'd inside the running e2e-harness pod (namespace agent-sandbox,
@@ -1035,6 +1097,10 @@ async def create_session(body: dict[str, Any] | None = None) -> JSONResponse:
 
     Body (optional JSON): {"goal": "<natural-language goal>"}
     If goal is omitted the default troubleshoot goal from Config is used.
+
+    The authenticated human identity (from oauth2-proxy headers) is forwarded into
+    the agent execution environment as AGENT_USER so mcp-call can file the JIT
+    request under the requester's real identity rather than the sandbox SVID.
     """
     goal = ""
     if body and isinstance(body.get("goal"), str):
@@ -1042,18 +1108,37 @@ async def create_session(body: dict[str, Any] | None = None) -> JSONResponse:
     if not goal:
         goal = Config.default_goal()
 
-    sid = _new_session(goal)
-    _launch_agent_thread(sid, goal)
+    actor = _actor(request)
+    sid = _new_session(goal, owner=actor)
+    _launch_agent_thread(sid, goal, actor=actor)
 
     _audit(
         "agent.session_created",
-        actor="console-operator",
+        actor=actor,
         outcome="allow",
         latency_ms=0,
         tool_args_hash=_hash_args({"goal": goal}),
         session_id=sid,
     )
     return JSONResponse(content={"session_id": sid}, status_code=202)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/whoami — return the authenticated user's identity
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/whoami")
+async def whoami(request: Request) -> JSONResponse:
+    """Return the authenticated human's identity as resolved from oauth2-proxy headers.
+
+    The response is intentionally minimal — it is consumed by the browser's
+    identity banner JS and has no security gate function (that is the proxy's job).
+
+    Returns: {"user": "<username>"}  where username is "anonymous" when no proxy
+    headers are present (local development / no sidecar).
+    """
+    return JSONResponse(content={"user": _actor(request)})
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,11 @@
 # OpenShift Route — exposes the approval-console UI for browser access.
 #
-# PoC CAVEAT: no auth on the console (no oauth-proxy, no mTLS). It is behind
-# the OpenShift router which requires HTTPS, but the page itself is open to
-# anyone who can reach the cluster. Acceptable for a homelab PoC; harden with
-# oauth-proxy or an ingress policy before any real-world exposure.
+# Traffic flow: browser -> Route (edge TLS termination) -> Service:4180 ->
+#   oauth2-proxy sidecar -> Keycloak OIDC auth check ->
+#   http://127.0.0.1:8090 (approval-console container, pod-local loopback).
+#
+# The Route targets port "proxy" (4180) on the Service, not the app port 8090.
+# Unauthenticated requests are redirected to Keycloak realm "agentic" for login.
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -14,14 +16,14 @@ metadata:
     app.kubernetes.io/name: approval-console
     app.kubernetes.io/part-of: nvidia-ida
   annotations:
-    nvidia-ida/security: "poc-unauthenticated-ui — add oauth-proxy before real exposure"
+    nvidia-ida/security: "keycloak-oidc-protected — oauth2-proxy sidecar enforces auth"
 spec:
   host: approval-console.apps.anaeem.na-launch.com
   to:
     kind: Service
     name: approval-console
   port:
-    targetPort: http
+    targetPort: proxy
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect

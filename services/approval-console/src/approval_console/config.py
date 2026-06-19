@@ -136,6 +136,25 @@ class Config:
         """Maximum number of agent turns (string — injected as env var)."""
         return _optional("AGENT_MAX_TURNS", "20")
 
+    # ------------------------------------------------------------------
+    # oauth2-proxy / identity-forwarding header names
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def fwd_username_header() -> str:
+        """HTTP header injected by oauth2-proxy carrying the OIDC preferred_username."""
+        return _optional("FWD_USERNAME_HEADER", "x-forwarded-preferred-username")
+
+    @staticmethod
+    def fwd_email_header() -> str:
+        """HTTP header injected by oauth2-proxy carrying the OIDC email claim."""
+        return _optional("FWD_EMAIL_HEADER", "x-forwarded-email")
+
+    @staticmethod
+    def fwd_user_header() -> str:
+        """HTTP header injected by oauth2-proxy as a generic user identifier."""
+        return _optional("FWD_USER_HEADER", "x-forwarded-user")
+
     @staticmethod
     def default_goal() -> str:
         """Default troubleshooting goal injected into the browser textarea.

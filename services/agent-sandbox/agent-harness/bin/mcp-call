@@ -93,9 +93,15 @@ _WRITE_TOOL_RESOURCES = {
 
 def _file_jit_request(client: httpx.Client, svid_sub: str, tool: str) -> str:
     verb, resource = _WRITE_TOOL_RESOURCES.get(tool, ("create", "networkpolicies"))
+    # agent_spiffe_id stays bound to the sandbox SVID — the capability grant is
+    # scoped to this workload identity. requester_sub is the human who launched the
+    # session (forwarded by the approval-console as AGENT_USER); fall back to the
+    # SVID subject when the console is running without an oauth2-proxy sidecar.
+    human_user = os.environ.get("AGENT_USER", "").strip()
+    requester_sub = human_user if human_user else svid_sub
     body = {
         "agent_spiffe_id": svid_sub,        # binds the issued JWT to THIS sandbox
-        "requester_sub": svid_sub,
+        "requester_sub": requester_sub,
         "namespace": JIT_TARGET_NAMESPACE,
         "verbs": [verb],
         "resources": [resource],

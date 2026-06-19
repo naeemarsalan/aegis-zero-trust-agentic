@@ -11,6 +11,16 @@ spec:
   selector:
     app: approval-console
   ports:
+    # proxy: oauth2-proxy sidecar — this is the port targeted by the Route.
+    # External traffic hits oauth2-proxy first; authenticated requests are
+    # forwarded internally to 127.0.0.1:8090 (the approval-console container).
+    - name: proxy
+      port: 4180
+      targetPort: 4180
+      protocol: TCP
+    # http: approval-console app port — loopback-only (pod-local).
+    # The Service exposes it for in-namespace health checks / debugging only;
+    # the Route does NOT point here.
     - name: http
       port: 8090
       targetPort: 8090
