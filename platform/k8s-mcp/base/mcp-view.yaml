@@ -1,0 +1,36 @@
+# READ instance: view SA + --read-only (defense in depth). Reads go DIRECT here (no gate).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-mcp-view
+  namespace: k8s-mcp
+  labels: {app: k8s-mcp-view}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: k8s-mcp-view}}
+  template:
+    metadata: {labels: {app: k8s-mcp-view}}
+    spec:
+      serviceAccountName: k8s-mcp-view
+      automountServiceAccountToken: true
+      containers:
+        - name: mcp
+          image: quay.io/containers/kubernetes_mcp_server@sha256:4b2359fac57d38f07643065f346d336a0b3169871786d4d3a543c6ceada611c4
+          args: ["--port","8080","--read-only","--toolsets","core,config","--log-level","1"]
+          ports: [{containerPort: 8080}]
+          readinessProbe: {tcpSocket: {port: 8080}, initialDelaySeconds: 3, periodSeconds: 5}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-mcp-view
+  namespace: k8s-mcp
+spec:
+  selector: {app: k8s-mcp-view}
+  ports: [{port: 8080, targetPort: 8080}]

@@ -20,7 +20,9 @@ metadata:
 policies:
   - ../../authz/base/no-unauthenticated-calls.yaml
   - ../../authz/base/tool-allowlist-mcp-users.yaml
-  - ../../authz/base/dangerous-tools-admins-only.yaml
+  # dangerous-tools-admins-only.yaml REMOVED: gate moved in-process to ext-proc (server.go
+  # handleSandboxAgentPath). The Kyverno policy was a redundant second gate whose NetworkPolicy
+  # gap caused every elevated write to 403. The CEL mcp.Parse lib (v0.3.0) was also missing.
   - ../../authz/base/deny-restricted-group.yaml
 resources:
   - resources/no-auth-request.yaml
@@ -28,10 +30,10 @@ resources:
   - resources/well-known-request.yaml
   - resources/mcp-users-get-firewall-rules.yaml
   - resources/mcp-users-add-firewall-rule.yaml
-  - resources/mcp-admins-add-firewall-rule-no-jit.yaml
   - resources/mcp-admins-add-firewall-rule-with-jit.yaml
-  - resources/mcp-admins-add-firewall-rule-invalid-jit-jwt.yaml
-  - resources/mcp-admins-get-firewall-rules.yaml
+  # mcp-admins-add-firewall-rule-no-jit, mcp-admins-add-firewall-rule-invalid-jit-jwt,
+  # and mcp-admins-get-firewall-rules were only exercised by dangerous-tools-admins-only
+  # (now removed). Left on-disk as historical fixtures; removed from the active test list.
   - resources/restricted-group-get-rules.yaml
   - resources/no-group-get-rules.yaml
 results:
@@ -80,27 +82,6 @@ results:
   # (mcp-admins is not subject to this policy)
   - policy: tool-allowlist-mcp-users
     resource: mcp-admins-add-firewall-rule-with-jit
-    result: pass
-
-  # dangerous-tools-admins-only: mcp-admins + add_firewall_rule + valid JIT JWT → allowed
-  - policy: dangerous-tools-admins-only
-    resource: mcp-admins-add-firewall-rule-with-jit
-    result: pass
-
-  # dangerous-tools-admins-only: mcp-admins + add_firewall_rule + NO JIT header → denied
-  - policy: dangerous-tools-admins-only
-    resource: mcp-admins-add-firewall-rule-no-jit
-    result: fail
-
-  # C3 regression: mcp-admins + add_firewall_rule + PRESENT-BUT-INVALID JIT JWT → denied
-  # A non-empty X-JIT-Session-JWT with a bad signature must not clear the gate.
-  - policy: dangerous-tools-admins-only
-    resource: mcp-admins-add-firewall-rule-invalid-jit-jwt
-    result: fail
-
-  # dangerous-tools-admins-only: mcp-admins + get_firewall_rules (read) → allowed
-  - policy: dangerous-tools-admins-only
-    resource: mcp-admins-get-firewall-rules
     result: pass
 
   # deny-restricted-group: restricted group calling any tool → denied 403

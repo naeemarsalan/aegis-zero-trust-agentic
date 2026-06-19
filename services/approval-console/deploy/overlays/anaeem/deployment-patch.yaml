@@ -1,0 +1,38 @@
+# Overlay-specific tweaks for the anaeem SNO cluster.
+#
+# GITEA_TOKEN delivery (PoC): a plain k8s Secret `approval-console-gitea` (key
+# `token`) injected as the GITEA_TOKEN env. The console's config.py reads
+# GITEA_TOKEN from env (preferred) with a /vault/secrets file fallback. We do NOT
+# use the Vault Agent Injector here because the approval-console ServiceAccount is
+# not bound to a Vault k8s-auth role (the jit-approver role only authorizes the
+# jit-approver SA). A dedicated Vault role for this SA is a hardening follow-up.
+#
+# Create the secret once:
+#   oc -n mcp-gateway create secret generic approval-console-gitea \
+#     --from-literal=token=<GITEA_TOKEN>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approval-console
+  namespace: mcp-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: approval-console
+          env:
+            - name: JIT_APPROVER_URL
+              value: "http://jit-approver.mcp-gateway.svc.cluster.local:8080"
+            - name: GITEA_URL
+              value: "https://git.arsalan.io"
+            - name: GITEA_REPO
+              value: "anaeem/nvidia-ida"
+            - name: GITEA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: approval-console-gitea
+                  key: token
+            - name: POLL_INTERVAL_SECONDS
+              value: "5"
+            - name: PYTHONUNBUFFERED
+              value: "1"

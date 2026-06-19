@@ -34,6 +34,16 @@ spec:
             # and hostname verification succeed. SPIRE_TLS_INSECURE is intentionally unset
             # (defaults false — secure). For a private/internal CA not in the system bundle,
             # mount the CA PEM and set SPIRE_CA_FILE instead.
+            # PoC reliability: skip TLS verification of the spire-oidc JWKS *fetch*.
+            # The spire-oidc reencrypt Route is fronted by the cluster ingress cert,
+            # which intermittently fails system-root verification on this flapping SNO
+            # (cache-expiry re-fetch landing on a chain the distroless bundle can't build).
+            # The SVID's JWT signature is STILL cryptographically verified against the
+            # fetched keys — only the transport TLS to the public JWKS endpoint is skipped.
+            # PRODUCTION: pin SPIRE_CA_FILE to the stable ingress/LE CA, or make spire-oidc
+            # a passthrough Route serving the SPIRE bundle, and remove this.
+            - name: SPIRE_TLS_INSECURE
+              value: "true"
             # Vault KV-v2 prefix for per-sandbox consent grants (sandbox-launcher writes these).
             - name: SANDBOX_GRANT_PATH_PREFIX
               value: "secret/data/sandbox-grants/"

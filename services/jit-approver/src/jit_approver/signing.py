@@ -162,9 +162,19 @@ _MUTATING_VERBS = frozenset({"create", "update", "patch"})
 
 # resource token (substring) -> dangerous MCP tool names that the gate accepts.
 _RESOURCE_TOOL_MAP: dict[str, list[str]] = {
+    # pfSense MCP (UC2)
     "firewall": ["create_firewall_rule_advanced", "add_firewall_rule"],
     "networkpolicy": ["create_firewall_rule_advanced", "add_firewall_rule"],
     "networkpolicies": ["create_firewall_rule_advanced", "add_firewall_rule"],
+    # OpenShift / Kubernetes MCP (containers/kubernetes-mcp-server tool names).
+    # Substring match: "deployment" covers deployments; "pods/exec" gates exec.
+    "deployment": ["resources_create_or_update", "resources_scale"],
+    "scale": ["resources_scale"],
+    "pods/exec": ["pods_exec"],
+    "pod": ["resources_create_or_update", "pods_run"],
+    "configmap": ["resources_create_or_update"],
+    "service": ["resources_create_or_update"],
+    "route": ["resources_create_or_update"],
 }
 
 

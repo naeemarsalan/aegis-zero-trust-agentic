@@ -17,6 +17,10 @@ var credentialHeadersToStrip = []string{
 	"set-cookie",
 	"x-auth-token",
 	"x-session-token",
+	// The agent's own JIT capability token. Stripped from upstream responses so a
+	// downstream that echoes request headers cannot leak it for replay within its
+	// remaining TTL (security review 2026-06-18, HIGH finding).
+	"x-jit-session-jwt",
 }
 
 // BuildRequestMutation returns a CommonResponse that sets the Authorization

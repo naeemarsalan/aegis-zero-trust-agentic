@@ -5,13 +5,14 @@ resources:
   - ../../base
 
 images:
-  # grant-e2e-jit-sysroot = grant-e2e-jit-tlsverify PLUS the SPIRE-JWKS TLS anchor fix:
-  # default case now uses system root CAs (RootCAs: nil) instead of the SPIFFE X.509 bundle,
-  # which correctly validates the LE wildcard cert on the reencrypt Route. Pinned by DIGEST for
-  # reproducibility + to close the mutable-tag provenance gap.
-  # tag for humans: grant-e2e-jit-sysroot
+  # grant-e2e-jit-split = grant-e2e-jit-sysroot PLUS the two-per-user-token split identity
+  # (ADR-0012): ext-proc injects the per-user WRITE token (mcp-tokens-write) on a valid JIT
+  # elevation, the per-user READ token otherwise; fail-closed if the write token is absent.
+  # Also strips x-jit-session-jwt from upstream responses (security review 2026-06-18).
+  # Retains the SPIRE-JWKS system-root TLS anchor. Pinned by DIGEST for reproducibility.
+  # tag for humans: grant-e2e-jit-split
   - name: oci.arsalan.io/nvidia-ida/ext-proc-delegation
-    digest: sha256:2a66aa0aa647631a2264f245090b9908a334a30c5f427f1fe03aaf43e95e2aa6
+    digest: sha256:e2b7d0ebd7b862c632f84d0109ec3fb107904ab3d330259a8f7771c1e423e22b
 
 patches:
   # Activate the SPIRE delegated-credential path (grant backend) — see deployment-patch.yaml.

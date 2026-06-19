@@ -116,34 +116,6 @@ spec:
           protocol: TCP
 
 ---
-# Allow egress to jit-approver in mcp-gateway: the dangerous-tool authz policy fetches the
-# jit-approver JWKS at http://jit-approver.mcp-gateway.svc:8080/jwks to verify the signed
-# X-JIT-Session-JWT capability token. Without this the /jwks fetch is dropped and the gate
-# fails closed — denying every dangerous tool even with a valid approved session.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-egress-jit-approver-jwks
-  namespace: kyverno
-  labels:
-    app.kubernetes.io/part-of: nvidia-ida
-    app.kubernetes.io/component: networkpolicies
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: kyverno-authz-server
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: mcp-gateway
-      ports:
-        - port: 8080
-          protocol: TCP   # jit-approver /jwks
-
----
 # Allow egress to openshift-dns
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

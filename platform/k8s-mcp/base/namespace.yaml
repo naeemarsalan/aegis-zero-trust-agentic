@@ -1,0 +1,17 @@
+# k8s-mcp: the OpenShift MCP server pair (view/edit) + its JIT gate.
+# mcp-demo: the target namespace the agent troubleshoots (RoleBinding-scoped).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-mcp
+  labels:
+    kubernetes.io/metadata.name: k8s-mcp
+    app.kubernetes.io/part-of: nvidia-ida
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-demo
+  labels:
+    kubernetes.io/metadata.name: mcp-demo
+    app.kubernetes.io/part-of: nvidia-ida

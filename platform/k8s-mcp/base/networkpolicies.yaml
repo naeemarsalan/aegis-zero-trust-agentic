@@ -1,0 +1,52 @@
+# A default-deny NP is auto-injected into new namespaces (Kyverno guardrail), so the
+# MCP server needs explicit egress to DNS + the kube-apiserver to function, and the
+# agent-sandbox needs ingress to the VIEW instance for reads.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-egress-dns, namespace: k8s-mcp}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}}]
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-egress-apiserver, namespace: k8s-mcp}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 172.30.0.1/32}}]
+      ports: [{protocol: TCP, port: 443}]
+    - to: [{ipBlock: {cidr: 0.0.0.0/0}}]
+      ports: [{protocol: TCP, port: 6443}]
+---
+# reads: agent-sandbox -> k8s-mcp-view:8080 (direct, no gate)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-view-from-agent-sandbox, namespace: k8s-mcp}
+spec:
+  podSelector: {matchLabels: {app: k8s-mcp-view}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: agent-sandbox}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+# the agent side: agent-sandbox egress -> k8s-mcp (8080 view reads, 8000 jit-gate writes)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-egress-to-k8s-mcp, namespace: agent-sandbox}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: k8s-mcp}}}]
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8000}

@@ -1,0 +1,60 @@
+# jit-gate — JIT human-approval enforcement point for the Kagenti path.
+# The ConfigMap holding gate.py is generated at apply time:
+#   oc -n kagenti-test create configmap jit-gate-src \
+#     --from-file=gate.py=services/jit-gate/gate.py --dry-run=client -o yaml | oc apply -f -
+# Then: oc apply -f services/jit-gate/deploy/jit-gate.yaml
+#
+# Path: agent --HTTP_PROXY--> AuthBridge (identity/token-exchange) --> jit-gate --> echo-mcp.
+# Reuses the jit-approver image (fastapi/uvicorn/httpx/pyjwt) — no separate build.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jit-gate, namespace: kagenti-test, labels: {app: jit-gate}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jit-gate}}
+  template:
+    metadata: {labels: {app: jit-gate}}
+    spec:
+      containers:
+        - name: gate
+          image: oci.arsalan.io/nvidia-ida/jit-approver:dev
+          command: ["python","-m","uvicorn","gate:app","--host","0.0.0.0","--port","8000","--app-dir","/gate"]
+          env:
+            - {name: UPSTREAM_URL, value: "http://echo-mcp.agentic-mcp.svc.cluster.local:8000"}
+            - {name: JWKS_URL, value: "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"}
+            - {name: DANGEROUS_TOOLS, value: "echo"}      # MCP tools requiring JIT approval
+            - {name: EXPECTED_AUD, value: "kyverno-authz"} # capability-JWT audience
+          ports: [{containerPort: 8000}]
+          volumeMounts: [{name: src, mountPath: /gate}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, initialDelaySeconds: 3, periodSeconds: 5}
+      volumes:
+        - {name: src, configMap: {name: jit-gate-src}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jit-gate, namespace: kagenti-test}
+spec:
+  selector: {app: jit-gate}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+# gate -> jit-approver /jwks (verify capability JWTs)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-jwks-from-kagenti-test, namespace: mcp-gateway}
+spec:
+  podSelector: {matchLabels: {app: jit-approver}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kagenti-test}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+# gate -> echo-mcp (the protected MCP target; echo-mcp ns is otherwise gateway-only)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-echo-from-kagenti-test, namespace: agentic-mcp}
+spec:
+  podSelector: {matchLabels: {app: echo-mcp}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kagenti-test}}}]
+      ports: [{protocol: TCP, port: 8000}]

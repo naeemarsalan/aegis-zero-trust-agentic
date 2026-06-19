@@ -1,0 +1,9 @@
+# approval-console shares the mcp-gateway namespace with jit-approver.
+# Namespace is expected to already exist (created by jit-approver or agentgateway).
+# This stub is included so kustomize can annotate/label it if needed by an overlay.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-gateway
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida

@@ -124,6 +124,21 @@ def _model() -> str:
     return os.environ.get(AGENT_MODEL_ENV, "").strip() or AGENT_MODEL_DEFAULT
 
 
+# Allowed tools. Default = the single read-only firewall tool (1A behaviour).
+# Set AGENT_ALLOWED_TOOLS (comma-separated) to widen — e.g. "Bash,mcp__mcp-gateway__search_firewall_rules"
+# lets the agent read natively AND perform writes via the `mcp-call` helper, which
+# transparently runs the JIT self-escalation (deny -> file request -> human approves
+# in the console -> retry) so the agent never handles a credential.
+AGENT_ALLOWED_TOOLS_ENV = "AGENT_ALLOWED_TOOLS"
+
+
+def _allowed_tools() -> list[str]:
+    raw = os.environ.get(AGENT_ALLOWED_TOOLS_ENV, "").strip()
+    if raw:
+        return [t.strip() for t in raw.split(",") if t.strip()]
+    return [ALLOWED_TOOL]
+
+
 # ---------------------------------------------------------------------------
 # JSONL redaction (security gate — reviewer invariant)
 # ---------------------------------------------------------------------------
@@ -226,10 +241,20 @@ def _build_options(svid_token: str, session_id: str) -> Any:
 
     cli_path = os.environ.get("CLAUDE_CLI_PATH", "").strip() or None
 
+    # Only register the gateway as a native MCP server if an mcp__ tool is allowed.
+    # When the agent is meant to drive everything through the `mcp-call` helper
+    # (allowed_tools=["Bash"]), we DON'T register the MCP server — otherwise the
+    # agent sees the native write tools (e.g. create_firewall_rule_advanced), tries
+    # one directly, gets hard-denied by dontAsk mode, and gives up instead of using
+    # mcp-call (which does the JIT self-escalation). No MCP server => the only path
+    # to a tool is `mcp-call`, which is what the pfsense-firewall skill instructs.
+    allowed = _allowed_tools()
+    use_mcp = any(t.startswith("mcp__") for t in allowed)
+
     opts = ClaudeAgentOptions(
-        mcp_servers={MCP_SERVER_NAME: mcp_server_cfg},  # type: ignore[arg-type]
+        mcp_servers=({MCP_SERVER_NAME: mcp_server_cfg} if use_mcp else {}),  # type: ignore[arg-type]
         strict_mcp_config=True,   # Only use the mcp_servers declared here.
-        allowed_tools=[ALLOWED_TOOL],
+        allowed_tools=allowed,
         permission_mode="dontAsk",
         max_turns=_max_turns(),
         # Inference model — OpenRouter "anthropic/..." slug (see AGENT_MODEL_ENV).
@@ -389,7 +414,7 @@ async def run_agent(goal: str, session_id: str) -> bool:
         "session_id": session_id,
         "subtype": "init",
         "message": f"agent_runner starting; session_id={session_id}; "
-                   f"allowed_tools=[{ALLOWED_TOOL!r}]; gateway={_gateway_mcp_url()!r}",
+                   f"allowed_tools={_allowed_tools()!r}; gateway={_gateway_mcp_url()!r}",
     })
 
     try:

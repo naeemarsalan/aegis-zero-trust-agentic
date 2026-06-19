@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "approval-console"
+version = "0.1.0"
+description = "Minimal operator web console for JIT write-approval requests"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "nvidia-ida team" }]
+
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.3",
+    "httpx==0.28.1",
+    "pydantic==2.12.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "respx==0.23.1",
+    "httpx==0.28.1",
+    "anyio[trio]>=4.0",
+]
+
+[project.scripts]
+approval-console = "approval_console.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/approval_console"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.hatch.envs.default]
+python = "3.12"

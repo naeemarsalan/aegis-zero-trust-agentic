@@ -1,0 +1,98 @@
+# Network policies for approval-console — default-deny with explicit allow list.
+---
+# Deny all ingress + egress by default
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-deny-all
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Ingress: allow from OpenShift Router (browser -> Route -> Service)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-ingress-router
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8090
+          protocol: TCP
+---
+# Egress: allow DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-egress-dns
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Egress: allow to jit-approver (same namespace, port 8080)
+# The console proxies all jit-approver reads; this is the primary egress path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-egress-jit-approver
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jit-approver
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Egress: allow to Gitea (git.arsalan.io — 172.16.x.x/12 via hostAlias)
+# Required for POST /api/approve/{id} which merges the PR via Gitea API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-egress-gitea
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/12
+      ports:
+        - port: 443
+          protocol: TCP

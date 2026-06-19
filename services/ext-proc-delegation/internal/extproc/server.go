@@ -485,6 +485,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				emitter.SetVault("success", spireAudit.grantPath, "success")
 				emitter.SetKeycloakExchange("on_behalf", s.cfg.DownstreamAudience, spireAudit.exchangeResult)
 				emitter.SetJIT(spireAudit.jitElevated, spireAudit.jitSessionID)
+				emitter.SetWriteIdentity(spireAudit.writeIdentity)
 			} else {
 				if identity != nil {
 					emitter.SetCallerUser(identity.Sub, identity.PreferredUsername, identity.Groups)
@@ -527,6 +528,7 @@ type spireAuditCtx struct {
 	exchangeResult    string // "success" or a safe error code (e.g. "exchange_5xx")
 	jitElevated       bool   // true when a sandbox-bound JIT session JWT elevated the tool
 	jitSessionID      string // jit-approver session id (vt.Sub) that authorised the elevation
+	writeIdentity     bool   // true when the write-capable pfSense token was injected
 }
 
 // handleSandboxAgentPath implements the SPIRE SVID + Vault grant delegation
@@ -750,18 +752,46 @@ func (s *Server) handleSandboxAgentPath(
 	downToken := exchangedToken
 
 	if staticPath {
-		// (g) Select per-user pfSense static token from Vault by grant.user.
-		m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
-		if ferr != nil {
-			slog.Error("ext_proc: static token fetch failed for sandbox agent")
-			return deny(http.StatusForbidden, "static_token_fetch_failed", string(grant.ResultValid))
+		// (g) Select per-user pfSense token from Vault by grant.user.
+		//
+		// Token identity split (ADR-0012):
+		//   - JIT-elevated request → fetch WRITE token from StaticTokenSecretWrite.
+		//     FAIL-CLOSED: if the write token is absent or unfetchable the call is
+		//     DENIED. We NEVER fall back to the read token on an approved write —
+		//     doing so would allow a write to proceed under the read identity, which
+		//     defeats both the defense-in-depth goal and the pfSense audit split.
+		//   - Non-elevated request → fetch READ token from StaticTokenSecret (unchanged).
+		if jitElevatesTool {
+			// Write path: fetch the write-capable token.
+			wm, werr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecretWrite)
+			if werr != nil {
+				slog.Error("ext_proc: write token fetch failed for JIT-elevated sandbox agent (fail-closed)",
+					"secret", s.cfg.StaticTokenSecretWrite)
+				return deny(http.StatusForbidden, "write_token_fetch_failed", string(grant.ResultValid))
+			}
+			wt, _ := wm[g.User].(string)
+			if wt == "" {
+				slog.Error("ext_proc: write identity unavailable — no write token for user in grant (fail-closed)",
+					"user", "[redacted]")
+				return deny(http.StatusForbidden, "write_identity_unavailable", string(grant.ResultValid))
+			}
+			downToken = wt
+			aud.writeIdentity = true
+		} else {
+			// Read path: fetch the read-only token (existing behaviour).
+			m, ferr := s.vault.FetchToolSecret(ctx, s.cfg.StaticTokenSecret)
+			if ferr != nil {
+				slog.Error("ext_proc: static token fetch failed for sandbox agent")
+				return deny(http.StatusForbidden, "static_token_fetch_failed", string(grant.ResultValid))
+			}
+			ut, _ := m[g.User].(string)
+			if ut == "" {
+				slog.Error("ext_proc: no static token for user in grant", "user", "[redacted]")
+				return deny(http.StatusForbidden, "no_user_token", string(grant.ResultValid))
+			}
+			downToken = ut
+			// aud.writeIdentity remains false (read path)
 		}
-		ut, _ := m[g.User].(string)
-		if ut == "" {
-			slog.Error("ext_proc: no static token for user in grant", "user", "[redacted]")
-			return deny(http.StatusForbidden, "no_user_token", string(grant.ResultValid))
-		}
-		downToken = ut
 	}
 
 	// Fail-closed invariant: never return an empty downstream credential. On the

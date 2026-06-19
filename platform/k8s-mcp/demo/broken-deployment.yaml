@@ -1,0 +1,24 @@
+# The deliberately-broken workload the agent troubleshoots. Symptom: scaled to 0 replicas
+# (no running pods). Fix is within slice-1 allowed verbs: resources_scale -> 1 (no delete needed).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-app
+  namespace: mcp-demo
+  labels: {app: broken-app}
+spec:
+  replicas: 0          # <-- the break: a human/agent must scale it back up
+  selector: {matchLabels: {app: broken-app}}
+  template:
+    metadata: {labels: {app: broken-app}}
+    spec:
+      containers:
+        - name: app
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command: ["sleep","infinity"]
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 50m, memory: 64Mi}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}

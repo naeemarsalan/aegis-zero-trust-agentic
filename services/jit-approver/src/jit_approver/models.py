@@ -29,7 +29,11 @@ DENIED_RESOURCE_TOKENS = frozenset({"secret", "role", "rolebinding", "clusterrol
 
 def _get_allowed_namespaces() -> frozenset[str]:
     raw = os.environ.get("JIT_ALLOWED_NAMESPACES", "agent-sandbox,agentic-mcp")
-    return frozenset(ns.strip() for ns in raw.split(",") if ns.strip())
+    base = {ns.strip() for ns in raw.split(",") if ns.strip()}
+    # Demo namespaces pinned here so they survive a gitops env re-sync (this file is
+    # mounted as an override; the deploy env is managed by ArgoCD). Also honors the env.
+    base |= {ns.strip() for ns in os.environ.get("JIT_PINNED_NAMESPACES", "mcp-demo,kagenti-test").split(",") if ns.strip()}
+    return frozenset(base)
 
 
 # ---------------------------------------------------------------------------

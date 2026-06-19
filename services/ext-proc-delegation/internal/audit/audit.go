@@ -98,6 +98,7 @@ type Event struct {
 	Grant                          GrantInfo      `json:"grant,omitempty"`
 	JITElevated                    bool           `json:"jit_elevated"`              // true when a sandbox-bound JIT session JWT lifted the read-only baseline
 	JITSessionID                   string         `json:"jit_session_id,omitempty"` // jit-approver session id that authorised the elevation
+	WriteIdentity                  bool           `json:"write_identity"`            // true when the write-capable pfSense token was injected (JIT-elevated path)
 	Decision                       string         `json:"decision"`  // "allow" | "deny"
 	Reason                         string         `json:"reason,omitempty"`
 	CredentialInjected             bool           `json:"credential_injected"`
@@ -176,6 +177,13 @@ func (e *Emitter) SetJIT(elevated bool, sessionID string) {
 	e.ev.JITSessionID = sessionID
 }
 
+// SetWriteIdentity records whether the write-capable pfSense token was injected
+// on this request (true = JIT-elevated write identity; false = read-only identity).
+// Never logs the token value — only the boolean selection fact.
+func (e *Emitter) SetWriteIdentity(writeIdentity bool) {
+	e.ev.WriteIdentity = writeIdentity
+}
+
 // Emit finalizes the event (decision + credential flags + latency) and writes
 // it to stdout via slog.  Also updates Prometheus metrics.
 func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected, credStripped bool) {
@@ -218,6 +226,7 @@ func (e *Emitter) Emit(_ context.Context, decision, reason string, credInjected,
 		slog.String("grant_result", e.ev.Grant.Result),
 		slog.Bool("jit_elevated", e.ev.JITElevated),
 		slog.String("jit_session_id", e.ev.JITSessionID),
+		slog.Bool("write_identity", e.ev.WriteIdentity),
 		slog.String("decision", decision),
 		slog.String("reason", reason),
 		slog.Bool("credential_injected", credInjected),

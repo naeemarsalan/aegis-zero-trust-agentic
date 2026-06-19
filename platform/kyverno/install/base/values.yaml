@@ -30,6 +30,19 @@ reportsController:
   securityContext:
     runAsUser: null
 
+# SAFETY NET — cascade prevention.
+# When Kyverno's admission controller is unhealthy (crashloop, leader-election
+# churn, scaled down), webhooks with failurePolicy=Fail and no ready endpoint
+# block ALL matching apiserver writes cluster-wide — which previously cascaded
+# into kube-controller-manager crashloops and degraded cluster operators
+# (the 2026-06-16 outage). forceFailurePolicyIgnore makes the admission
+# controller generate every webhook with failurePolicy=Ignore, so a down/flapping
+# Kyverno fails OPEN (admission is skipped) instead of taking the cluster down.
+# Policy enforcement still works whenever Kyverno is healthy.
+features:
+  forceFailurePolicyIgnore:
+    enabled: true
+
 crds:
   migration:
     securityContext:

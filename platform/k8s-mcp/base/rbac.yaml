@@ -1,0 +1,43 @@
+# SA-token split: view SA (reads) + edit SA (writes), each RoleBinding-scoped to ns
+# mcp-demo only (NOT ClusterRoleBindings) so blast radius is contained to the demo ns.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-mcp-view
+  namespace: k8s-mcp
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-mcp-edit
+  namespace: k8s-mcp
+---
+# read-only: built-in 'view' ClusterRole, bound only in mcp-demo
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-mcp-view
+  namespace: mcp-demo
+subjects:
+  - kind: ServiceAccount
+    name: k8s-mcp-view
+    namespace: k8s-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+---
+# elevated: built-in 'edit' ClusterRole, bound only in mcp-demo (no secrets/RBAC)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-mcp-edit
+  namespace: mcp-demo
+subjects:
+  - kind: ServiceAccount
+    name: k8s-mcp-edit
+    namespace: k8s-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit

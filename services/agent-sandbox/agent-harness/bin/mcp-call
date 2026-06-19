@@ -64,11 +64,189 @@ def _parse(resp: httpx.Response):
     return resp.json()
 
 
+# On a write-tool 403 the agent auto-files a JIT escalation request (PR -> human
+# approval), matching the zero-trust design: the agent never holds a credential;
+# it just asks, and the human approves in the console. Maps the dangerous MCP tool
+# to the k8s verb/resource pair jit-approver turns back into the tool_scope.
+JIT_APPROVER_URL = os.environ.get(
+    "JIT_APPROVER_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080").rstrip("/")
+APPROVAL_CONSOLE_URL = os.environ.get(
+    "APPROVAL_CONSOLE_URL", "https://approval-console.apps.anaeem.na-launch.com")
+# Target namespace for the JIT escalation request. pfSense default 'agentic-mcp';
+# the OpenShift-troubleshoot session sets JIT_TARGET_NAMESPACE=mcp-demo.
+JIT_TARGET_NAMESPACE = os.environ.get("JIT_TARGET_NAMESPACE", "agentic-mcp")
+# pfSense's ext-proc verifies the agent SVID (Bearer) for identity; the k8s-mcp server
+# instead uses its OWN ServiceAccount and would (wrongly) try to use a presented Bearer
+# as a cluster credential. So the OpenShift session sets MCP_SEND_SVID=false.
+SEND_SVID = os.environ.get("MCP_SEND_SVID", "true").lower() == "true"
+_WRITE_TOOL_RESOURCES = {
+    # pfSense MCP (UC2)
+    "create_firewall_rule_advanced": ("create", "networkpolicies"),
+    "add_firewall_rule": ("create", "networkpolicies"),
+    # OpenShift / Kubernetes MCP — verb/resource the jit-approver maps back to the tool_scope
+    "resources_scale": ("update", "deployments"),
+    "resources_create_or_update": ("patch", "deployments"),
+    "pods_run": ("create", "pods"),
+    "pods_exec": ("create", "pods/exec"),
+}
+
+
+def _file_jit_request(client: httpx.Client, svid_sub: str, tool: str) -> str:
+    verb, resource = _WRITE_TOOL_RESOURCES.get(tool, ("create", "networkpolicies"))
+    body = {
+        "agent_spiffe_id": svid_sub,        # binds the issued JWT to THIS sandbox
+        "requester_sub": svid_sub,
+        "namespace": JIT_TARGET_NAMESPACE,
+        "verbs": [verb],
+        "resources": [resource],
+        "duration_minutes": 30,
+        "justification": f"auto-escalation: agent needs {tool} (denied under the read-only baseline)",
+    }
+    try:
+        rr = client.post(JIT_APPROVER_URL + "/requests", json=body, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (could not reach jit-approver to file an approval request: {exc})")
+        return ""
+    if rr.status_code in (200, 202):
+        d = rr.json()
+        print(f"{CYAN}▶ requested approval :{RESET} session {d.get('id')}  (PR: {d.get('pr_url')})")
+        return d.get("id") or ""
+    print(f"  (could not file approval request: HTTP {rr.status_code} {rr.text[:120]})")
+    return ""
+
+
+def _wait_for_approval(client: httpx.Client, session_id: str, timeout: int = 600, interval: int = 4):
+    """Block until a human approves the request in the console (state==issued) and
+    return the issued token, or None on denial/timeout. The user's ONLY action is
+    clicking Approve — no token handling."""
+    import time
+    status_url = f"{JIT_APPROVER_URL}/requests/{session_id}/status"
+    waited = 0
+    while waited < timeout:
+        try:
+            d = client.get(status_url, timeout=10).json()
+        except Exception:  # noqa: BLE001
+            d = {}
+        state = d.get("state")
+        if state == "issued" and d.get("session_jwt"):
+            print()
+            return d["session_jwt"]
+        if state in ("denied", "expired", "error"):
+            print(f"\n  request {state}.")
+            return None
+        time.sleep(interval)
+        waited += interval
+        print(f"  …waiting for approval ({waited}s)   ", end="\r", flush=True)
+    print(f"\n  not approved within {timeout}s.")
+    return None
+
+
+def _do_call(client: httpx.Client, url: str, svid: str, jit_jwt: str, tool: str, args: dict):
+    """Run the MCP handshake + a single tools/call. Returns (phase, response):
+    phase is 'initialize' only when the handshake itself fails, else 'tools/call'."""
+    h = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if SEND_SVID:
+        h["Authorization"] = f"Bearer {svid}"
+    if jit_jwt:
+        h["X-JIT-Session-JWT"] = jit_jwt
+    r = client.post(url, headers=h, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                   "clientInfo": {"name": "mcp-call", "version": "1"}},
+    })
+    if r.status_code != 200:
+        return "initialize", r
+    h["Mcp-Session-Id"] = r.headers.get("mcp-session-id", "")
+    client.post(url, headers=h, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    r = client.post(url, headers=h, json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": tool, "arguments": args},
+    })
+    return "tools/call", r
+
+
+def _print_result(r: httpx.Response) -> None:
+    data = _parse(r)
+    try:
+        inner = json.loads(data["result"]["content"][0]["text"])
+        print(json.dumps(inner, indent=2)[:1800])
+    except Exception:  # noqa: BLE001
+        print(json.dumps(data, indent=2)[:1800] if isinstance(data, (dict, list)) else str(data)[:1800])
+
+
+def _sandbox_uid_of(spiffe_sub: str) -> str:
+    marker = "/sandbox/"
+    i = spiffe_sub.find(marker)
+    return spiffe_sub[i + len(marker):].split("/")[0] if i >= 0 else ""
+
+
+def _reusable_token(client: httpx.Client, sandbox_uid: str, tool: str) -> str:
+    """Return a still-valid, already-approved token that covers THIS sandbox+tool,
+    so a prior approval is reused instead of asking again. '' if none exists."""
+    import time
+    try:
+        sessions = client.get(JIT_APPROVER_URL + "/requests", timeout=10).json()
+    except Exception:  # noqa: BLE001
+        return ""
+    now = time.time()
+    for s in sessions if isinstance(sessions, list) else []:
+        if s.get("state") != "issued":
+            continue
+        try:
+            jwt = client.get(f"{JIT_APPROVER_URL}/requests/{s['id']}/status", timeout=10).json().get("session_jwt")
+            cl = _claims(jwt) if jwt else {}
+        except Exception:  # noqa: BLE001
+            continue
+        if (cl.get("sandbox_uid") == sandbox_uid
+                and tool in (cl.get("tool_scope") or [])
+                and float(cl.get("exp", 0)) > now + 30):
+            return jwt
+    return ""
+
+
+def _pending_request(client: httpx.Client, svid_sub: str, tool: str) -> str:
+    """Return the id of an already-pending request we filed for this tool, so a
+    duplicate PR isn't created. '' if none."""
+    verb, resource = _WRITE_TOOL_RESOURCES.get(tool, ("create", "networkpolicies"))
+    try:
+        sessions = client.get(JIT_APPROVER_URL + "/requests", timeout=10).json()
+    except Exception:  # noqa: BLE001
+        return ""
+    for s in sessions if isinstance(sessions, list) else []:
+        if s.get("state") != "pending":
+            continue
+        try:
+            d = client.get(f"{JIT_APPROVER_URL}/requests/{s['id']}/detail", timeout=10).json()
+        except Exception:  # noqa: BLE001
+            continue
+        if (d.get("requester_sub") == svid_sub
+                and verb in (d.get("verbs") or [])
+                and resource in (d.get("resources") or [])):
+            return s["id"]
+    return ""
+
+
+def _retry_and_print(client: httpx.Client, url: str, svid: str, token: str, tool: str, args: dict) -> None:
+    _, r2 = _do_call(client, url, svid, token, tool, args)
+    print(f"{CYAN}▶ tools/call {tool} :{RESET} HTTP {r2.status_code}")
+    if r2.status_code == 200:
+        _print_result(r2)
+    else:
+        print(f"  {r2.text[:200]}")
+
+
 def main() -> int:
     tool = sys.argv[1] if len(sys.argv) > 1 else "search_firewall_rules"
     args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-    base = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com").rstrip("/")
-    url = base + "/mcp"
+    # Read tools go to the read endpoint (e.g. k8s view-SA MCP), write tools to the
+    # write/gate endpoint (JIT-gated). pfSense uses one gateway for both (defaults).
+    _gw = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com")
+    read_url = os.environ.get("MCP_READ_URL", _gw).rstrip("/") + "/mcp"
+    write_url = os.environ.get("MCP_WRITE_URL", _gw).rstrip("/") + "/mcp"
+    url = write_url if tool in _WRITE_TOOL_RESOURCES else read_url
     jit_jwt = os.environ.get("JIT_SESSION_JWT", "")
 
     svid = _fetch_svid_with_retry()
@@ -81,41 +259,41 @@ def main() -> int:
         print(f"{CYAN}▶ JIT session JWT    :{RESET} present (jti={jc.get('jti')}, scope={jc.get('tool_scope')})")
     print()
 
-    h = {
-        "Authorization": f"Bearer {svid}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-    if jit_jwt:
-        h["X-JIT-Session-JWT"] = jit_jwt
     client = httpx.Client(verify=False, timeout=30)
-
-    r = client.post(url, headers=h, json={
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
-                   "clientInfo": {"name": "mcp-call", "version": "1"}},
-    })
-    if r.status_code != 200:
+    phase, r = _do_call(client, url, svid, jit_jwt, tool, args)
+    if phase == "initialize":
         print(f"{CYAN}▶ initialize         :{RESET} HTTP {r.status_code} — {r.text[:160]}")
         return 1
-    h["Mcp-Session-Id"] = r.headers.get("mcp-session-id", "")
-    client.post(url, headers=h, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
 
-    r = client.post(url, headers=h, json={
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": tool, "arguments": args},
-    })
     print(f"{CYAN}▶ tools/call {tool} :{RESET} HTTP {r.status_code}")
-    if r.status_code != 200:
-        print(f"  DENIED: {r.text[:200]}  (this is fail-closed authz — e.g. a dangerous tool under a read-only grant)")
+    if r.status_code == 200:
+        _print_result(r)
         return 0
 
-    data = _parse(r)
-    try:
-        inner = json.loads(data["result"]["content"][0]["text"])
-        print(json.dumps(inner, indent=2)[:1800])
-    except Exception:  # noqa: BLE001
-        print(json.dumps(data, indent=2)[:1800] if isinstance(data, (dict, list)) else str(data)[:1800])
+    print(f"  DENIED: {r.text[:200]}  (fail-closed authz — a write tool under the read-only baseline)")
+    # Auto-escalate: deny -> reuse a still-valid approval if one exists, else raise a
+    # request (reusing an already-pending one rather than duplicating) -> WAIT for the
+    # human to click Approve -> auto-retry the SAME call. The user never touches a
+    # credential; their only action is approving.
+    if r.status_code == 403 and not jit_jwt:
+        svid_sub = c.get("sub", "")
+        token = _reusable_token(client, _sandbox_uid_of(svid_sub), tool)
+        if token:
+            print(f"{CYAN}▶ reusing an existing approval{RESET} (still valid) — no re-approval needed")
+            _retry_and_print(client, url, svid, token, tool, args)
+            return 0
+        sid = _pending_request(client, svid_sub, tool)
+        if sid:
+            print(f"{CYAN}▶ approval already pending{RESET} (session {sid}) — waiting on it (not filing a duplicate)")
+        else:
+            sid = _file_jit_request(client, svid_sub, tool)
+            if not sid:
+                return 0
+        print(f"  Approve it here → {APPROVAL_CONSOLE_URL}")
+        token = _wait_for_approval(client, sid)
+        if token:
+            print(f"{CYAN}▶ approved — retrying {tool} under your write identity{RESET}")
+            _retry_and_print(client, url, svid, token, tool, args)
     return 0
 
 

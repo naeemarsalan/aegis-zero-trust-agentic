@@ -42,8 +42,16 @@ type Config struct {
 	// RFC 8693 exchanged JWT — for off-the-shelf MCP servers (e.g. pfsense-mcp)
 	// that validate a static bearer list, not JWTs. The exchange still runs for
 	// audit. JWT-aware downstreams (echo-mcp on /echo) get the exchanged token.
-	StaticAuthPaths   []string
-	StaticTokenSecret string // KV tool name holding per-user tokens (default "mcp-tokens")
+	StaticAuthPaths        []string
+	StaticTokenSecret      string // KV tool name holding per-user read tokens (default "mcp-tokens")
+	// StaticTokenSecretWrite is the KV tool name holding per-user WRITE-capable
+	// pfSense tokens. It is fetched ONLY when the request is JIT-elevated (a valid,
+	// sandbox-bound, tool-scoped jit-approver capability JWT is present). If the
+	// request is JIT-elevated but the write token cannot be fetched or is absent for
+	// the user, the call is DENIED fail-closed — never silently falls back to the
+	// read token (an approved write must never go out under the read identity).
+	// Env: STATIC_TOKEN_SECRET_WRITE. Default: "mcp-tokens-write".
+	StaticTokenSecretWrite string
 
 	// Tool-level RBAC (enforces the kyverno authz policies in ext-proc).
 	ReadOnlyToolPrefixes  []string
@@ -115,8 +123,9 @@ func Load() (*Config, error) {
 		VaultJWTRole:         getEnv("VAULT_JWT_ROLE", "ext-proc-delegation"),
 		VaultJWTAudience:     getEnv("VAULT_JWT_AUDIENCE", "vault"),
 		ToolSecretPathPrefix: getEnv("TOOL_SECRET_PATH_PREFIX", "secret/data/mcp-tools/"),
-		StaticAuthPaths:      splitNonEmpty(getEnv("STATIC_AUTH_PATHS", "/mcp")),
-		StaticTokenSecret:    getEnv("STATIC_TOKEN_SECRET", "mcp-tokens"),
+		StaticAuthPaths:        splitNonEmpty(getEnv("STATIC_AUTH_PATHS", "/mcp")),
+		StaticTokenSecret:      getEnv("STATIC_TOKEN_SECRET", "mcp-tokens"),
+		StaticTokenSecretWrite: getEnv("STATIC_TOKEN_SECRET_WRITE", "mcp-tokens-write"),
 		ReadOnlyToolPrefixes:  splitNonEmpty(getEnv("READONLY_TOOL_PREFIXES", "get_,search_,list_,find_,diagnose_,show_,export_,follow_,check_,test_")),
 		DangerousToolPrefixes: splitNonEmpty(getEnv("DANGEROUS_TOOL_PREFIXES", "add_,set_,delete_,update_,create_,remove_,apply_,reload_,manage_,issue_,renew_,restore_,halt_,reboot_,disconnect_,send_,bulk_,move_,register_,control_,generate_,update_")),
 		RestrictedGroup:       getEnv("RESTRICTED_GROUP", "restricted"),

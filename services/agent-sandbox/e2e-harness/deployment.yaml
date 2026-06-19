@@ -1,0 +1,77 @@
+# Variant-B zero-trust demo harness — durable Deployment (1 replica).
+#
+# Converted from restartPolicy:Never Pod (sleep 10800) to a 1-replica Deployment
+# so the harness survives container exits and restarts without manual re-apply.
+# restartPolicy:Always (Deployment default) replaces the old 3-hour self-destruct.
+#
+# Everything else is preserved identically:
+#   - SPIFFE CSI volume (csi.spiffe.io): the kubelet CSI driver delivers the SVID
+#     socket into the pod; this is pod-spec level and works in Deployment templates.
+#   - ClusterSPIFFEID agent-sandbox-e2e-harness selects pods by label
+#     nvidia-ida/e2e-harness=true — the pod template carries that label, so
+#     Deployment-managed pods receive the same SVID as the old bare Pod.
+#   - ConfigMap ztp-helpers mount (mcp-call helper scripts).
+#   - e2e-harness ServiceAccount (automountServiceAccountToken: false).
+#   - inference Secret optional (agent-harness-inference, optional: true).
+#
+# Exec in and run mcp-call to prove delegated, no-credential MCP access:
+#   oc -n agent-sandbox exec -it deploy/e2e-harness -c agent -- bash
+#   mcp-call                      # read-only search_firewall_rules -> allowed (200)
+#   mcp-call create_alias '{"name":"x","type":"host"}'   # dangerous -> 403 (fail-closed)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-harness
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: e2e-harness
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-harness
+  template:
+    metadata:
+      labels:
+        app: e2e-harness
+        app.kubernetes.io/name: e2e-harness
+        app.kubernetes.io/part-of: nvidia-ida
+        # ClusterSPIFFEID agent-sandbox-e2e-harness selects on this label.
+        nvidia-ida/e2e-harness: "true"
+        # The SVID spiffeIDTemplate uses this label: .../sandbox/<sandbox-id>.
+        nvidia-ida/sandbox-id: e2e0a1b2-c3d4-4e5f-8a9b-000000000001
+    spec:
+      serviceAccountName: e2e-harness
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: oci.arsalan.io/nvidia-ida/agent-harness:self-escalate
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          env:
+            # Prepend the ConfigMap-mounted helper dir so `mcp-call` is on PATH.
+            - name: PATH
+              value: "/opt/ztp/bin:/opt/app-root/src/.local/bin/:/opt/app-root/src/bin:/opt/app-root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: MCP_GATEWAY_URL
+              value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+          envFrom:
+            - secretRef:
+                name: agent-harness-inference
+                optional: true
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: ztp-helpers
+              mountPath: /opt/ztp/bin
+              readOnly: true
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: ztp-helpers
+          configMap:
+            name: ztp-helpers
+            defaultMode: 0755

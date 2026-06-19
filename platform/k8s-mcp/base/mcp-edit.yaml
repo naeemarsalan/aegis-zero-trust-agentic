@@ -1,0 +1,37 @@
+# EDIT instance: edit SA, NO --read-only. Reachable ONLY via the jit-gate (NetworkPolicy),
+# and only for tools/calls carrying a valid jit-approver capability JWT.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-mcp-edit
+  namespace: k8s-mcp
+  labels: {app: k8s-mcp-edit}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: k8s-mcp-edit}}
+  template:
+    metadata: {labels: {app: k8s-mcp-edit}}
+    spec:
+      serviceAccountName: k8s-mcp-edit
+      automountServiceAccountToken: true
+      containers:
+        - name: mcp
+          image: quay.io/containers/kubernetes_mcp_server@sha256:4b2359fac57d38f07643065f346d336a0b3169871786d4d3a543c6ceada611c4
+          args: ["--port","8080","--toolsets","core,config","--log-level","1"]
+          ports: [{containerPort: 8080}]
+          readinessProbe: {tcpSocket: {port: 8080}, initialDelaySeconds: 3, periodSeconds: 5}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-mcp-edit
+  namespace: k8s-mcp
+spec:
+  selector: {app: k8s-mcp-edit}
+  ports: [{port: 8080, targetPort: 8080}]

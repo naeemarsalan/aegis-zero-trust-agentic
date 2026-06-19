@@ -1,0 +1,27 @@
+# OpenShift Route — exposes the approval-console UI for browser access.
+#
+# PoC CAVEAT: no auth on the console (no oauth-proxy, no mTLS). It is behind
+# the OpenShift router which requires HTTPS, but the page itself is open to
+# anyone who can reach the cluster. Acceptable for a homelab PoC; harden with
+# oauth-proxy or an ingress policy before any real-world exposure.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: approval-console
+  namespace: mcp-gateway
+  labels:
+    app: approval-console
+    app.kubernetes.io/name: approval-console
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/security: "poc-unauthenticated-ui — add oauth-proxy before real exposure"
+spec:
+  host: approval-console.apps.anaeem.na-launch.com
+  to:
+    kind: Service
+    name: approval-console
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

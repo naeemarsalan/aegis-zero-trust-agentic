@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: approval-console
+  namespace: mcp-gateway
+  labels:
+    app: approval-console
+    app.kubernetes.io/name: approval-console
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  selector:
+    app: approval-console
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+      protocol: TCP
+  type: ClusterIP

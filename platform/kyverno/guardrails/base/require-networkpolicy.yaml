@@ -28,6 +28,24 @@ spec:
               selector:
                 matchLabels:
                   app.kubernetes.io/part-of: nvidia-ida
+      # Exclude OpenShift / Kubernetes system + operator namespaces. A BARE
+      # default-deny (no allow-egress companions) cuts a namespace's pods off
+      # from the apiserver ClusterIP + DNS; for operator/system namespaces that
+      # lack curated allow rules this degrades cluster operators and crashloops
+      # their controllers. This is exactly the 2026-06-16 outage: a default-deny
+      # was generated into openshift-sandboxed-containers-operator (and infra
+      # namespaces) which then lost the apiserver. Those namespaces must never
+      # receive the blunt auto-generated baseline; their NetworkPolicies are
+      # curated separately. synchronize:true will prune the previously generated
+      # default-deny from any namespace newly matched by this exclude.
+      exclude:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              names:
+                - "openshift-*"
+                - "kube-*"
+                - "default"
       generate:
         apiVersion: networking.k8s.io/v1
         kind: NetworkPolicy

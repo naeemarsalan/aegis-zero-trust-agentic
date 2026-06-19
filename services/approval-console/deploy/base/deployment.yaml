@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approval-console
+  namespace: mcp-gateway
+  labels:
+    app: approval-console
+    app.kubernetes.io/name: approval-console
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: approval-console
+  template:
+    metadata:
+      labels:
+        app: approval-console
+    spec:
+      serviceAccountName: approval-console
+      automountServiceAccountToken: false
+      # Gitea (git.arsalan.io) resolves to a public IP outside the cluster; pin it
+      # to the private homelab address so egress stays within 172.16.0.0/12 and the
+      # NetworkPolicy allows the call. Mirrors jit-approver's hostAliases convention.
+      hostAliases:
+        - ip: "172.16.1.1"
+          hostnames:
+            - "git.arsalan.io"
+      containers:
+        - name: approval-console
+          image: oci.arsalan.io/nvidia-ida/approval-console:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8090
+              name: http
+              protocol: TCP
+          env:
+            - name: JIT_APPROVER_URL
+              value: "http://jit-approver.mcp-gateway.svc.cluster.local:8080"
+            - name: GITEA_URL
+              value: "https://git.arsalan.io"
+            # GITEA_REPO in owner/repo format — matches jit-approver convention
+            - name: GITEA_REPO
+              value: "anaeem/nvidia-ida"
+            # GITEA_TOKEN: set via Secret + envFrom or Vault injector in overlay.
+            # Leave empty here; the config.py file-fallback reads /vault/secrets/gitea-token.
+            - name: GITEA_TOKEN
+              value: ""
+            - name: POLL_INTERVAL_SECONDS
+              value: "5"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          # Vault injector annotation (optional in overlay): if the Vault injector
+          # is active, add vault.hashicorp.com/agent-inject annotations to write
+          # the token to /vault/secrets/gitea-token. See overlays/anaeem.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault

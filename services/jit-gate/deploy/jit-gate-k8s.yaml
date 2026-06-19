@@ -1,0 +1,83 @@
+# jit-gate for the OpenShift MCP edit instance. The ConfigMap holding gate.py:
+#   oc -n k8s-mcp create configmap jit-gate-src \
+#     --from-file=gate.py=services/jit-gate/gate.py --dry-run=client -o yaml | oc apply -f -
+# Then: oc apply -f services/jit-gate/deploy/jit-gate-k8s.yaml
+#
+# Path: agent --mcp-call--> jit-gate-k8s (deny write tool unless capability JWT) --> k8s-mcp-edit (edit SA).
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jit-gate-k8s, namespace: k8s-mcp, labels: {app: jit-gate-k8s}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jit-gate-k8s}}
+  template:
+    metadata: {labels: {app: jit-gate-k8s}}
+    spec:
+      containers:
+        - name: gate
+          image: oci.arsalan.io/nvidia-ida/jit-approver:dev
+          command: ["python","-m","uvicorn","gate:app","--host","0.0.0.0","--port","8000","--app-dir","/gate"]
+          env:
+            - {name: UPSTREAM_URL, value: "http://k8s-mcp-edit.k8s-mcp.svc.cluster.local:8080"}
+            - {name: JWKS_URL, value: "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"}
+            - {name: DANGEROUS_TOOLS, value: "resources_create_or_update,resources_scale,pods_exec,pods_run,pods_delete,resources_delete"}
+            - {name: EXPECTED_AUD, value: "kyverno-authz"}
+            - {name: STRICT_TOOL_SCOPE, value: "true"}
+          ports: [{containerPort: 8000}]
+          volumeMounts: [{name: src, mountPath: /gate}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, initialDelaySeconds: 3, periodSeconds: 5}
+      volumes:
+        - {name: src, configMap: {name: jit-gate-src}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jit-gate-k8s, namespace: k8s-mcp}
+spec:
+  selector: {app: jit-gate-k8s}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+# writes: agent-sandbox -> jit-gate-k8s:8000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-gate-from-agent-sandbox, namespace: k8s-mcp}
+spec:
+  podSelector: {matchLabels: {app: jit-gate-k8s}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: agent-sandbox}}}]
+      ports: [{protocol: TCP, port: 8000}]
+---
+# gate egress: -> k8s-mcp-edit (intra-ns) + -> jit-approver /jwks (mcp-gateway)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-egress-gate, namespace: k8s-mcp}
+spec:
+  podSelector: {matchLabels: {app: jit-gate-k8s}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: k8s-mcp-edit}}}]
+      ports: [{protocol: TCP, port: 8080}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: mcp-gateway}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+# edit instance reachable ONLY from the gate (intra-ns)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-edit-from-gate, namespace: k8s-mcp}
+spec:
+  podSelector: {matchLabels: {app: k8s-mcp-edit}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: jit-gate-k8s}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+# jit-approver /jwks reachable from the k8s-mcp gate
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-jwks-from-k8s-mcp, namespace: mcp-gateway}
+spec:
+  podSelector: {matchLabels: {app: jit-approver}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: k8s-mcp}}}]
+      ports: [{protocol: TCP, port: 8080}]

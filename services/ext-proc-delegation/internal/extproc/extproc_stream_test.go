@@ -33,13 +33,31 @@ func (s *stubExchanger) Exchange(_ context.Context, _, _ string) (string, error)
 }
 
 type stubVault struct {
-	data      map[string]interface{}
-	err       error
-	grantData map[string]interface{}
-	grantErr  error
+	// data is the default response for FetchToolSecret when no per-name override
+	// matches. Tests that need different data for different secret names should
+	// populate secretData instead (keyed by secret name).
+	data       map[string]interface{}
+	err        error
+	grantData  map[string]interface{}
+	grantErr   error
+	// secretData overrides per-secret-name; if non-nil and the key exists it is
+	// used in preference to data. This lets tests supply distinct read- and
+	// write-token maps for the two-token split (ADR-0012).
+	secretData map[string]map[string]interface{}
+	secretErr  map[string]error
 }
 
-func (s *stubVault) FetchToolSecret(_ context.Context, _ string) (map[string]interface{}, error) {
+func (s *stubVault) FetchToolSecret(_ context.Context, name string) (map[string]interface{}, error) {
+	if s.secretErr != nil {
+		if err, ok := s.secretErr[name]; ok {
+			return nil, err
+		}
+	}
+	if s.secretData != nil {
+		if d, ok := s.secretData[name]; ok {
+			return d, nil
+		}
+	}
 	return s.data, s.err
 }
 
@@ -592,6 +610,7 @@ func testConfigWithSpire() *config.Config {
 	// Static-auth path config required for the /mcp -> static token injection.
 	cfg.StaticAuthPaths = []string{"/mcp"}
 	cfg.StaticTokenSecret = "mcp-tokens"
+	cfg.StaticTokenSecretWrite = "mcp-tokens-write"
 	return cfg
 }
 
@@ -1295,7 +1314,12 @@ func spireJITFixtures(uid string) (*stubOnBehalfExchanger, *stubVault, *stubSpir
 	return &stubOnBehalfExchanger{tok: "exchanged"},
 		&stubVault{
 			grantData: validGrantData(uid, "nonce", "arsalan"),
-			data:      map[string]interface{}{"arsalan": "pfsense-static-token"},
+			// secretData provides both read and write tokens keyed by secret name
+			// so tests can assert which one is injected (ADR-0012).
+			secretData: map[string]map[string]interface{}{
+				"mcp-tokens":       {"arsalan": "pfsense-read-token"},
+				"mcp-tokens-write": {"arsalan": "pfsense-write-token"},
+			},
 		},
 		&stubSpireVerifier{claims: &spire.SVIDClaims{
 			SpiffeID:   "spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/" + uid,
@@ -1305,8 +1329,8 @@ func spireJITFixtures(uid string) (*stubOnBehalfExchanger, *stubVault, *stubSpir
 
 // TestProcess_SpirePath_JITBoundElevation_Allows: a dangerous tool denied under
 // the read-only grant is ALLOWED when a sandbox-bound JIT session JWT whose
-// tool_scope covers it is presented — proving JIT escalation on the delegated
-// SVID path. The per-user static token is still the injected credential.
+// tool_scope covers it is presented. The injected credential must be the
+// per-user WRITE token (from mcp-tokens-write), NOT the read token (ADR-0012).
 func TestProcess_SpirePath_JITBoundElevation_Allows(t *testing.T) {
 	cfg := testConfigWithSpire()
 	const uid = "uid-abc-123"
@@ -1329,8 +1353,9 @@ func TestProcess_SpirePath_JITBoundElevation_Allows(t *testing.T) {
 			injected = h.GetHeader().GetValue()
 		}
 	}
-	if injected != "Bearer pfsense-static-token" {
-		t.Errorf("injected=%q want Bearer pfsense-static-token", injected)
+	// ADR-0012: JIT-elevated write must inject the WRITE token, not the read token.
+	if injected != "Bearer pfsense-write-token" {
+		t.Errorf("injected=%q want Bearer pfsense-write-token (write identity on JIT elevation)", injected)
 	}
 }
 
@@ -1803,4 +1828,210 @@ func TestProcess_SpirePath_AdminGrantHardPinnedToReadOnly(t *testing.T) {
 			imm.ImmediateResponse.GetStatus().GetCode())
 	}
 	_ = stream.CloseSend()
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0012: two-token split-identity tests
+// ---------------------------------------------------------------------------
+
+// TestProcess_SpirePath_TwoToken_NonElevated_InjectsReadToken verifies that a
+// non-elevated SPIRE sandbox request (no JIT session JWT) injects the READ
+// token from mcp-tokens, not the write token.
+func TestProcess_SpirePath_TwoToken_NonElevated_InjectsReadToken(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-two-token-read"
+	const user = "arsalan"
+	const tool = "search_firewall_rules" // read-only tool
+
+	kc := &stubOnBehalfExchanger{tok: "exchanged"}
+	vlt := &stubVault{
+		grantData: validGrantData(uid, "nonce", user),
+		secretData: map[string]map[string]interface{}{
+			"mcp-tokens":       {user: "pfsense-read-token"},
+			"mcp-tokens-write": {user: "pfsense-write-token"},
+		},
+	}
+	sv := &stubSpireVerifier{claims: &spire.SVIDClaims{
+		SpiffeID:   "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/" + uid,
+		SandboxUID: uid,
+	}}
+
+	// No JIT verifier — non-elevated path.
+	client := startServerWithSpire(t, cfg, kc, vlt, okVerifier("ignored"), sv)
+	stream, err := client.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				Headers: headerMap(map[string]string{
+					"authorization": buildSpireBearerHeader(cfg.SpireIssuer),
+					":path":         "/mcp",
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("send headers: %v", err)
+	}
+	if _, err = stream.Recv(); err != nil {
+		t.Fatalf("recv headers ack: %v", err)
+	}
+
+	err = stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestBody{
+			RequestBody: &extprocv3.HttpBody{Body: mcpBodyJSON(t, tool), EndOfStream: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("send body: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv body: %v", err)
+	}
+	if imm, isImm := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse); isImm {
+		t.Fatalf("expected allow, got deny %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+	br, ok := resp.Response.(*extprocv3.ProcessingResponse_RequestBody)
+	if !ok {
+		t.Fatalf("expected RequestBody response, got %T", resp.Response)
+	}
+	var injected string
+	for _, h := range br.RequestBody.GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.GetHeader().GetKey() == "Authorization" {
+			injected = h.GetHeader().GetValue()
+		}
+	}
+	// Non-elevated: must inject the READ token, not the write token.
+	if injected != "Bearer pfsense-read-token" {
+		t.Errorf("injected=%q want Bearer pfsense-read-token (read identity on non-elevated path)", injected)
+	}
+	_ = stream.CloseSend()
+}
+
+// TestProcess_SpirePath_TwoToken_JITElevated_InjectsWriteToken verifies that a
+// JIT-elevated SPIRE sandbox request injects the WRITE token from
+// mcp-tokens-write, not the read token — the split-identity contract of ADR-0012.
+func TestProcess_SpirePath_TwoToken_JITElevated_InjectsWriteToken(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-two-token-write"
+	const user = "arsalan"
+	const tool = "create_firewall_rule_advanced"
+
+	kc := &stubOnBehalfExchanger{tok: "exchanged"}
+	vlt := &stubVault{
+		grantData: validGrantData(uid, "nonce", user),
+		secretData: map[string]map[string]interface{}{
+			"mcp-tokens":       {user: "pfsense-read-token"},
+			"mcp-tokens-write": {user: "pfsense-write-token"},
+		},
+	}
+	sv := &stubSpireVerifier{claims: &spire.SVIDClaims{
+		SpiffeID:   "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/" + uid,
+		SandboxUID: uid,
+	}}
+	jit := jitVerifier(uid, []string{tool})
+
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	if imm, isImm := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse); isImm {
+		t.Fatalf("expected JIT-elevated allow, got deny %v", imm.ImmediateResponse.GetStatus().GetCode())
+	}
+	br, ok := resp.Response.(*extprocv3.ProcessingResponse_RequestBody)
+	if !ok {
+		t.Fatalf("expected RequestBody response, got %T", resp.Response)
+	}
+	var injected string
+	for _, h := range br.RequestBody.GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.GetHeader().GetKey() == "Authorization" {
+			injected = h.GetHeader().GetValue()
+		}
+	}
+	// JIT-elevated: must inject the WRITE token, not the read token.
+	if injected != "Bearer pfsense-write-token" {
+		t.Errorf("injected=%q want Bearer pfsense-write-token (write identity on JIT-elevated path)", injected)
+	}
+}
+
+// TestProcess_SpirePath_TwoToken_JITElevated_WriteTokenMissing_DenyFailClosed
+// verifies the fail-closed invariant: when a request is JIT-elevated but the
+// write token is absent from Vault (missing user key), the call is DENIED with
+// 403 (write_identity_unavailable). It must NOT fall back to the read token.
+func TestProcess_SpirePath_TwoToken_JITElevated_WriteTokenMissing_DenyFailClosed(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-two-token-missing-write"
+	const user = "arsalan"
+	const tool = "create_firewall_rule_advanced"
+
+	kc := &stubOnBehalfExchanger{tok: "exchanged"}
+	vlt := &stubVault{
+		grantData: validGrantData(uid, "nonce", user),
+		// Write secret exists but has NO entry for this user (empty map).
+		// Read secret is present — must NOT be used as fallback.
+		secretData: map[string]map[string]interface{}{
+			"mcp-tokens":       {user: "pfsense-read-token"},
+			"mcp-tokens-write": {}, // user key absent → write_identity_unavailable
+		},
+	}
+	sv := &stubSpireVerifier{claims: &spire.SVIDClaims{
+		SpiffeID:   "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/" + uid,
+		SandboxUID: uid,
+	}}
+	jit := jitVerifier(uid, []string{tool})
+
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	imm, ok := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse)
+	if !ok {
+		t.Fatalf("FAIL OPEN: expected deny (write_identity_unavailable), got allow %T", resp.Response)
+	}
+	if imm.ImmediateResponse.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+		t.Errorf("expected 403 (write_identity_unavailable fail-closed), got %v",
+			imm.ImmediateResponse.GetStatus().GetCode())
+	}
+}
+
+// TestProcess_SpirePath_TwoToken_JITElevated_WriteSecretFetchError_DenyFailClosed
+// verifies the fail-closed invariant when the write-secret Vault fetch itself
+// errors (network, policy denial, etc.): the call must be DENIED, not allowed
+// under the read token.
+func TestProcess_SpirePath_TwoToken_JITElevated_WriteSecretFetchError_DenyFailClosed(t *testing.T) {
+	cfg := testConfigWithSpire()
+	const uid = "uid-two-token-fetch-err"
+	const user = "arsalan"
+	const tool = "create_firewall_rule_advanced"
+
+	kc := &stubOnBehalfExchanger{tok: "exchanged"}
+	vlt := &stubVault{
+		grantData: validGrantData(uid, "nonce", user),
+		secretData: map[string]map[string]interface{}{
+			"mcp-tokens": {user: "pfsense-read-token"},
+			// mcp-tokens-write is not in secretData — falls through to data/err.
+		},
+		// Default err for FetchToolSecret when no secretData key matches.
+		err: errors.New("vault: HTTP 403 policy denied write secret"),
+	}
+	sv := &stubSpireVerifier{claims: &spire.SVIDClaims{
+		SpiffeID:   "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/" + uid,
+		SandboxUID: uid,
+	}}
+	jit := jitVerifier(uid, []string{tool})
+
+	client := startServerWithSpireJIT(t, cfg, kc, vlt, okVerifier("ignored"), sv, jit)
+
+	resp := runSpireJITToolCall(t, client, cfg, tool)
+	imm, ok := resp.Response.(*extprocv3.ProcessingResponse_ImmediateResponse)
+	if !ok {
+		t.Fatalf("FAIL OPEN: expected deny (write_token_fetch_failed), got allow %T", resp.Response)
+	}
+	if imm.ImmediateResponse.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+		t.Errorf("expected 403 (write_token_fetch_failed fail-closed), got %v",
+			imm.ImmediateResponse.GetStatus().GetCode())
+	}
 }

@@ -171,3 +171,73 @@ even for the demo since these manifests are now GitOps-durable and will be reuse
 - `SpireTLSInsecure` only takes effect because `SPIRE_JWKS_URL` is now set by this patch; before
   this change the insecure client was dead code. So this change set is what turns Finding A from
   latent to live — strengthening the case for fixing A as part of this Stage-1 work.
+
+---
+
+## Final pre-merge confirmation (2026-06-17, independent security-reviewer pass)
+
+Independent verification of commit `c028188` on `backup/e2e-delegated-zero-trust` against the two
+CRITICALs. Read every changed file (not relying on the self-verification doc). Findings below.
+
+### Finding A (SVID forgery via JWKS spoofing) — **CLOSED**
+- `cmd/server/main.go:202 buildSpireHTTPClient`, verified line-by-line:
+  - (a) `InsecureSkipVerify` (case 1, line 206-209) is reachable **only** when `cfg.SpireTLSInsecure`
+    is true, which `config.go:131` sets **only** on `SPIRE_TLS_INSECURE == "true"` (default `""` → false).
+  - (b) Default path (case 3, line 223-241) builds `RootCAs` from the in-pod SPIFFE bundle:
+    `src.GetX509SVID()` → `.ID.TrustDomain()` → `GetX509BundleForTrustDomain(td)` → `X509Authorities()`,
+    with `MinVersion: tls.VersionTLS12`. No system-root or insecure fallback.
+  - (c) Fail-closed: any error in case 3 returns; at the call site `main.go:120-123` a
+    `buildSpireHTTPClient` error does `return fmt.Errorf(...)` and **aborts startup**. No degraded path.
+  - (d) `SPIRE_CA_FILE` path (case 2, line 211-221) is fail-closed: returns error on unreadable file
+    and on `AppendCertsFromPEM` parsing zero certs. `config.go:81/132` wires `SpireCAFile`.
+- Overlay confirmed: `deployment-patch.yaml` sets SPIRE_JWKS_URL/ISSUER/AUDIENCE and **does not**
+  set `SPIRE_TLS_INSECURE` (default-off secure path). `kustomization.yaml` pins the image by
+  **digest** `sha256:0488968457c3a52a1592283d0e35ca0d07abb6068933806a2a337082e763d163` (closes the
+  mutable-tag provenance note D). 5 new unit tests present in `cmd/server/main_test.go`
+  (Insecure, CAFile happy/missing/invalid-PEM, InsecureTakesPrecedenceOverCAFile).
+- **Residual (runtime, NOT a code defect):** Go validates the JWKS endpoint hostname against the
+  served cert SAN. If the live `spire-oidc` route cert SAN omits `spire-oidc.apps.anaeem.na-launch.com`,
+  the default path **fails closed** (verifier init warns, sandbox path disabled, calls deny — no
+  forgery, no leak). Confirm the SAN on the live route; if mismatched, mount the right CA via
+  `SPIRE_CA_FILE`. Safe-by-default. This is the only A item that cannot be settled from the diff.
+- **Minor note:** insecure (case 1) is ordered before CA-file (case 2), so `SPIRE_TLS_INSECURE=true`
+  wins over a set `SPIRE_CA_FILE`. Documented in `config.go:79` and asserted by a test. Acceptable
+  because insecure is an explicit, default-off, never-set-in-overlay opt-in.
+
+### Finding B (label-forgeable sandbox identity) — **PARTIALLY-CLOSED (adequate for PoC)**
+- Confirmed: `serviceaccount.yaml` (`automountServiceAccountToken: false`), `pod.yaml`
+  (`serviceAccountName: e2e-harness`), `rbac.yaml` (empty-rules Role + RoleBinding, with an explicit
+  do-not-grant-pods:create incident note), and `require-e2e-harness-serviceaccount.yaml`
+  (`validationFailureAction: Audit`, pattern pins SA on the labelled pods).
+- **Precise residual:** the Kyverno policy is **Audit** (and per memory Kyverno is parked at
+  replicas 0), so the SA-pin is **not enforced at admission**. The ClusterSPIFFEID
+  (`cluster-spiffe-ids.yaml:88`) still derives the SVID `sandbox/<uuid>` from the attacker-settable
+  `nvidia-ida/sandbox-id` pod label, selected only by the `nvidia-ida/e2e-harness=true` label —
+  unchanged from the original finding. The **effective control today is RBAC on `pods:create` in
+  `agent-sandbox`** (admin/launcher-only; rbac.yaml grants none and forbids adding any).
+- **Verdict for PoC:** adequately mitigated for a single-tenant demo namespace. The bar is raised
+  (dedicated tokenless SA + pin + committed Audit policy ready to flip to Enforce). Production must:
+  flip the policy to Enforce with Kyverno running, and bind the uuid to a launcher-controlled
+  non-mutable field (pod UID) rather than a free label.
+
+### ArgoCD apps blast-radius (prune) — acceptable
+- `ext-proc-delegation.yaml` / `jit-approver.yaml`: `prune: true, selfHeal: false`, each scoped to a
+  single overlay path (`services/.../overlays/anaeem`) in namespace `mcp-gateway`, SSA + wave 5,
+  added to `gitops/applications/kustomization.yaml`. Prune only removes resources each app itself
+  created — no shared/global resources in scope. `selfHeal: false` means operator edits aren't
+  stomped (safe). The forgeable-label `e2e-harness` Pod is deliberately **NOT** ArgoCD-managed
+  (`e2e-harness/kustomization.yaml` header; applied on-demand), so auto-prune cannot recreate/churn
+  it — correct. No blast-radius concern. Note: `targetRevision: main` means these apps only take
+  effect once the commit reaches `main`; benign.
+
+### Per-finding verdict
+- Finding A: **CLOSED** (one runtime SAN check remains as a documented, fail-closed pre-journey gate).
+- Finding B: **PARTIALLY-CLOSED** — adequately mitigated for the PoC; not production-safe until
+  Enforce + non-mutable uuid binding.
+
+### Overall: **MERGE-READY-FOR-POC: yes**
+Both CRITICALs are remediated to PoC-adequate posture; no new credential-leak, fail-open, or
+trust-domain-bypass path was introduced by this commit. Two pre-journey (not pre-merge-blocking)
+items stand: (1) live `spire-oidc` cert-SAN verification for Finding A's default TLS path, and
+(2) flip the Kyverno SA-pin policy to Enforce with Kyverno running before any multi-tenant use.
+Not for production until Finding B's label binding is hardened.
