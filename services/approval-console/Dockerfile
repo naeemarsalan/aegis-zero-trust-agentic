@@ -11,7 +11,8 @@ RUN pip install --no-cache-dir \
     "fastapi==0.115.12" \
     "uvicorn[standard]==0.34.3" \
     "httpx==0.28.1" \
-    "pydantic==2.12.5"
+    "pydantic==2.12.5" \
+    "kubernetes==31.0.0"
 
 COPY pyproject.toml ./
 COPY src/ ./src/

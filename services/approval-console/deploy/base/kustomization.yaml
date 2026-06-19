@@ -10,3 +10,4 @@ resources:
   - service.yaml
   - route.yaml
   - networkpolicy.yaml
+  - rbac.yaml

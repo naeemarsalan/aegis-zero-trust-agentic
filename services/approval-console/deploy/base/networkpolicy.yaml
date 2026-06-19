@@ -96,3 +96,32 @@ spec:
       ports:
         - port: 443
           protocol: TCP
+---
+# Egress: allow to Kubernetes API server so approval-console can exec into the
+# harness pod to launch the Claude agent.
+# OpenShift internal apiserver VIP: 172.30.0.1:443
+# Standard out-of-cluster apiserver port: 0.0.0.0/0:6443
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approval-console-egress-apiserver
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: approval-console
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.30.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+          protocol: TCP

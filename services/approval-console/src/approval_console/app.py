@@ -20,12 +20,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shlex
+import threading
 import time
+import uuid
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from approval_console.config import Config
 
@@ -36,6 +39,134 @@ app = FastAPI(
     description="Operator web console for JIT write-approval requests",
     version="0.1.0",
 )
+
+# ---------------------------------------------------------------------------
+# In-memory agent session store
+# ---------------------------------------------------------------------------
+# Each entry: {"lines": list[str], "done": bool, "goal": str, "seq": int}
+# "seq" is a monotonically increasing counter assigned at creation time so the
+# UI can sort sessions by recency without a real timestamp (avoids the UTC
+# import dependency in the store itself).
+_SESSIONS: dict[str, dict[str, Any]] = {}
+_SESSIONS_LOCK = threading.Lock()
+_SESSION_COUNTER = 0
+
+
+def _new_session(goal: str) -> str:
+    """Allocate a new session entry; return its ID."""
+    global _SESSION_COUNTER  # noqa: PLW0603
+    sid = uuid.uuid4().hex
+    with _SESSIONS_LOCK:
+        _SESSION_COUNTER += 1
+        _SESSIONS[sid] = {
+            "lines": [],
+            "done": False,
+            "goal": goal,
+            "seq": _SESSION_COUNTER,
+        }
+    return sid
+
+
+def _append_line(sid: str, line: str) -> None:
+    with _SESSIONS_LOCK:
+        _SESSIONS[sid]["lines"].append(line)
+
+
+def _mark_done(sid: str) -> None:
+    with _SESSIONS_LOCK:
+        _SESSIONS[sid]["done"] = True
+
+
+def _get_session(sid: str) -> dict[str, Any] | None:
+    with _SESSIONS_LOCK:
+        return _SESSIONS.get(sid)
+
+
+def _launch_agent_thread(sid: str, goal: str) -> None:
+    """Background daemon thread: exec the agent in the harness pod and pump its stdout."""
+
+    def _run() -> None:
+        try:
+            # Import kubernetes here so unit tests can monkeypatch _do_k8s_exec
+            # without needing a real cluster at import time.
+            _do_k8s_exec(sid, goal)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("agent_session.launch_error", extra={"sid": sid, "error": str(exc)})
+            _append_line(sid, json.dumps({"type": "error", "msg": str(exc)}))
+        finally:
+            _mark_done(sid)
+
+    t = threading.Thread(target=_run, daemon=True, name=f"agent-{sid[:8]}")
+    t.start()
+
+
+def _do_k8s_exec(sid: str, goal: str) -> None:
+    """Perform the actual Kubernetes pod exec and pump lines into the session store.
+
+    Extracted as a standalone function so tests can monkeypatch it without
+    touching the full threading machinery.
+    """
+    from kubernetes import client as k8sclient  # type: ignore[import-untyped]
+    from kubernetes import config as k8sconfig  # type: ignore[import-untyped]
+    from kubernetes.stream import stream  # type: ignore[import-untyped]
+
+    k8sconfig.load_incluster_config()
+    core = k8sclient.CoreV1Api()
+
+    pods = core.list_namespaced_pod(
+        Config.harness_namespace(),
+        label_selector=Config.harness_selector(),
+        field_selector="status.phase=Running",
+    )
+    if not pods.items:
+        raise RuntimeError(
+            f"No running pod found with selector {Config.harness_selector()!r} "
+            f"in namespace {Config.harness_namespace()!r}"
+        )
+    pod_name = pods.items[-1].metadata.name
+
+    goal_shell = shlex.quote(goal)
+    cmd = (
+        "cd /app && PYTHONPATH=/app/src "
+        f"MCP_READ_URL={Config.k8s_mcp_read_url()} "
+        f"MCP_WRITE_URL={Config.k8s_mcp_write_url()} "
+        f"JIT_TARGET_NAMESPACE={Config.jit_target_namespace()} "
+        "MCP_SEND_SVID=false "
+        f"AGENT_ALLOWED_TOOLS={Config.agent_allowed_tools()} "
+        f"AGENT_MAX_TURNS={Config.agent_max_turns()} "
+        f"AGENT_GOAL={goal_shell} "
+        "python3 -m agent_harness.agent_runner"
+    )
+
+    resp = stream(
+        core.connect_get_namespaced_pod_exec,
+        pod_name,
+        Config.harness_namespace(),
+        container=Config.harness_container(),
+        command=["sh", "-c", cmd],
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=False,
+    )
+
+    try:
+        while resp.is_open():
+            resp.update(timeout=1)
+            if resp.peek_stdout():
+                for ln in resp.read_stdout().splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        _append_line(sid, ln)
+            if resp.peek_stderr():
+                for ln in resp.read_stderr().splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        # Wrap stderr in a JSON envelope so the UI can render it
+                        _append_line(sid, json.dumps({"type": "stderr", "msg": ln}))
+    finally:
+        resp.close()
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +347,70 @@ _HTML = """\
   }
   .empty-row td { color: #555; text-align: center; padding: 2rem; }
   #refresh-counter { color: #555; }
+  /* --- Troubleshoot panel --- */
+  .ts-panel {
+    background: #13161f;
+    border: 1px solid #2a2d34;
+    border-radius: 0.45em;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .ts-panel h2 {
+    color: #5bc8f5;
+    font-size: 1rem;
+    margin: 0 0 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .ts-goal {
+    width: 100%;
+    min-height: 5rem;
+    background: #0d1117;
+    color: #e0e0e0;
+    border: 1px solid #2a2d34;
+    border-radius: 0.3em;
+    padding: 0.5rem 0.75rem;
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.8rem;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .ts-goal:focus { outline: 1px solid #5bc8f5; }
+  button.ts-start {
+    margin-top: 0.5rem;
+    background: #1a3a4a;
+    color: #5bc8f5;
+    border: 1px solid #5bc8f5;
+    padding: 0.35em 1em;
+    border-radius: 0.3em;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+  button.ts-start:hover { background: #1e4a5e; }
+  button.ts-start:disabled { background: #1a1d24; color: #555; border-color: #333; cursor: default; }
+  #ts-status {
+    font-size: 0.8rem;
+    color: #888;
+    margin-top: 0.4rem;
+    min-height: 1.2em;
+  }
+  #transcript {
+    margin-top: 0.75rem;
+    background: #0d1117;
+    border: 1px solid #2a2d34;
+    border-radius: 0.35em;
+    padding: 0.6rem 0.75rem;
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.78rem;
+    line-height: 1.55;
+    color: #cdd9e5;
+    max-height: 420px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: none;
+  }
 </style>
 </head>
 <body>
@@ -223,6 +418,16 @@ _HTML = """\
 <p class="subtitle">
   Zero-trust PoC &mdash; approve by merging the Gitea PR. No auth on this console (PoC caveat; behind cluster route).
 </p>
+
+<!-- ===== Troubleshoot panel ===== -->
+<div class="ts-panel">
+  <h2>Troubleshoot OpenShift</h2>
+  <textarea id="goal" class="ts-goal">__DEFAULT_GOAL__</textarea>
+  <br>
+  <button id="ts-btn" class="ts-start" onclick="startSession()">Start session</button>
+  <div id="ts-status"></div>
+  <pre id="transcript"></pre>
+</div>
 
 <div id="status-bar">Loading&hellip;</div>
 
@@ -267,6 +472,87 @@ _HTML = """\
 </div>
 
 <script>
+// ---- Troubleshoot session ----
+let _tsSource = null;
+
+function _renderLine(raw) {
+  try {
+    const obj = JSON.parse(raw);
+    const t = obj.type || '';
+    if (t === 'assistant' && obj.text)      return '🤖 ' + obj.text;
+    if (t === 'tool_use' && obj.tool)       return '  → tool: ' + obj.tool;
+    if (t === 'tool_result')                return '  ⮭ ' + (obj.ok ? 'ok' : 'ERR') + (obj.content ? ': ' + String(obj.content).slice(0, 200) : '');
+    if (t === 'result' && obj.summary)      return '✅ ' + obj.summary;
+    if (t === 'error' && obj.msg)           return '❌ ' + obj.msg;
+    if (t === 'stderr' && obj.msg)          return '[stderr] ' + obj.msg;
+    if (t === 'system')                     return '[sys] ' + (obj.text || JSON.stringify(obj));
+  } catch (_) { /* fall through */ }
+  return raw;
+}
+
+async function startSession() {
+  const btn = document.getElementById('ts-btn');
+  const statusEl = document.getElementById('ts-status');
+  const transcript = document.getElementById('transcript');
+  const goal = document.getElementById('goal').value.trim();
+  if (!goal) { statusEl.textContent = 'Goal cannot be empty.'; return; }
+
+  // Close any existing SSE stream
+  if (_tsSource) { _tsSource.close(); _tsSource = null; }
+
+  btn.disabled = true;
+  btn.textContent = 'Launching…';
+  transcript.style.display = 'none';
+  transcript.textContent = '';
+  statusEl.textContent = 'Starting session…';
+
+  let sid;
+  try {
+    const r = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(data));
+    sid = data.session_id;
+  } catch (e) {
+    statusEl.textContent = 'Launch failed: ' + e;
+    btn.disabled = false;
+    btn.textContent = 'Start session';
+    return;
+  }
+
+  statusEl.textContent = 'Session ' + sid.slice(0, 8) + '… streaming';
+  transcript.style.display = 'block';
+  transcript.textContent = '';
+  btn.textContent = 'Running…';
+
+  _tsSource = new EventSource('/api/sessions/' + sid + '/stream');
+
+  _tsSource.onmessage = function(e) {
+    transcript.textContent += _renderLine(e.data) + '\n';
+    transcript.scrollTop = transcript.scrollHeight;
+  };
+
+  _tsSource.addEventListener('done', function() {
+    _tsSource.close();
+    _tsSource = null;
+    statusEl.textContent = 'Session ' + sid.slice(0, 8) + '… complete.';
+    btn.disabled = false;
+    btn.textContent = 'Start session';
+  });
+
+  _tsSource.onerror = function() {
+    _tsSource.close();
+    _tsSource = null;
+    statusEl.textContent = 'Stream error or session ended.';
+    btn.disabled = false;
+    btn.textContent = 'Start session';
+  };
+}
+
+// ---- Requests table ----
 const POLL_INTERVAL = __POLL_INTERVAL_MS__;
 let _detailCache = {};
 let _countdown = POLL_INTERVAL / 1000;
@@ -443,7 +729,16 @@ setInterval(loadRequests, POLL_INTERVAL);
 async def index() -> HTMLResponse:
     """Serve the self-contained operator console page."""
     poll_ms = Config.poll_interval_seconds() * 1000
-    html = _HTML.replace("__POLL_INTERVAL_MS__", str(poll_ms))
+    # Escape the goal for safe injection into an HTML attribute/textarea value.
+    # The goal text is placed inside a <textarea> (not an attribute), so we only
+    # need to escape the HTML special characters that would break the tag.
+    import html as _html_mod
+
+    default_goal_escaped = _html_mod.escape(Config.default_goal(), quote=False)
+    html = (
+        _HTML.replace("__POLL_INTERVAL_MS__", str(poll_ms))
+        .replace("__DEFAULT_GOAL__", default_goal_escaped)
+    )
     return HTMLResponse(content=html)
 
 
@@ -723,6 +1018,118 @@ async def approve(session_id: str) -> JSONResponse:
         },
         status_code=200,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions — launch a troubleshoot agent session
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sessions")
+async def create_session(body: dict[str, Any] | None = None) -> JSONResponse:
+    """Launch the Claude agent in the harness pod and return a streaming session ID.
+
+    The agent is exec'd inside the running e2e-harness pod (namespace agent-sandbox,
+    container agent).  Its stdout (one JSON object per line) is pumped into an
+    in-memory buffer that /api/sessions/{sid}/stream fans out via SSE.
+
+    Body (optional JSON): {"goal": "<natural-language goal>"}
+    If goal is omitted the default troubleshoot goal from Config is used.
+    """
+    goal = ""
+    if body and isinstance(body.get("goal"), str):
+        goal = body["goal"].strip()
+    if not goal:
+        goal = Config.default_goal()
+
+    sid = _new_session(goal)
+    _launch_agent_thread(sid, goal)
+
+    _audit(
+        "agent.session_created",
+        actor="console-operator",
+        outcome="allow",
+        latency_ms=0,
+        tool_args_hash=_hash_args({"goal": goal}),
+        session_id=sid,
+    )
+    return JSONResponse(content={"session_id": sid}, status_code=202)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions/{sid}/stream — SSE transcript stream
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/sessions/{sid}/stream")
+async def stream_session(sid: str) -> StreamingResponse:
+    """Server-Sent Events stream for a running (or completed) agent session.
+
+    Each agent stdout line is emitted as one SSE event:
+        data: <raw JSON line>\\n\\n
+
+    When all lines have been sent and the session is marked done, a final
+    termination event is sent:
+        event: done\\ndata: {}\\n\\n
+
+    The generator uses time.sleep (0.5 s poll interval); FastAPI/Starlette
+    runs sync generators in a thread pool so this does not block the event loop.
+    """
+    session = _get_session(sid)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {sid!r} not found")
+
+    def _gen():  # type: ignore[no-untyped-def]
+        idx = 0
+        while True:
+            with _SESSIONS_LOCK:
+                lines = _SESSIONS[sid]["lines"]
+                done = _SESSIONS[sid]["done"]
+                pending = lines[idx:]
+                idx_new = len(lines)
+
+            for ln in pending:
+                yield f"data: {ln}\n\n"
+            idx = idx_new
+
+            if done and idx >= idx_new:
+                # All lines drained and session finished
+                yield "event: done\ndata: {}\n\n"
+                return
+
+            time.sleep(0.5)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions — list all in-memory agent sessions
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/sessions")
+async def list_sessions() -> JSONResponse:
+    """Return a summary list of all in-memory agent sessions (newest first)."""
+    with _SESSIONS_LOCK:
+        items = [
+            {
+                "session_id": sid,
+                "done": data["done"],
+                "lines": len(data["lines"]),
+                "goal": data["goal"],
+            }
+            for sid, data in sorted(
+                _SESSIONS.items(), key=lambda kv: kv[1]["seq"], reverse=True
+            )
+        ]
+    return JSONResponse(content=items)
 
 
 # ---------------------------------------------------------------------------
