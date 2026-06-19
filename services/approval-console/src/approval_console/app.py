@@ -1166,6 +1166,7 @@ async def stream_session(sid: str) -> StreamingResponse:
 
     def _gen():  # type: ignore[no-untyped-def]
         idx = 0
+        idle = 0
         while True:
             with _SESSIONS_LOCK:
                 lines = _SESSIONS[sid]["lines"]
@@ -1175,7 +1176,18 @@ async def stream_session(sid: str) -> StreamingResponse:
 
             for ln in pending:
                 yield f"data: {ln}\n\n"
-            idx = idx_new
+
+            if pending:
+                idx = idx_new
+                idle = 0
+            else:
+                # No new lines (e.g. the agent is blocked waiting for human approval).
+                # Emit an SSE comment heartbeat every ~10s so the OpenShift router /
+                # oauth2-proxy don't time out the idle connection and cut the stream.
+                idle += 1
+                if idle >= 20:
+                    yield ": keepalive\n\n"
+                    idle = 0
 
             if done and idx >= idx_new:
                 # All lines drained and session finished

@@ -16,6 +16,7 @@ metadata:
     app.kubernetes.io/name: approval-console
     app.kubernetes.io/part-of: nvidia-ida
   annotations:
+    haproxy.router.openshift.io/timeout: 1h
     nvidia-ida/security: "keycloak-oidc-protected — oauth2-proxy sidecar enforces auth"
 spec:
   host: approval-console.apps.anaeem.na-launch.com
