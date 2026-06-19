@@ -591,7 +591,7 @@ async function startSession() {
   _tsSource = new EventSource('/api/sessions/' + sid + '/stream');
 
   _tsSource.onmessage = function(e) {
-    transcript.textContent += _renderLine(e.data) + '\n';
+    transcript.textContent += _renderLine(e.data) + '\\n';
     transcript.scrollTop = transcript.scrollHeight;
   };
 

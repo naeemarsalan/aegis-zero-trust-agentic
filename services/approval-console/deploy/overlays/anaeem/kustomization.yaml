@@ -8,7 +8,7 @@ resources:
 
 images:
   - name: oci.arsalan.io/nvidia-ida/approval-console
-    digest: sha256:31c77ea913480564fadc1e831f7ffb489a1ed9e8552fb3903e8cc6e9d15bc5ff
+    digest: sha256:98323259e56f1245de510a127cd077b84c612aaddb4b58b6d4dd6cb95520ad89
 
 patches:
   - path: deployment-patch.yaml
