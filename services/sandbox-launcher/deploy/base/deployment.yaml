@@ -64,6 +64,26 @@ spec:
             - containerPort: 8080
               name: http
               protocol: TCP
+          # Inference credentials for the BRAIN that the launched sandbox runs.
+          # The launcher reads these from its OWN pod env (openshell._brain_env) and
+          # copies them into the sandbox template — the proto environment is
+          # map<string,string>, so a Secret cannot be referenced by name there.
+          # Mirrors the e2e-harness pattern: an out-of-band Secret (NOT in git) carries
+          # ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / AGENT_MODEL /
+          # ANTHROPIC_DEFAULT_*_MODEL / ANTHROPIC_SMALL_FAST_MODEL. optional:true so the
+          # launcher still boots without it (sandboxes then fall back to sleep-infinity).
+          #   oc -n mcp-gateway create secret generic agent-harness-inference \
+          #     --from-literal=ANTHROPIC_BASE_URL=http://172.16.2.251:4000 \
+          #     --from-literal=ANTHROPIC_API_KEY=<LITELLM_VIRTUAL_KEY> \
+          #     --from-literal=ANTHROPIC_AUTH_TOKEN=<LITELLM_VIRTUAL_KEY> \
+          #     --from-literal=AGENT_MODEL=anthropic/claude-sonnet-4 \
+          #     --from-literal=ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4 \
+          #     --from-literal=ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-sonnet-4 \
+          #     --from-literal=ANTHROPIC_SMALL_FAST_MODEL=anthropic/claude-sonnet-4
+          envFrom:
+            - secretRef:
+                name: agent-harness-inference
+                optional: true
           env:
             - name: OPENSHELL_GATEWAY_ADDR
               value: "openshell.openshell.svc:8080"
@@ -89,13 +109,35 @@ spec:
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json"
             - name: RHDH_TOKEN_ISSUER
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
-            # Sandbox workload configuration
+            # Sandbox workload configuration.
+            # Brain image: the OpenShell supervisor overrides the container command
+            # via OPENSHELL_SANDBOX_COMMAND (see SANDBOX_BOOT_AGENT below), so the
+            # image ENTRYPOINT is bypassed — but the runner + skills + claude CLI must
+            # be PRESENT in the image. The agent-harness image has them; the legacy
+            # sandbox-agent (Go device-flow capstone) does not.
             - name: SANDBOX_IMAGE
-              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:sh3"
+              value: "oci.arsalan.io/nvidia-ida/agent-harness:self-escalate"
             - name: SANDBOX_RUNTIME_CLASS
               value: ""
             - name: SANDBOX_NAMESPACE
               value: "openshell"
+            # ---------------------------------------------------------------------------
+            # Brain boot — make the sandbox run the agent-harness runner instead of
+            # "sleep infinity". The launcher copies these into the SandboxTemplate
+            # environment map (the only command lever the OpenShell proto exposes):
+            #   OPENSHELL_SANDBOX_COMMAND = "cd /app && exec python -m agent_harness.agent_runner"
+            #   AGENT_GOAL                = body.goal (threaded per-request)
+            #   AGENT_ALLOWED_TOOLS       = below
+            #   ANTHROPIC_* / AGENT_MODEL = from the agent-harness-inference Secret (envFrom)
+            # Set SANDBOX_BOOT_AGENT=false to revert to the legacy sleep-infinity sandbox.
+            - name: SANDBOX_BOOT_AGENT
+              value: "true"
+            # Bash drives the in-sandbox mcp-call helper, which runs the JIT
+            # self-escalation (deny -> file request -> human approves in console ->
+            # retry) so the agent never handles a credential and no native MCP server
+            # registration is needed. Widen via a comma-separated list if required.
+            - name: AGENT_ALLOWED_TOOLS
+              value: "Bash"
             - name: KEYCLOAK_REALM_URL
               value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
             - name: MCP_GATEWAY_URL

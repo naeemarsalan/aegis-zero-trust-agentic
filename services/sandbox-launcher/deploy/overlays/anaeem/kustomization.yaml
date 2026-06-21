@@ -8,7 +8,10 @@ resources:
 
 images:
   - name: oci.arsalan.io/nvidia-ida/sandbox-launcher
-    newTag: dev
+    # Native brain boot via ExecSandbox (gateway 0.0.62 reserves
+    # OPENSHELL_SANDBOX_COMMAND, so the runner is exec'd into the ready sandbox
+    # instead of being set as the boot command). Rollback: newTag: dev (prior build).
+    newTag: execboot-20260621-173204
 
 patches:
   - path: deployment-patch.yaml

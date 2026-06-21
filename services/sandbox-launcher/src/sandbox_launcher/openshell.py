@@ -37,6 +37,41 @@ Environment variables:
   SANDBOX_RUNTIME_CLASS             — runtimeClassName (default: kata)
   KEYCLOAK_REALM_URL                — injected as KEYCLOAK_REALM_URL env in sandbox template
   MCP_GATEWAY_URL                   — injected as MCP_GATEWAY_URL env in sandbox template
+
+Brain boot (sandbox runs a real LLM agent, not `sleep infinity`):
+  *** Live-gateway contract (0.0.62). ***
+  The gateway RESERVES every env key beginning with `OPENSHELL_` and REJECTS
+  CreateSandbox if the caller sets one in SandboxTemplate.environment. The
+  supervisor's exec command (`OPENSHELL_SANDBOX_COMMAND`, default "sleep infinity")
+  is fixed by the gateway and is NOT a caller-settable lever. So the brain is
+  booted NATIVELY, after the sandbox is Ready, via the `ExecSandbox` RPC
+  (exec_agent_brain), which DOES accept a caller-supplied command + environment.
+  The agent goal, allowed tools, and LLM credentials are delivered as NON-reserved
+  env keys (also surfaced in the gateway's OPENSHELL_USER_ENVIRONMENT blob). The
+  launcher reads the inference credentials from its OWN pod env (same sourcing
+  pattern as LAUNCHER_OIDC_CLIENT_SECRET: *_FILE wins over the plain env var); the
+  inference key is NEVER baked into the image.
+
+  NOTE: this requires the SANDBOX_IMAGE to contain the brain runtime (python +
+  agent_harness + the system claude CLI + .claude/skills — see the agent-harness
+  Dockerfile). A bare webshell image (e.g. sandbox-agent:sh3) has none of these and
+  the runner exec fails with `cd: /app: No such file or directory`.
+
+  SANDBOX_BOOT_AGENT                — "true" (default) to boot the agent runner;
+                                       "false" to keep the legacy sleep-infinity
+                                       sandbox (no brain).
+  SANDBOX_BRAIN_COMMAND             — shell string the runner is launched with via
+                                       ExecSandbox (default:
+                                       "cd /app && exec python -m agent_harness.agent_runner")
+  AGENT_ALLOWED_TOOLS               — comma-sep tools for the runner (default: Bash,
+                                       which drives the mcp-call JIT self-escalation)
+  ANTHROPIC_BASE_URL                — LLM endpoint (e.g. http://172.16.2.251:4000)
+  ANTHROPIC_API_KEY / _AUTH_TOKEN   — LiteLLM virtual key (plain env; *_FILE wins)
+  ANTHROPIC_API_KEY_FILE etc.       — file paths for the above (Vault/Secret mount)
+  AGENT_MODEL                       — inference model id (e.g. anthropic/claude-sonnet-4)
+  ANTHROPIC_DEFAULT_SONNET_MODEL    — passed through to the sandbox if set
+  ANTHROPIC_DEFAULT_OPUS_MODEL      — passed through to the sandbox if set
+  ANTHROPIC_SMALL_FAST_MODEL        — passed through to the sandbox if set
 """
 
 from __future__ import annotations
@@ -280,11 +315,245 @@ def phase_name(phase_int: int) -> str:
         return "UNKNOWN"
 
 
+def get_sandbox_phase(sandbox_name: str) -> str:
+    """Return the current sandbox phase display name (e.g. "READY") via GetSandbox.
+
+    GetSandboxRequest is keyed by sandbox NAME (not the UUID). Uses the launcher's
+    OWN OIDC token. Used by the brain-boot background task to wait until the sandbox
+    is Ready before exec'ing the runner. Raises on RPC error (the caller treats that
+    as a transient poll failure and retries).
+    """
+    if not available():
+        raise RuntimeError("OpenShell client not configured")
+
+    from sandbox_launcher.osh import openshell_pb2 as ph
+
+    stub, channel = _stub_and_channel()
+    try:
+        resp = stub.GetSandbox(
+            ph.GetSandboxRequest(name=sandbox_name),
+            timeout=30,
+            metadata=_launcher_auth_metadata(),
+        )
+        return phase_name(resp.sandbox.status.phase)
+    finally:
+        channel.close()
+
+
+def _read_env_or_file(name: str) -> str:
+    """Resolve a value from <name>_FILE (preferred) or <name> in the launcher's env.
+
+    Mirrors the LAUNCHER_OIDC_CLIENT_SECRET sourcing pattern: a mounted Secret /
+    Vault file path (<name>_FILE) takes priority over a plain env var, so the
+    inference credential is never baked into an image or a manifest literal.
+    Returns "" if neither is set / the file is unreadable.
+    """
+    file_path = os.environ.get(f"{name}_FILE", "").strip()
+    if file_path:
+        try:
+            return open(file_path).read().strip()  # noqa: WPS515
+        except OSError as exc:
+            logger.warning(
+                "brain_env_file_unreadable",
+                extra={"var": name, "path": file_path, "error": str(exc)},
+            )
+            return ""
+    return os.environ.get(name, "").strip()
+
+
+def _brain_boot_enabled() -> bool:
+    """True (default) unless SANDBOX_BOOT_AGENT is explicitly falsey.
+
+    When disabled the sandbox falls back to the gateway's default command
+    (sleep infinity) — the pre-brain behaviour — without any other change.
+    """
+    return os.environ.get("SANDBOX_BOOT_AGENT", "true").strip().lower() not in (
+        "false",
+        "0",
+        "no",
+    )
+
+
+def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
+    """Build the brain env (goal + allowed-tools + ANTHROPIC_* inference creds).
+
+    *** Live-gateway contract (0.0.62) — see exec_agent_brain() below. ***
+    The OpenShell gateway RESERVES every env key beginning with ``OPENSHELL_`` and
+    REJECTS CreateSandbox if the caller sets one in SandboxTemplate.environment
+    (``spec.template.environment keys starting with OPENSHELL_ are reserved``).
+    The supervisor's exec command (``OPENSHELL_SANDBOX_COMMAND``, default
+    ``sleep infinity``) is therefore NOT a caller-settable lever: the boot command
+    is fixed by the gateway. So this function NO LONGER returns that key — doing so
+    produced a 502 at /launch and no sandbox was created at all.
+
+    Instead the brain is booted NATIVELY, after the sandbox is Ready, via the
+    OpenShell ``ExecSandbox`` RPC (exec_agent_brain()), which DOES accept a
+    caller-supplied command + environment. The env this function builds is the
+    *exec environment* (and is ALSO delivered as template.environment so it lands
+    in the gateway-controlled ``OPENSHELL_USER_ENVIRONMENT`` blob for any
+    sleep-infinity / interactive use). All keys here are non-reserved.
+
+    Inference credentials are sourced from the launcher's OWN pod env (see
+    _read_env_or_file) and copied in — the proto environment is map<string,string>,
+    so a k8s Secret cannot be referenced by name here.
+
+    Returns {} (and logs a warning) when no inference base URL is configured, so
+    the caller can fall back to the legacy sleep-infinity sandbox rather than
+    boot a brain that has no LLM to talk to.
+    """
+    base_url = _read_env_or_file("ANTHROPIC_BASE_URL")
+    if not base_url:
+        logger.warning(
+            "brain_boot_skipped_no_inference",
+            extra={"reason": "ANTHROPIC_BASE_URL not set on launcher pod"},
+        )
+        return {}
+
+    env: dict[str, str] = {
+        "AGENT_GOAL": goal,
+        "AGENT_ALLOWED_TOOLS": allowed_tools,
+        "ANTHROPIC_BASE_URL": base_url,
+    }
+
+    # Inference credential: accept either ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
+    # (the claude CLI honours both); populate BOTH in the sandbox from whichever the
+    # launcher has, so the brain authenticates regardless of which name LiteLLM wants.
+    api_key = _read_env_or_file("ANTHROPIC_API_KEY")
+    auth_token = _read_env_or_file("ANTHROPIC_AUTH_TOKEN")
+    cred = api_key or auth_token
+    if cred:
+        env["ANTHROPIC_API_KEY"] = cred
+        env["ANTHROPIC_AUTH_TOKEN"] = cred
+    else:
+        logger.warning(
+            "brain_boot_no_inference_key",
+            extra={"reason": "neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN set"},
+        )
+
+    # Model ids — pass through whatever the launcher carries (optional).
+    for var in (
+        "AGENT_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+    ):
+        val = _read_env_or_file(var)
+        if val:
+            env[var] = val
+
+    # The bundled claude-agent-sdk binary ignores ANTHROPIC_BASE_URL; the brain
+    # image installs the system claude CLI at /usr/local/bin/claude and pins it via
+    # CLAUDE_CLI_PATH so the runner spawns the URL-honouring CLI. The image already
+    # sets this as ENV, but set it explicitly so a command override cannot drop it.
+    env.setdefault("CLAUDE_CLI_PATH", "/usr/local/bin/claude")
+    return env
+
+
+def _brain_boot_command() -> list[str]:
+    """Resolve the argv that boots the agent-harness runner inside the sandbox.
+
+    Used by exec_agent_brain() as the ExecSandbox ``command`` (NOT the reserved
+    OPENSHELL_SANDBOX_COMMAND, which the gateway controls). Default cds into the
+    brain image WORKDIR (/app) so on-disk skills resolve from .claude/skills, then
+    execs the runner module. Override with SANDBOX_BRAIN_COMMAND (a shell string,
+    run via ``sh -c``) for a non-default brain image layout.
+    """
+    override = os.environ.get("SANDBOX_BRAIN_COMMAND", "").strip()
+    cmd = override or "cd /app && exec python -m agent_harness.agent_runner"
+    return ["sh", "-c", cmd]
+
+
+def exec_agent_brain(
+    sandbox_id: str,
+    goal: str,
+    allowed_tools: str,
+    timeout_seconds: int = 0,
+) -> int:
+    """Boot the agent-harness brain inside a READY sandbox via ExecSandbox.
+
+    This is the OpenShell-NATIVE brain-boot lever for gateway 0.0.62: the sandbox
+    boots on the gateway-fixed ``sleep infinity`` (the supervisor's exec command is
+    not caller-settable — OPENSHELL_* env keys are reserved/rejected at CreateSandbox),
+    then the launcher execs the runner INTO that ready sandbox. ExecSandbox accepts a
+    caller-supplied command + environment (proven on the live gateway), runs as the
+    confined ``sandbox`` user, and inherits the sandbox's SVID + policy + workload-API
+    socket — so the brain calls MCP through ext-proc with its OWN SVID (ADR-0011 hybrid).
+
+    Uses the launcher's OWN OIDC token. The caller's Backstage token is never seen here.
+
+    Args:
+        sandbox_id: SandboxResponse.metadata.id (the UUID, NOT the name).
+        goal: Natural-language goal -> AGENT_GOAL in the exec environment.
+        allowed_tools: Comma-sep tools -> AGENT_ALLOWED_TOOLS.
+        timeout_seconds: Per-exec timeout (0 = no timeout; the runner self-bounds turns).
+
+    Returns:
+        The runner's exit code (0 = success). Returns a non-zero sentinel when the
+        brain env is unconfigured (no inference) so the caller can keep the sandbox
+        as a plain sleep-infinity / interactive shell rather than fail the launch.
+
+    Raises:
+        RuntimeError: If the OpenShell client is not configured.
+        grpc.RpcError: If the gateway exec stream fails.
+    """
+    if not available():
+        raise RuntimeError("OpenShell client not configured")
+    if not sandbox_id:
+        raise RuntimeError("exec_agent_brain requires a sandbox_id (metadata.id)")
+
+    from sandbox_launcher.osh import openshell_pb2 as ph
+
+    exec_env = _brain_env(goal=goal, allowed_tools=allowed_tools)
+    if not exec_env:
+        # No inference configured — do NOT boot a brain with no LLM to talk to.
+        logger.warning(
+            "brain_exec_skipped_no_inference",
+            extra={"sandbox_id": sandbox_id},
+        )
+        return -1
+
+    command = _brain_boot_command()
+    req = ph.ExecSandboxRequest(
+        sandbox_id=sandbox_id,
+        command=command,
+        environment=exec_env,
+        timeout_seconds=int(timeout_seconds),
+    )
+
+    logger.info(
+        "sandbox_brain_exec_starting",
+        extra={
+            "sandbox_id": sandbox_id,
+            "command": command,
+            "allowed_tools": allowed_tools,
+            "model": exec_env.get("AGENT_MODEL", ""),
+            # NEVER log the inference credential or base URL value.
+            "inference_key_present": bool(exec_env.get("ANTHROPIC_API_KEY")),
+        },
+    )
+
+    stub, channel = _stub_and_channel()
+    exit_code = 0
+    try:
+        for ev in stub.ExecSandbox(req, metadata=_launcher_auth_metadata()):
+            which = ev.WhichOneof("payload")
+            if which == "exit":
+                exit_code = int(ev.exit.exit_code)
+        logger.info(
+            "sandbox_brain_exec_finished",
+            extra={"sandbox_id": sandbox_id, "exit_code": exit_code},
+        )
+        return exit_code
+    finally:
+        channel.close()
+
+
 def create_sandbox(
     name: str,
     owner_entity_ref: str,
     owner_email: str = "",
     extra_labels: dict[str, str] | None = None,
+    goal: str = "",
 ) -> Any:
     """Launch an OpenShell sandbox born with the baseline floor policy.
 
@@ -296,6 +565,9 @@ def create_sandbox(
         owner_entity_ref: Verified (or advisory) entity ref of the requesting user.
         owner_email: User email, if available (advisory, label only).
         extra_labels: Additional labels to attach to the sandbox.
+        goal: Natural-language goal threaded into the sandbox as AGENT_GOAL so the
+            brain-enabled runner has work to do. Ignored when brain boot is
+            disabled (SANDBOX_BOOT_AGENT=false) or no inference is configured.
 
     Returns:
         SandboxResponse proto from the gateway.
@@ -322,6 +594,31 @@ def create_sandbox(
         tmpl_env["KEYCLOAK_REALM_URL"] = keycloak_url
     if mcp_gw_url:
         tmpl_env["MCP_GATEWAY_URL"] = mcp_gw_url
+
+    # Brain env: deliver goal + allowed-tools + inference creds as NON-reserved
+    # template.environment keys. The gateway packs these into the sandbox's
+    # OPENSHELL_USER_ENVIRONMENT blob (proven: they appear as real env in the child),
+    # so they're available to an interactive shell AND become the defaults for the
+    # native ExecSandbox brain boot (see exec_agent_brain / api.launch). We do NOT
+    # set OPENSHELL_SANDBOX_COMMAND here — that key is gateway-reserved and rejects
+    # CreateSandbox; the runner is started via ExecSandbox after the sandbox is Ready.
+    if _brain_boot_enabled():
+        allowed_tools = os.environ.get("AGENT_ALLOWED_TOOLS", "Bash").strip() or "Bash"
+        brain_env = _brain_env(goal=goal, allowed_tools=allowed_tools)
+        if brain_env:
+            tmpl_env.update(brain_env)
+            logger.info(
+                "sandbox_brain_env_configured",
+                extra={
+                    "sandbox_name": name,
+                    "allowed_tools": allowed_tools,
+                    "model": brain_env.get("AGENT_MODEL", ""),
+                    # NEVER log the inference credential or base URL value.
+                    "inference_key_present": bool(
+                        brain_env.get("ANTHROPIC_API_KEY")
+                    ),
+                },
+            )
 
     tmpl = ph.SandboxTemplate(image=image, runtime_class_name=runtime_class)
     if tmpl_env:

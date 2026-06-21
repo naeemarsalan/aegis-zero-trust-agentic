@@ -55,7 +55,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -377,8 +377,82 @@ def _write_grant(
 # ---------------------------------------------------------------------------
 
 
+def _boot_brain_when_ready(
+    sandbox_id: str,
+    sandbox_name: str,
+    goal: str,
+    allowed_tools: str,
+) -> None:
+    """Background task: wait for the sandbox to reach READY, then boot the brain
+    natively via ExecSandbox (the gateway reserves OPENSHELL_SANDBOX_COMMAND, so the
+    runner cannot be the boot command — it is exec'd into the ready sandbox instead).
+
+    Fully best-effort: any failure here is logged and swallowed. It never affects the
+    202 already returned to the caller; the sandbox stays a usable interactive shell.
+    Bounded poll (default ~5 min) so a sandbox that never goes Ready can't hang a worker.
+    """
+    import time as _time
+
+    from sandbox_launcher import openshell
+
+    try:
+        deadline = _time.monotonic() + float(
+            os.environ.get("BRAIN_BOOT_READY_TIMEOUT_S", "300")
+        )
+        interval = float(os.environ.get("BRAIN_BOOT_POLL_INTERVAL_S", "5"))
+        ready = False
+        while _time.monotonic() < deadline:
+            try:
+                phase = openshell.get_sandbox_phase(sandbox_name)
+            except Exception as exc:  # noqa: BLE001 — best-effort poll
+                logger.warning(
+                    "brain_boot_phase_poll_error",
+                    extra={"sandbox_id": sandbox_id, "error": str(exc)},
+                )
+                phase = ""
+            if phase == "READY":
+                ready = True
+                break
+            if phase == "ERROR":
+                logger.warning(
+                    "brain_boot_abort_sandbox_error",
+                    extra={"sandbox_id": sandbox_id, "sandbox_name": sandbox_name},
+                )
+                return
+            _time.sleep(interval)
+
+        if not ready:
+            logger.warning(
+                "brain_boot_timeout_not_ready",
+                extra={"sandbox_id": sandbox_id, "sandbox_name": sandbox_name},
+            )
+            return
+
+        exit_code = openshell.exec_agent_brain(
+            sandbox_id=sandbox_id,
+            goal=goal,
+            allowed_tools=allowed_tools,
+            timeout_seconds=int(os.environ.get("BRAIN_EXEC_TIMEOUT_S", "0")),
+        )
+        logger.info(
+            "brain_boot_completed",
+            extra={
+                "sandbox_id": sandbox_id,
+                "sandbox_name": sandbox_name,
+                "exit_code": exit_code,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break the launch
+        logger.warning(
+            "brain_boot_background_failed",
+            extra={"sandbox_id": sandbox_id, "error": str(exc)},
+        )
+
+
 @app.post("/launch", status_code=202)
-async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
+async def launch(
+    request: Request, body: LaunchRequest, background_tasks: BackgroundTasks
+) -> LaunchResponse:
     """Provision an OpenShell packaged-agent sandbox.
 
     Steps:
@@ -420,6 +494,9 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
             name=name,
             owner_entity_ref=entity_ref,
             owner_email="",  # not available from Backstage JWT in this flow
+            # Thread the user's goal into the sandbox as AGENT_GOAL so the
+            # brain-enabled runner has work to do (see openshell._brain_env).
+            goal=body.goal,
             extra_labels={
                 "nvidia-ida/verified-identity": str(is_verified).lower(),
                 "nvidia-ida/mode": body.mode.value,
@@ -527,6 +604,23 @@ async def launch(request: Request, body: LaunchRequest) -> LaunchResponse:
             "latency_ms": latency_ms,
         },
     )
+
+    # Native brain boot: the sandbox is created on the gateway-fixed sleep-infinity
+    # command (OPENSHELL_SANDBOX_COMMAND is reserved/rejected at CreateSandbox); the
+    # agent-harness runner is exec'd INTO the ready sandbox via ExecSandbox. Scheduled
+    # as a background task so /launch still returns 202 immediately; fully best-effort.
+    if (
+        sandbox_id
+        and openshell._brain_boot_enabled()
+        and openshell.available()
+    ):
+        background_tasks.add_task(
+            _boot_brain_when_ready,
+            sandbox_id=sandbox_id,
+            sandbox_name=sandbox_name,
+            goal=body.goal,
+            allowed_tools=os.environ.get("AGENT_ALLOWED_TOOLS", "Bash").strip() or "Bash",
+        )
 
     return LaunchResponse(
         sandbox_name=sandbox_name,
