@@ -147,6 +147,42 @@ async def _create_sandbox(agent_id: str, owner: str, skills: list[str]) -> dict[
 # ---------------------------------------------------------------------------
 
 
+async def _write_consent_grant(sandbox_id: str, user: str, scope: str) -> bool:
+    """Write the per-sandbox Vault consent grant (ext-proc's on-behalf-of source).
+
+    Mirrors hack/run-agent.sh: integer-typed JSON to secret/data/sandbox-grants/<uid>.
+    Reads VAULT_ADDR + VAULT_TOKEN from the console env; returns False if unconfigured.
+    The user's token is never stored — only this {user, scope} consent record.
+    """
+    import os as _os
+    import secrets as _secrets
+    import datetime as _dt
+
+    addr = _os.environ.get("VAULT_ADDR", "").strip().rstrip("/")
+    tok = _os.environ.get("VAULT_TOKEN", "").strip()
+    if not (addr and tok and sandbox_id):
+        return False
+    username = user.rsplit("/", 1)[-1]  # 'user:default/arsalan' or 'arsalan' -> 'arsalan'
+    payload = {
+        "data": {
+            "version": 1,
+            "sandbox_uid": sandbox_id,
+            "user": username,
+            "scope": scope,
+            "ttl": 3600,
+            "nonce": _secrets.token_hex(16),
+            "created": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+    }
+    async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+        resp = await client.post(
+            f"{addr}/v1/secret/data/sandbox-grants/{sandbox_id}",
+            headers={"X-Vault-Token": tok},
+            json=payload,
+        )
+    return resp.status_code < 300
+
+
 @router.post("", status_code=201)
 async def create_agent(
     request: Request,
@@ -178,6 +214,20 @@ async def create_agent(
     except RuntimeError as exc:
         # SANDBOX_LAUNCHER_URL not set — treat as unconfigured (PoC: allow store write)
         logger.warning("agents.create.sandbox_launcher_unset: %s", exc)
+
+    # Step 2b: write the Vault consent grant so the agent can delegate-as-the-user.
+    # ext-proc reads secret/data/sandbox-grants/<sandbox_uid> by the SVID's uuid segment
+    # and exchanges to sub=<user> (the on-behalf-of leg). Without it the agent boots but its
+    # mcp-call cannot delegate (grant_result=invalid). Best-effort; never fails the launch.
+    _sid = sandbox_info.get("sandbox_id", "")
+    if _sid:
+        try:
+            _scope = getattr(body, "scope", None)
+            _scope_str = str(getattr(_scope, "value", _scope) or "read-only")
+            _ok = await _write_consent_grant(_sid, actor, _scope_str)
+            logger.info("agents.create.grant_write sandbox_id=%s ok=%s", _sid, _ok)
+        except Exception as exc:  # noqa: BLE001 — grant write is best-effort
+            logger.warning("agents.create.grant_write_error: %s", exc)
 
     # Step 3: create Gitea repo (C2) — delegated to gitea.client; monkeypatched in tests.
     gitea_repo_url = ""
