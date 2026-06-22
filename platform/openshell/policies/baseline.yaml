@@ -121,3 +121,6 @@ network_policies:
       - { path: /usr/bin/node }
       - { path: /opt/app-root/bin/python3 }
       - { path: /usr/local/bin/claude }
+      # native brain bootstrap interpreter + node symlink target (issue #26b / round-6)
+      - { path: /usr/bin/python3.11 }
+      - { path: /usr/bin/node-22 }

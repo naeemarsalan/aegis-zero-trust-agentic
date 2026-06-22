@@ -29,7 +29,7 @@ data:
 
     filesystem_policy:
       include_workdir: true
-      read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets]
+      read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets, /opt/app-root]
       read_write: [/sandbox, /tmp, /dev/null]
     landlock:
       compatibility: best_effort
@@ -50,6 +50,10 @@ data:
         binaries:
           - { path: /sandbox-agent }
           - { path: /usr/bin/curl }
+          # native brain reaches platform surfaces via the mcp-call python helper
+          # (runs under /usr/bin/python3.11), not /sandbox-agent or curl (round-6).
+          - { path: /usr/bin/python3.11 }
+          - { path: /usr/local/bin/mcp-call }
       keycloak:
         name: platform-keycloak
         endpoints:
@@ -62,6 +66,10 @@ data:
         binaries:
           - { path: /sandbox-agent }
           - { path: /usr/bin/curl }
+          # native brain reaches platform surfaces via the mcp-call python helper
+          # (runs under /usr/bin/python3.11), not /sandbox-agent or curl (round-6).
+          - { path: /usr/bin/python3.11 }
+          - { path: /usr/local/bin/mcp-call }
       vault:
         name: platform-vault
         endpoints:
@@ -74,6 +82,10 @@ data:
         binaries:
           - { path: /sandbox-agent }
           - { path: /usr/bin/curl }
+          # native brain reaches platform surfaces via the mcp-call python helper
+          # (runs under /usr/bin/python3.11), not /sandbox-agent or curl (round-6).
+          - { path: /usr/bin/python3.11 }
+          - { path: /usr/local/bin/mcp-call }
       inference:
         name: platform-inference
         endpoints:
@@ -107,3 +119,12 @@ data:
           - { path: /sandbox-agent }
           - { path: /usr/bin/python3 }
           - { path: /usr/bin/node }
+          # The native brain's LLM caller is the claude CLI — a standalone ELF at
+          # /usr/local/bin/claude (NOT a node script), booted by /usr/bin/python3.11
+          # (system interpreter, issue #26b). The floor matches the connecting binary,
+          # so the claude ELF + node-22 (the /usr/bin/node symlink target) + python3.11
+          # must be allowlisted or the brain's POST to 172.16.2.251:4000 -> policy_denied
+          # (root cause round-6, 2026-06-22: only python3/node[/usr/bin] were listed).
+          - { path: /usr/bin/python3.11 }
+          - { path: /usr/bin/node-22 }
+          - { path: /usr/local/bin/claude }
