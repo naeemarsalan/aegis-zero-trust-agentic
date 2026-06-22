@@ -1,0 +1,21 @@
+# Console <-> sandbox-launcher path (Phase C: launch living agents from the console).
+# Both directions needed (mcp-gateway has default-deny + sandbox-launcher-deny-all).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: approval-console-egress-launcher, namespace: mcp-gateway, labels: {app.kubernetes.io/part-of: nvidia-ida}}
+spec:
+  podSelector: {matchLabels: {app: approval-console}}
+  policyTypes: ["Egress"]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: sandbox-launcher}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: sandbox-launcher-ingress-console, namespace: mcp-gateway, labels: {app.kubernetes.io/part-of: nvidia-ida}}
+spec:
+  podSelector: {matchLabels: {app: sandbox-launcher}}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: approval-console}}}]
+      ports: [{protocol: TCP, port: 8080}]

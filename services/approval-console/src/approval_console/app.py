@@ -1425,6 +1425,22 @@ async def healthz() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Phase C — product console routers (living agents / skills / webshell / UI)
+# Wired here (mirrors tests/test_agents.py) so a single console image serves the
+# legacy JIT-approval UI AND the agent-platform endpoints.
+# ---------------------------------------------------------------------------
+from approval_console.agents.routes import router as _agents_router  # noqa: E402
+from approval_console.skills.routes import router as _skills_router  # noqa: E402
+from approval_console.ui.routes import router as _ui_router  # noqa: E402
+from approval_console.webshell.routes import router as _webshell_router  # noqa: E402
+
+app.include_router(_agents_router)
+app.include_router(_skills_router)
+app.include_router(_ui_router)
+app.include_router(_webshell_router)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
