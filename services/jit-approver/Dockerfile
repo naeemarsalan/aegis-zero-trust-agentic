@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir \
     "PyJWT==2.10.1" \
     "cryptography>=43.0.0" \
     "grpcio==1.81.1" \
-    "protobuf>=6.31,<7"
+    "protobuf>=6.31,<7" \
+    "asyncpg>=0.30"
 
 # Copy project files
 COPY pyproject.toml ./

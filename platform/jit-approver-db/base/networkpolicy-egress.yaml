@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-egress-cnpg
+  namespace: mcp-gateway
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-approver
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: jit-approver-db
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jit-approver-db-ingress
+  namespace: mcp-gateway
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: jit-approver-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: jit-approver
+      ports:
+        - {protocol: TCP, port: 5432}
