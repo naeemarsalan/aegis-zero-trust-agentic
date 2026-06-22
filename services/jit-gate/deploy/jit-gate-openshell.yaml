@@ -1,0 +1,59 @@
+# jit-gate for the OpenShell namespace — JIT human-approval enforcement point on the Kagenti path.
+# Mirrors services/jit-gate/deploy/jit-gate.yaml (the PROVEN kagenti-test deploy) but lives in ns
+# openshell so an OpenShell sandbox's outbound MCP call routes:
+#   sandbox 'agent' --HTTP_PROXY=127.0.0.1:8081--> authbridge-proxy (kagenti token-exchange, aud=echo-mcp)
+#     --> jit-gate.openshell.svc:8000 (this) --AUTHZ on dangerous tools--> echo-mcp.agentic-mcp.svc:8000
+# jit-gate forwards the exchanged identity token untouched (it does not re-mint); it only INSPECTS the
+# X-JIT-Session-JWT capability token (aud=kyverno-authz) added by the caller's jit-escalation skill.
+#
+# The ConfigMap holding gate.py is generated at apply time:
+#   oc -n openshell create configmap jit-gate-src \
+#     --from-file=gate.py=services/jit-gate/gate.py --dry-run=client -o yaml | oc apply -f -
+# Then: oc apply -f services/jit-gate/deploy/jit-gate-openshell.yaml
+# Reuses the jit-approver image (fastapi/uvicorn/httpx/pyjwt) — no separate build.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jit-gate, namespace: openshell, labels: {app: jit-gate, app.kubernetes.io/part-of: nvidia-ida}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jit-gate}}
+  template:
+    metadata: {labels: {app: jit-gate}}
+    spec:
+      containers:
+        - name: gate
+          image: oci.arsalan.io/nvidia-ida/jit-approver:dev
+          command: ["python","-m","uvicorn","gate:app","--host","0.0.0.0","--port","8000","--app-dir","/gate"]
+          env:
+            - {name: UPSTREAM_URL, value: "http://echo-mcp.agentic-mcp.svc.cluster.local:8000"}
+            - {name: JWKS_URL, value: "http://jit-approver.mcp-gateway.svc.cluster.local:8080/jwks"}
+            - {name: DANGEROUS_TOOLS, value: "echo"}      # MCP tools requiring JIT approval
+            - {name: EXPECTED_AUD, value: "kyverno-authz"} # capability-JWT audience
+          ports: [{containerPort: 8000}]
+          volumeMounts: [{name: src, mountPath: /gate}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8000}, initialDelaySeconds: 3, periodSeconds: 5}
+      volumes:
+        - {name: src, configMap: {name: jit-gate-src}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jit-gate, namespace: openshell, labels: {app.kubernetes.io/part-of: nvidia-ida}}
+spec:
+  selector: {app: jit-gate}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+# jit-gate (openshell) -> jit-approver /jwks (verify capability JWTs). Mirrors the kagenti-test
+# allow-ingress-jwks-from-kagenti-test ingress NP, scoped FROM ns openshell.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-jwks-from-openshell, namespace: mcp-gateway, labels: {app.kubernetes.io/part-of: nvidia-ida}}
+spec:
+  podSelector: {matchLabels: {app: jit-approver}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshell}}}]
+      ports: [{protocol: TCP, port: 8080}]
+# NOTE: the agentic-mcp ingress for jit-gate -> echo-mcp:8000 FROM ns openshell is
+# allow-ingress-echo-from-openshell in platform/openshell/kagenti-authbridge/echo-mcp-ingress-from-openshell.yaml
+# (already applied live). The openshell-side EGRESS for jit-gate (to mcp-gateway:8080 + agentic-mcp:8000)
+# is covered by networkpolicy-sandbox-egress.yaml's jit-gate addition.

@@ -1,0 +1,55 @@
+# CloudNativePG Cluster for jit-approver's durable persistence (L0).
+# Mirrors keycloak/base/cnpg-cluster.yaml rationale: storageClass local-path
+# instead of nfs-csi because initdb hangs indefinitely on NFS.
+#
+# CNPG auto-generates secret 'jit-approver-db-app' in mcp-gateway namespace with:
+#   username, password, host, port, dbname, uri, jdbc-uri
+# This secret is consumed by the jit-approver Deployment via:
+#   env DATABASE_URL from secretKeyRef jit-approver-db-app key 'uri'
+# (See deploy/base/deployment.yaml — commented out by default, enabled with
+#  JIT_STORE_BACKEND=postgres in the anaeem overlay.)
+#
+# Bootstrap: the initdb.postInitApplicationSQLRefs field points at the
+# schema-initdb ConfigMap so the WORM table + REVOKE grants run before the
+# app connects.  Schema is idempotent (CREATE TABLE IF NOT EXISTS).
+#
+# Coexistence: this cluster lives in its own kustomization (platform/jit-approver-db).
+# It is NOT referenced by the default jit-approver deploy (which defaults to
+# JIT_STORE_BACKEND=memory).  Enabling it is the explicit lever for L1+.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: jit-approver-db
+  namespace: mcp-gateway
+spec:
+  instances: 1  # SNO single-node; scale to 3 for HA in production
+
+  bootstrap:
+    initdb:
+      database: jit_approver
+      owner: app
+      # CNPG creates secret jit-approver-db-app with the generated password.
+      # The 'app' owner role is what the application connects as (non-superuser).
+      # REVOKE in schema.sql therefore denies UPDATE/DELETE on jit_ledger for 'app'.
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: jit-approver-schema
+            key: schema.sql
+
+  storage:
+    size: 5Gi
+    # local-path, NOT nfs-csi: initdb hung indefinitely on NFS (same class of
+    # failure as the SPIRE sqlite datastore and the keycloak CNPG cluster).
+    # Explicit because the cluster has two default StorageClasses.
+    storageClass: local-path
+
+  monitoring:
+    enablePodMonitor: false  # set true once Prometheus is wired for mcp-gateway
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 200m

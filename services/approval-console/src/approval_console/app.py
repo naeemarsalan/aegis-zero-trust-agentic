@@ -6,13 +6,18 @@ Endpoints:
   GET  /api/requests/{id}/detail -> proxy to jit-approver GET /requests/{id}/detail
   GET  /api/requests/{id}/status -> proxy to jit-approver GET /requests/{id}/status
                                     (post-approval: surfaces session_id + expires_at)
-  POST /api/approve/{id} -> merge the Gitea PR for this session; returns merge result
+  POST /api/approve/{id} -> mint gate path: POST to jit-approver /requests/{id}/mint
+                            carrying approver_sub from Keycloak forwarded headers.
+                            When JIT_APPROVE_VIA_MINT=false falls back to Gitea PR merge.
   GET  /healthz    -> liveness probe
 
 Security contract (PoC):
   - No auth on the console itself (behind the cluster Route; see README).
   - GITEA_TOKEN stays server-side; browser never touches Gitea directly.
   - Approve is the ONLY mutating operation; everything else is read-only.
+  - L1: approver identity is taken from oauth2-proxy X-Forwarded-Preferred-Username
+    (server-trusted), never from a field the browser/agent controls.
+  - L1: /mint enforces approver_sub != requester_sub (M5 self-approval denied).
 """
 
 from __future__ import annotations
@@ -232,6 +237,79 @@ def _actor(request: Request) -> str:
 def _jit_headers() -> dict[str, str]:
     """No auth token needed for jit-approver read endpoints (cluster-internal)."""
     return {"Accept": "application/json"}
+
+
+def _mint_headers() -> dict[str, str]:
+    """Headers for the authenticated POST /mint call to jit-approver.
+
+    In production these carry the console SA bearer token (X-Console-SA-Token)
+    so jit-approver can perform a Kubernetes TokenReview and verify the caller
+    is the console service, not an agent-sandbox pod.
+
+    The token is read from the projected service-account volume at
+    /var/run/secrets/kubernetes.io/serviceaccount/token (in-cluster) or from
+    the env var JIT_MINT_CONSOLE_TOKEN_OVERRIDE (tests / dev).
+    """
+    import os as _os
+
+    override = _os.environ.get("JIT_MINT_CONSOLE_TOKEN_OVERRIDE", "").strip()
+    if override:
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Console-SA-Token": override,
+        }
+    # Try the projected SA token file.
+    sa_token = ""
+    try:
+        with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+            sa_token = f.read().strip()
+    except FileNotFoundError:
+        pass
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if sa_token:
+        headers["X-Console-SA-Token"] = sa_token
+    return headers
+
+
+def _approve_via_mint() -> bool:
+    """Return True when the console should use the /mint gate (L1 default=on).
+
+    Set JIT_APPROVE_VIA_MINT=false to revert to the legacy Gitea PR-merge path
+    (rollback lever per L1 spec).
+    """
+    import os as _os
+
+    return _os.environ.get("JIT_APPROVE_VIA_MINT", "true").strip().lower() != "false"
+
+
+def _canonical_scope_hash(detail: dict) -> str:
+    """Compute the canonical scope hash over a detail dict from jit-approver.
+
+    Must produce identical output to jit_approver.models.canonical_scope_hash()
+    for the same scope — cross-checked in test_mint.py::test_canonical_scope_hash_cross_check.
+
+    Fields used:
+      namespace, verbs (sorted), resources (sorted), duration_minutes,
+      sandbox, policy_delta (sorted "host:port" strings).
+    """
+    policy_delta = detail.get("policy_delta") or []
+    delta_sorted = sorted(
+        f"{pd.get('host', '')}:{pd.get('port', 443)}" for pd in policy_delta
+    )
+    canonical: dict = {
+        "namespace": detail.get("namespace", ""),
+        "verbs": sorted(detail.get("verbs") or []),
+        "resources": sorted(detail.get("resources") or []),
+        "duration_minutes": detail.get("duration_minutes", 0),
+        "sandbox": detail.get("sandbox"),
+        "policy_delta": delta_sorted,
+    }
+    raw = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _gitea_headers() -> dict[str, str]:
@@ -922,33 +1000,41 @@ async def get_status(session_id: str) -> JSONResponse:
 
 @app.post("/api/approve/{session_id}")
 async def approve(session_id: str, request: Request) -> JSONResponse:
-    """Approve a JIT session by merging its Gitea PR.
+    """Approve a JIT session.
 
-    Flow:
-      1. Fetch the session list from jit-approver to get pr_url and pr_number.
-         (Uses GET /requests — the detail endpoint also carries pr_url.)
-      2. Extract the PR number from the pr_url stored in the session.
-         jit-approver stores pr_number directly on the session dict (exposed via
-         GET /requests/{id}/detail as pr_url; the PR number is parsed from the URL
-         in the same way _extract_pr_number does it in api.py).
-      3. Call Gitea PUT /repos/{owner}/{repo}/pulls/{n}/merge.
-      4. Poll jit-approver GET /requests/{id}/status once to surface
-         expires_at (state transitions to 'issued' via the Gitea webhook).
+    L1 default (JIT_APPROVE_VIA_MINT=true — the mint gate path):
+      1. Fetch session detail from jit-approver.
+      2. Validate state is {pending, approved}.
+      3. Compute canonical_scope_hash(detail) — binds approver's view to stored scope.
+      4. POST {approver_sub, scope_hash} to jit-approver /requests/{id}/mint.
+         - approver_sub is taken from oauth2-proxy X-Forwarded-Preferred-Username
+           (server-trusted Keycloak identity), NEVER from a user-controlled field.
+         - jit-approver enforces approver_sub != requester_sub (M5 SoD) and
+           validates scope_hash (anti-TOCTOU) before issuing credentials.
+      5. Poll status once for expires_at.
+      6. Map mint 403 (self-approval) to 403 with a clear message.
+      The console no longer reads GITEA_TOKEN or calls the Gitea merge API.
+
+    Fallback (JIT_APPROVE_VIA_MINT=false — legacy Gitea PR-merge path):
+      Merges the PR via the Gitea API (original L0 behaviour).
+      The git path is kept live as an audit mirror even when the mint gate
+      is active; turning this flag off reverts to PR-merge approval.
 
     Returns:
       {
         "session_id": str,
-        "merge_result": str,       # "merged" on success
-        "session_state": str,      # state after merge (may still be "pending" if webhook slow)
+        "merge_result": str | null,    # "minted" (mint path) or "merged" (git path)
+        "session_state": str,
         "expires_at": str | null,
       }
     """
     t0 = time.monotonic()
     args_hash = _hash_args({"session_id": session_id})
     # Capture who is performing the approval — separation of duties from the requester.
+    # _actor() reads server-trusted oauth2-proxy forwarded headers.
     approver = _actor(request)
 
-    # Step 1: fetch session detail to get pr_url
+    # Step 1: fetch session detail to get pr_url and scope.
     jit_url = Config.jit_approver_url()
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -976,15 +1062,6 @@ async def approve(session_id: str, request: Request) -> JSONResponse:
     pr_url: str | None = detail.get("pr_url")
     state: str = detail.get("state", "unknown")
 
-    if not pr_url:
-        latency = (time.monotonic() - t0) * 1000
-        _audit("jit.approve", actor=approver, outcome="deny",
-               latency_ms=latency, tool_args_hash=args_hash, error="no pr_url on session")
-        raise HTTPException(
-            status_code=422,
-            detail=f"Session {session_id} has no PR URL — cannot approve.",
-        )
-
     if state not in {"pending", "approved"}:
         latency = (time.monotonic() - t0) * 1000
         _audit("jit.approve", actor=approver, outcome="deny",
@@ -993,6 +1070,114 @@ async def approve(session_id: str, request: Request) -> JSONResponse:
         raise HTTPException(
             status_code=409,
             detail=f"Session {session_id} is in state '{state}' and cannot be approved.",
+        )
+
+    # ---------------------------------------------------------------------------
+    # Mint gate path (L1 default — JIT_APPROVE_VIA_MINT=true)
+    # ---------------------------------------------------------------------------
+    if _approve_via_mint():
+        # Step 3: compute scope_hash from the detail we fetched.
+        scope_hash = _canonical_scope_hash(detail)
+
+        # Step 4: POST to /mint with the Keycloak-resolved approver identity.
+        mint_url = f"{jit_url}/requests/{session_id}/mint"
+        logger.info(
+            "approve.mint_gate",
+            extra={"session_id": session_id, "approver": approver},
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                mint_resp = await client.post(
+                    mint_url,
+                    headers=_mint_headers(),
+                    json={
+                        "approver_sub": approver,
+                        "scope_hash": scope_hash,
+                        "reviewed_scope": {
+                            "namespace": detail.get("namespace"),
+                            "verbs": detail.get("verbs"),
+                            "resources": detail.get("resources"),
+                            "duration_minutes": detail.get("duration_minutes"),
+                        },
+                    },
+                )
+        except httpx.RequestError as exc:
+            latency = (time.monotonic() - t0) * 1000
+            _audit("jit.approve", actor=approver, outcome="error",
+                   latency_ms=latency, tool_args_hash=args_hash, error=str(exc))
+            raise HTTPException(status_code=502, detail=f"jit-approver unreachable: {exc}") from exc
+
+        if mint_resp.status_code == 403:
+            # Self-approval or SoD violation — surface clearly to browser.
+            latency = (time.monotonic() - t0) * 1000
+            _audit("jit.approve", actor=approver, outcome="deny",
+                   latency_ms=latency, tool_args_hash=args_hash,
+                   error="mint gate: self-approval denied (M5)")
+            detail_text = ""
+            try:
+                detail_text = mint_resp.json().get("detail", "")
+            except Exception:  # noqa: BLE001
+                detail_text = mint_resp.text[:200]
+            raise HTTPException(
+                status_code=403,
+                detail=f"You cannot approve your own request (self-approval denied). {detail_text}",
+            )
+
+        if not mint_resp.is_success:
+            latency = (time.monotonic() - t0) * 1000
+            _audit("jit.approve", actor=approver, outcome="error",
+                   latency_ms=latency, tool_args_hash=args_hash,
+                   error=f"mint returned {mint_resp.status_code}: {mint_resp.text[:200]}")
+            raise HTTPException(
+                status_code=mint_resp.status_code,
+                detail=f"Mint gate failed: {mint_resp.text[:400]}",
+            )
+
+        logger.info("approve.minted", extra={"session_id": session_id, "approver": approver})
+
+        # Step 5: status poll to surface expires_at.
+        session_state: str = "issued"
+        expires_at: str | None = None
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                status_resp = await client.get(
+                    f"{jit_url}/requests/{session_id}/status",
+                    headers=_jit_headers(),
+                )
+            if status_resp.is_success:
+                status_data = status_resp.json()
+                session_state = status_data.get("state", "issued")
+                expires_at = status_data.get("expires_at")
+        except Exception:  # noqa: BLE001 — best-effort poll
+            pass
+
+        latency = (time.monotonic() - t0) * 1000
+        _audit("jit.approve", actor=approver, outcome="allow",
+               latency_ms=latency, tool_args_hash=args_hash,
+               session_state=session_state, via="mint_gate")
+
+        return JSONResponse(
+            content={
+                "session_id": session_id,
+                "pr_number": None,
+                "pr_url": pr_url,
+                "merge_result": "minted",
+                "session_state": session_state,
+                "expires_at": expires_at,
+            },
+            status_code=200,
+        )
+
+    # ---------------------------------------------------------------------------
+    # Legacy Gitea PR-merge path (JIT_APPROVE_VIA_MINT=false)
+    # ---------------------------------------------------------------------------
+    if not pr_url:
+        latency = (time.monotonic() - t0) * 1000
+        _audit("jit.approve", actor=approver, outcome="deny",
+               latency_ms=latency, tool_args_hash=args_hash, error="no pr_url on session")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Session {session_id} has no PR URL — cannot approve.",
         )
 
     # Step 2: parse PR number from URL (matches _extract_pr_number in api.py)
@@ -1049,8 +1234,8 @@ async def approve(session_id: str, request: Request) -> JSONResponse:
     # Step 4: quick status poll — Gitea fires the webhook asynchronously so the
     # session may still show 'pending' immediately. We return what we have and the
     # browser's polling loop picks up the transition to 'issued'.
-    session_state: str = state
-    expires_at: str | None = None
+    session_state_legacy: str = state
+    expires_at_legacy: str | None = None
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             status_resp = await client.get(
@@ -1059,15 +1244,15 @@ async def approve(session_id: str, request: Request) -> JSONResponse:
             )
         if status_resp.is_success:
             status_data = status_resp.json()
-            session_state = status_data.get("state", state)
-            expires_at = status_data.get("expires_at")
+            session_state_legacy = status_data.get("state", state)
+            expires_at_legacy = status_data.get("expires_at")
     except Exception:  # noqa: BLE001 — best-effort post-merge poll
         pass
 
     latency = (time.monotonic() - t0) * 1000
     _audit("jit.approve", actor=approver, outcome="allow",
            latency_ms=latency, tool_args_hash=args_hash,
-           pr_number=pr_number, session_state=session_state)
+           pr_number=pr_number, session_state=session_state_legacy, via="gitea_merge")
 
     return JSONResponse(
         content={
@@ -1075,8 +1260,8 @@ async def approve(session_id: str, request: Request) -> JSONResponse:
             "pr_number": pr_number,
             "pr_url": pr_url,
             "merge_result": "merged",
-            "session_state": session_state,
-            "expires_at": expires_at,
+            "session_state": session_state_legacy,
+            "expires_at": expires_at_legacy,
         },
         status_code=200,
     )

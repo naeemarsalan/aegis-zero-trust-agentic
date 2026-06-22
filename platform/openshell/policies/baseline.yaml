@@ -20,9 +20,13 @@ version: 1
 # Static (locked at sandbox creation): the agent reads its workdir, /tmp, and the
 # inference credential delivered to /vault/secrets by the svid-vault-fetch init
 # (via the agent's SVID — never a token on disk). Everything else is read-only.
+# /opt is read-only because the native-brain image (UBI9 python-311 SCL) keeps its
+# python venv + site-packages under /opt/app-root; without /opt readable python's
+# site init fails with PermissionError on /opt/app-root/pyvenv.cfg and the brain
+# cannot start. The bare webshell never needed it (its binary is /sandbox-agent).
 filesystem_policy:
   include_workdir: true
-  read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets]
+  read_only: [/usr, /lib, /lib64, /bin, /sbin, /proc, /dev/urandom, /app, /etc, /var/log, /vault/secrets, /opt, /spiffe-workload-api, /var/run/secrets]
   read_write: [/sandbox, /tmp, /dev/null]
 landlock:
   compatibility: best_effort
@@ -33,6 +37,11 @@ process:
 # Dynamic (hot-reloadable, and what a JIT grant widens): deny-by-default allowlist.
 # Only the platform's own endpoints. No catch-all.
 network_policies:
+  # Binary allowlists carry BOTH the legacy webshell paths (/sandbox-agent, curl)
+  # AND the native-brain paths: the brain egresses via the SCL python at
+  # /opt/app-root/bin/python3 (mcp-call + the claude SDK's httpx) and the bundled
+  # system CLI at /usr/local/bin/claude. mcp-call lives at /usr/local/bin/mcp-call
+  # but is a python script (exec'd by python), so /opt/app-root/bin/python3 covers it.
   mcp_gateway:
     name: platform-mcp-gateway
     endpoints:
@@ -45,6 +54,8 @@ network_policies:
     binaries:
       - { path: /sandbox-agent }
       - { path: /usr/bin/curl }
+      - { path: /opt/app-root/bin/python3 }
+      - { path: /usr/local/bin/claude }
   keycloak:
     name: platform-keycloak
     endpoints:
@@ -57,6 +68,8 @@ network_policies:
     binaries:
       - { path: /sandbox-agent }
       - { path: /usr/bin/curl }
+      - { path: /opt/app-root/bin/python3 }
+      - { path: /usr/local/bin/claude }
   vault:
     name: platform-vault
     endpoints:
@@ -69,16 +82,42 @@ network_policies:
     binaries:
       - { path: /sandbox-agent }
       - { path: /usr/bin/curl }
+      - { path: /opt/app-root/bin/python3 }
+  # jit-approver (HTTP, in-cluster): mcp-call POSTs the JIT escalation request here
+  # on a write 403. The approval-console (browser) approves; mcp-call polls this svc.
+  jit_approver:
+    name: platform-jit-approver
+    endpoints:
+      - host: jit-approver.mcp-gateway.svc.cluster.local
+        port: 8080
+        protocol: rest
+        tls: passthrough
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: /opt/app-root/bin/python3 }
+      - { path: /usr/local/bin/claude }
   inference:
     name: platform-inference
     endpoints:
+      # api.anthropic.com kept for the public path; the live PoC routes the brain
+      # through the in-fabric LiteLLM endpoint (ANTHROPIC_BASE_URL=172.16.2.251:4000),
+      # so the inference IP+port must be reachable by the SCL python / claude CLI.
       - host: api.anthropic.com
         port: 443
         protocol: rest
         tls: terminate
         enforcement: enforce
         access: full        # model API calls
+      - host: 172.16.2.251
+        port: 4000
+        protocol: rest
+        tls: passthrough
+        enforcement: enforce
+        access: full        # LiteLLM (claude-sonnet-4 brain) — http, in-fabric
     binaries:
       - { path: /sandbox-agent }
       - { path: /usr/bin/python3 }
       - { path: /usr/bin/node }
+      - { path: /opt/app-root/bin/python3 }
+      - { path: /usr/local/bin/claude }

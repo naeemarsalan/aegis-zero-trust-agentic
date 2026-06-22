@@ -194,6 +194,17 @@ spec:
 ---
 # Allow the approval-console web UI to call the jit-approver read API + approve
 # (proxy to GET /requests, GET /requests/{id}/detail|status). Same-namespace.
+#
+# L1 (ADR-0007): POST /requests/{id}/mint is also reached on this same :8080 port.
+# /mint is the console-only privileged endpoint that enforces M5 SoD
+# (approver_sub != requester_sub). Authentication is enforced in-handler
+# (SPIFFE SVID mTLS / Kubernetes SA TokenReview) — NOT by routing.
+#
+# IMPORTANT: the agent-sandbox ingress rule (jit-approver-ingress-agents above,
+# which allows POST /requests from agent pods) MUST NOT be widened to match
+# /mint. Defense-in-depth: even if an agent pod could reach :8080, the
+# /mint handler rejects callers that are not the console SA (401/403).
+# The in-handler auth is the primary control; this NetworkPolicy is secondary.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

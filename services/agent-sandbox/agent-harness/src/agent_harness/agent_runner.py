@@ -53,10 +53,21 @@ logger = logging.getLogger("agent_harness.runner")
 
 # Module-level import reference — guarded so py_compile passes without the SDK.
 # Tests patch these names on this module to avoid network/socket calls.
+#
+# DIAGNOSTIC (2026-06-21, round 3): the bare ``except ImportError: sdk_query=None``
+# SWALLOWED the real failure, so when the SDK failed to import under the gateway's
+# confined ExecSandbox setns context the brain died at run_agent() with an opaque
+# "claude-agent-sdk not installed" and ZERO clue why (the heavy ~1.4s
+# claude_agent_sdk->mcp import chain can fail for a transitive/context reason that a
+# plain ``oc exec`` cannot reproduce). We now (a) record the real exception text in
+# ``sdk_import_error`` so it surfaces in the crash path, and (b) catch BaseException
+# (not just ImportError) so a partial/aborted import is captured too.
+sdk_import_error: str | None = None
 try:
     from claude_agent_sdk import query as sdk_query  # type: ignore[import-untyped]
-except ImportError:
+except BaseException as _sdk_exc:  # noqa: BLE001 — capture ANY import-time failure
     sdk_query = None  # type: ignore[assignment]
+    sdk_import_error = f"{type(_sdk_exc).__name__}: {_sdk_exc}"
 
 from agent_harness.svid_bearer import fetch_agent_svid
 
@@ -122,6 +133,46 @@ def _max_turns() -> int:
 
 def _model() -> str:
     return os.environ.get(AGENT_MODEL_ENV, "").strip() or AGENT_MODEL_DEFAULT
+
+
+# Backoff (seconds) before the single retry on a transient LLM-gateway
+# policy_denied 403 (round-3 diagnosis). The byte-identical request was proven
+# to clear within seconds of pod boot, so a short pause suffices. Override via
+# AGENT_GATEWAY_RETRY_BACKOFF_S for tests / tuning.
+AGENT_GATEWAY_RETRY_BACKOFF_ENV = "AGENT_GATEWAY_RETRY_BACKOFF_S"
+AGENT_GATEWAY_RETRY_BACKOFF_DEFAULT = 8.0
+
+
+def _gateway_retry_backoff_s() -> float:
+    try:
+        val = float(os.environ.get(
+            AGENT_GATEWAY_RETRY_BACKOFF_ENV,
+            str(AGENT_GATEWAY_RETRY_BACKOFF_DEFAULT),
+        ))
+        return val if val >= 0 else AGENT_GATEWAY_RETRY_BACKOFF_DEFAULT
+    except ValueError:
+        return AGENT_GATEWAY_RETRY_BACKOFF_DEFAULT
+
+
+# Max re-issues for the transient LLM-gateway policy_denied 403. Bounded so a
+# persistent denial (i.e. a real policy block, not the boot-time transient)
+# still terminates promptly. Override via AGENT_GATEWAY_RETRY_MAX.
+AGENT_GATEWAY_RETRY_MAX_ENV = "AGENT_GATEWAY_RETRY_MAX"
+# Boot-time LLM-gateway policy_denied window observed live to outlast a short
+# (~10s) budget; widen to ~6 attempts so the cumulative wait (default 6 x 8s =
+# ~48s + per-attempt SDK latency) rides out a denial window of up to ~60-90s.
+AGENT_GATEWAY_RETRY_MAX_DEFAULT = 6
+
+
+def _gateway_retry_max() -> int:
+    try:
+        val = int(os.environ.get(
+            AGENT_GATEWAY_RETRY_MAX_ENV,
+            str(AGENT_GATEWAY_RETRY_MAX_DEFAULT),
+        ))
+        return val if val >= 0 else AGENT_GATEWAY_RETRY_MAX_DEFAULT
+    except ValueError:
+        return AGENT_GATEWAY_RETRY_MAX_DEFAULT
 
 
 # Allowed tools. Default = the single read-only firewall tool (1A behaviour).
@@ -345,20 +396,32 @@ def _handle_assistant_message(msg: Any, session_id: str) -> None:
             })
 
 
-def _handle_result_message(msg: Any, session_id: str) -> None:
-    """Emit a type="result" JSONL line from a ResultMessage."""
+def _handle_result_message(msg: Any, session_id: str) -> str:
+    """Emit a type="result" JSONL line from a ResultMessage.
+
+    Returns the lower-cased error signal text (result + joined errors) so the
+    caller can inspect it for transient/recoverable conditions (e.g. a
+    boot-time LLM-gateway ``policy_denied`` 403). Returns "" when is_error is
+    False.
+    """
     is_error: bool = getattr(msg, "is_error", False)
     result_text: str = getattr(msg, "result", "") or ""
     errors: list[str] = getattr(msg, "errors", None) or []
+    summary: str = result_text or ("; ".join(errors) if errors else "")
     emit_jsonl({
         "type": "result",
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
         "status": "error" if is_error else "success",
-        "summary": result_text or ("; ".join(errors) if errors else ""),
+        "summary": summary,
         "stop_reason": getattr(msg, "stop_reason", None),
         "num_turns": getattr(msg, "num_turns", None),
     })
+    if not is_error:
+        return ""
+    # Surface the full error signal (result text + every error string) so the
+    # retry classifier sees the gateway's body even if `result` is empty.
+    return (summary + " " + " ".join(errors)).lower()
 
 
 def _handle_user_message(msg: Any, session_id: str) -> None:
@@ -406,7 +469,23 @@ async def run_agent(goal: str, session_id: str) -> bool:
     _fetch_svid = _self.fetch_agent_svid
     _query = _self.sdk_query
     if _query is None:
-        raise RuntimeError("claude-agent-sdk not installed")
+        # LATE RE-IMPORT (2026-06-21, round 3): the module-level guarded import (line ~57)
+        # can fail under the gateway's confined ExecSandbox setns boot for a context
+        # reason that a normal exec does NOT hit; retry the import ONCE here, now that
+        # the process is fully settled. If it now succeeds, cache it on the module so
+        # the SVID-rotation retry path (which reads _self.sdk_query) sees it too.
+        try:
+            from claude_agent_sdk import query as _late_query  # type: ignore[import-untyped]
+            _query = _late_query
+            _self.sdk_query = _late_query  # type: ignore[assignment]
+        except BaseException as late_exc:  # noqa: BLE001
+            # Surface the REAL import error (module-load and late) instead of an opaque
+            # "not installed" — this is what was missing while diagnosing the gateway boot.
+            detail = _self.sdk_import_error or "unknown"
+            raise RuntimeError(
+                f"claude-agent-sdk not importable (module-load: {detail}; "
+                f"late-retry: {type(late_exc).__name__}: {late_exc})"
+            )
 
     emit_jsonl({
         "type": "system",
@@ -437,8 +516,40 @@ async def run_agent(goal: str, session_id: str) -> bool:
 
     success = False
     retry_attempted = False
+    # Separate budget for the transient LLM-gateway policy_denied retry (a
+    # boot-time 403 that the IDENTICAL request clears seconds later — proven in
+    # round-3 diagnosis). Kept distinct from the SVID-rotation retry so the two
+    # recovery paths don't cannibalise each other's attempts. Bounded to a few
+    # attempts (not a single shot) so a slightly-longer gateway warm-up window
+    # still recovers; the discriminator stays narrow so this never masks a real
+    # downstream authz DENY.
+    gateway_retries_used = 0
+    gateway_retries_max = _gateway_retry_max()
+    last_error_signal = ""
+
+    def _rebuild_opts_fresh_session() -> Any:
+        """Re-fetch the SVID and rebuild ClaudeAgentOptions with a FRESH SDK
+        session id.
+
+        WHY a fresh session id: the claude CLI process backing query() rejects a
+        re-used session id with "Session ID <id> is already in use" (observed
+        live on the gateway 403 retry — the first, failed attempt already
+        registered the id). Every retry MUST therefore present a new SDK session.
+        The human-facing/audit ``session_id`` is unchanged (logging continuity);
+        only the SDK's internal session is rotated. The SVID is re-fetched (cheap
+        file read) so the new options also carry a current token.
+        """
+        fresh = _fetch_svid()
+        try:
+            # MUST be a canonical hyphenated UUID string — the claude CLI rejects
+            # the hyphen-less .hex form with "Invalid session ID. Must be a valid
+            # UUID." (observed live on the gateway 403 retry).
+            return _build_options(fresh, str(uuid.uuid4()))
+        finally:
+            del fresh
 
     while True:
+        last_error_signal = ""
         try:
             async for msg in _query(prompt=goal, options=opts):
                 msg_type = type(msg).__name__
@@ -448,7 +559,7 @@ async def run_agent(goal: str, session_id: str) -> bool:
                 elif msg_type == "AssistantMessage":
                     _handle_assistant_message(msg, session_id)
                 elif msg_type == "ResultMessage":
-                    _handle_result_message(msg, session_id)
+                    last_error_signal = _handle_result_message(msg, session_id)
                     success = not getattr(msg, "is_error", True)
                 elif msg_type == "UserMessage":
                     _handle_user_message(msg, session_id)
@@ -470,6 +581,54 @@ async def run_agent(goal: str, session_id: str) -> bool:
                         "subtype": "sdk_event",
                         "message": f"event type={msg_type}",
                     })
+            # Transient LLM-gateway 403 recovery (round-3 diagnosis):
+            # the inference gateway (LiteLLM forward-proxy policy layer) can
+            # return a one-shot 403 {"error":"policy_denied","detail":"... not
+            # permitted by policy"} on the brain's FIRST request right after pod
+            # boot, while the byte-identical request from the same pod succeeds
+            # seconds later. The SDK surfaces this as an is_error ResultMessage
+            # (NOT an exception), so the stream completes normally and we land
+            # here. Retry ONCE after a short backoff before giving up.
+            #
+            # Discriminator is intentionally narrow — the gateway's literal
+            # "policy_denied" / "not permitted by policy" body — so a genuine
+            # downstream authz DENY (e.g. a JIT-gate "403 Forbidden" / "403
+            # grant_scope_denied", which the agent must surface, not silently
+            # re-fire) does NOT match and is never retried.
+            if (
+                not success
+                and gateway_retries_used < gateway_retries_max
+                and (
+                    "policy_denied" in last_error_signal
+                    or "not permitted by policy" in last_error_signal
+                )
+            ):
+                gateway_retries_used += 1
+                backoff_s = _gateway_retry_backoff_s()
+                emit_jsonl({
+                    "type": "system",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "subtype": "gateway_policy_retry",
+                    "message": (
+                        "transient LLM-gateway policy_denied (403) on first "
+                        f"request; retry {gateway_retries_used}/{gateway_retries_max} "
+                        f"after {backoff_s}s backoff"
+                    ),
+                })
+                await asyncio.sleep(backoff_s)
+                try:
+                    opts = _rebuild_opts_fresh_session()
+                except RuntimeError as svid_exc:
+                    emit_jsonl({
+                        "type": "result",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                        "status": "error",
+                        "summary": f"gateway retry SVID refresh failed: {svid_exc}",
+                    })
+                    return False
+                continue  # Retry the while loop with a fresh SDK session.
             break  # Normal completion.
 
         except Exception as exc:
@@ -495,8 +654,12 @@ async def run_agent(goal: str, session_id: str) -> bool:
                     "message": "auth error detected; refreshing SVID and retrying once",
                 })
                 try:
+                    # Fresh SDK session id on retry — the claude CLI rejects a
+                    # re-used session ("Session ID ... is already in use") AND a
+                    # non-canonical id ("Invalid session ID. Must be a valid
+                    # UUID."), so use a hyphenated str(uuid4()).
                     fresh_svid = _fetch_svid()
-                    opts = _build_options(fresh_svid, session_id)
+                    opts = _build_options(fresh_svid, str(uuid.uuid4()))
                     del fresh_svid
                 except RuntimeError as svid_exc:
                     emit_jsonl({
@@ -508,6 +671,48 @@ async def run_agent(goal: str, session_id: str) -> bool:
                     })
                     return False
                 continue  # Retry the while loop.
+            # Transient LLM-gateway 403. OBSERVED on live SNO (round-3+ run):
+            # the SDK first yields an is_error ResultMessage carrying the
+            # gateway body ({"error":"policy_denied","detail":"... not permitted
+            # by policy"}) AND THEN raises a bare Exception on the SAME stream
+            # iteration — so we land HERE (in the except), NOT at the post-loop
+            # `break` check. str(exc) is empty/non-matching (the policy detail
+            # lived in the ResultMessage), so we MUST also consult
+            # ``last_error_signal`` (captured by _handle_result_message earlier
+            # this iteration). Some SDK versions instead raise the 403 directly,
+            # so we check err_str too. Same narrow discriminator + single retry.
+            combined_signal = err_str + " " + last_error_signal
+            is_gateway_policy_denied = (
+                "policy_denied" in combined_signal
+                or "not permitted by policy" in combined_signal
+            )
+            if is_gateway_policy_denied and gateway_retries_used < gateway_retries_max:
+                gateway_retries_used += 1
+                backoff_s = _gateway_retry_backoff_s()
+                emit_jsonl({
+                    "type": "system",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "subtype": "gateway_policy_retry",
+                    "message": (
+                        "transient LLM-gateway policy_denied (403, raised) on "
+                        f"first request; retry {gateway_retries_used}/{gateway_retries_max} "
+                        f"after {backoff_s}s backoff"
+                    ),
+                })
+                await asyncio.sleep(backoff_s)
+                try:
+                    opts = _rebuild_opts_fresh_session()
+                except RuntimeError as svid_exc:
+                    emit_jsonl({
+                        "type": "result",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                        "status": "error",
+                        "summary": f"gateway retry SVID refresh failed: {svid_exc}",
+                    })
+                    return False
+                continue  # Retry the while loop with a fresh SDK session.
             # Non-recoverable.
             emit_jsonl({
                 "type": "result",

@@ -1,0 +1,67 @@
+# Kyverno mutate: force the sandbox-launcher pod's SVID_JWT_PATH env to the PROVEN-WORKING file path.
+#
+# WHY THIS EXISTS (the reverter, documented honestly):
+#   The sandbox-launcher Deployment in `mcp-gateway` is owned by an ACM hub ManifestWork
+#   (AppliedManifestWork `ida-launcher-componenta`; the klusterlet-agent re-enforces the HUB's desired
+#   spec ~every couple minutes). The hub pins SVID_JWT_PATH=/shared/mcp-gateway-svid.jwt — the OLD,
+#   BROKEN value (round-1 Go path.Join misfile + the round-2 filesystem-confinement EACCES). The
+#   PROVEN-WORKING value is /tmp/svid-out/mcp-gateway-svid.jwt (the read-only `svid-output` mount the
+#   sibling policy mount-svid-output-on-openshell-agent adds under the brain's allowed /tmp prefix).
+#   A managed-side `oc apply`/`oc set env`/`oc patch` to the Deployment is clobbered by the reverter
+#   within ~2 min (PROVEN 2026-06-22: an overlay apply rolled back to RS sandbox-launcher-5667f8dfbb
+#   and the pod env reverted to /shared). THIS CLUSTER HAS NO HUB ACCESS, so the Deployment cannot be
+#   durably fixed from here.
+#
+# WHY A POD MUTATION SURVIVES THE REVERTER:
+#   The reverter owns only the Deployment object. Pods are created by the ReplicaSet controller and
+#   pass through Kyverno admission AFTER the klusterlet writes the Deployment. So every launcher pod
+#   the reverter spawns is mutated here at admission — the brain-env builder
+#   (sandbox_launcher.openshell._brain_env, which reads SVID_JWT_PATH from the launcher's OWN env via
+#   _read_env_or_file) then hands the unattended brain the correct /tmp/svid-out path. Reverter-proof,
+#   additive, namespaced (no hub edit, no Deployment mutation, no cluster-scoped delete).
+#
+# This is the PoC bridge until the human edits the HUB ManifestWork to set the correct value
+# (see CLAUDE.md "ACM image reverter" + this policy's annotations). It does NOT touch any protected
+# mutate-openshell-sandbox-* policy.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: fix-launcher-svid-jwt-path
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Force sandbox-launcher SVID_JWT_PATH to the proven /tmp/svid-out path
+    policies.kyverno.io/description: >
+      Replaces the sandbox-launcher pod's SVID_JWT_PATH env value with
+      /tmp/svid-out/mcp-gateway-svid.jwt (the proven file-SVID path the brain can read), overriding the
+      ACM-hub-pinned /shared/... that the klusterlet reverter keeps re-applying to the Deployment. Pods
+      pass through Kyverno admission after the reverter writes the Deployment, so this survives the
+      reverter. Durable fix is a HUB ManifestWork edit (no hub access from this cluster).
+spec:
+  background: false   # mutate at admission (CREATE) of each new launcher pod
+  rules:
+    - name: replace-svid-jwt-path-on-launcher
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["mcp-gateway"]
+              selector:
+                matchLabels:
+                  app: sandbox-launcher
+      mutate:
+        foreach:
+          # The launcher Deployment has exactly ONE container (sandbox-launcher == containers[0]).
+          # Walk its env list and replace ONLY the SVID_JWT_PATH element's value, in place, by index.
+          # Idempotent: re-applying the same value is a no-op patch; fires only when the element exists.
+          - list: "request.object.spec.containers[0].env"
+            preconditions:
+              all:
+                - key: "{{ element.name }}"
+                  operator: Equals
+                  value: "SVID_JWT_PATH"
+            patchesJson6902: |-
+              - op: replace
+                path: "/spec/containers/0/env/{{ elementIndex }}/value"
+                value: /tmp/svid-out/mcp-gateway-svid.jwt

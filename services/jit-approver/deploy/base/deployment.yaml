@@ -123,6 +123,43 @@ spec:
             # is absent an ephemeral key is generated (PoC). See /jwks + signing.py.
             - name: JIT_SIGNING_KEY_PATH
               value: "/vault/secrets/jit-signing-key"
+            # L0: persistence backend (default memory = byte-for-byte live path unchanged).
+            # Set to 'postgres' to enable the durable CNPG backend (requires .[durable]).
+            - name: JIT_STORE_BACKEND
+              value: "memory"
+            # L0: fail-closed key guard (default false = PoC ephemeral fallback preserved).
+            # Set to 'true' in production to crashloop if the Vault-injected PEM is missing.
+            - name: JIT_REQUIRE_STABLE_KEY
+              value: "false"
+            # L0: DATABASE_URL — consumed ONLY when JIT_STORE_BACKEND=postgres.
+            # Sourced from CNPG-generated secret jit-approver-db-app (key 'uri').
+            # Commented out by default; uncomment + set JIT_STORE_BACKEND=postgres to enable.
+            # - name: DATABASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: jit-approver-db-app
+            #       key: uri
+            # ---------------------------------------------------------------------------
+            # L1: console-side mint gate (ADR-0007)
+            # ---------------------------------------------------------------------------
+            # Enable the POST /requests/{id}/mint endpoint (default on).
+            # Set to 'false' to disable /mint (returns 503) for rollback.
+            - name: JIT_MINT_GATE_ENABLED
+              value: "true"
+            # SPIFFE IDs allowed to call /mint (comma-separated).
+            # Only the console service SVID should be here; never agent-sandbox SVIDs.
+            - name: JIT_MINT_ALLOWED_SPIFFE_IDS
+              value: "spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/approval-console"
+            # Require mTLS SPIFFE SVID for /mint auth (set to 'true' once SPIRE is wired).
+            # When 'false' (interim), falls back to Kubernetes SA TokenReview via
+            # X-Console-SA-Token header so /mint is NEVER open to unauthenticated callers.
+            # See ADR-0007 for the live mTLS on-cluster verify tasks.
+            - name: JIT_MINT_REQUIRE_MTLS
+              value: "false"
+            # Allowed console SA prefix for TokenReview interim auth.
+            # Callers whose SA username does not start with this prefix are rejected.
+            - name: JIT_MINT_CONSOLE_SA_PREFIX
+              value: "system:serviceaccount:mcp-gateway:approval-console"
             - name: PYTHONUNBUFFERED
               value: "1"
           volumeMounts:

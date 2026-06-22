@@ -1,0 +1,110 @@
+# Egress NetworkPolicy for OpenShell sandbox pods (review 2026-06-20, finding #4: ns openshell had
+# only an SSH ingress NP, so sandboxes could egress anywhere on any port — a lateral-movement risk,
+# especially now that sandboxes carry SYS_ADMIN + SYS_CHROOT). Scoped to sandbox pods (NOT the gateway
+# statefulset openshell-0, which lacks the sandbox-name-hash label) so it cannot cut the gateway's own
+# egress. Allows only: DNS, in-cluster control/identity/MCP planes, the apps router VIP (:443 for the
+# Keycloak / mcp-gateway / spire-oidc routes), and the LiteLLM brain (:4000).
+#
+# ✅ FIXED + PROVEN 2026-06-20 (supersedes the earlier "DO NOT APPLY — breaks DNS" warning).
+# The earlier breakage was a BUG IN THE DNS RULE, not an OVN-K limitation: on OpenShift OVN-Kubernetes
+# the CoreDNS (dns-default) pods listen on port 5353 (the dns-default Service maps 53 -> 5353), and an
+# egress NetworkPolicy is enforced against the DNAT'd BACKEND pod port. A rule allowing only :53 never
+# matches the :5353 pod traffic, so DNS broke. The fix (mirrored from the proven keycloak/allow-egress-dns
+# NP) is to allow BOTH :53 AND :5353 (UDP+TCP) to the openshift-dns namespace.
+# Verified live on a sandbox under this NP: external DNS (keycloak.apps -> 172.16.2.52) and in-cluster
+# DNS (kubernetes.default -> 172.30.0.1) both resolve; brain 172.16.2.251:4000 and apps-VIP 172.16.2.52:443
+# are reachable; a disallowed external IP (1.1.1.1:443) correctly times out. Tune the allow-set if a
+# gateway-created sandbox needs more (e.g. in-cluster Loki/telemetry). Phase-A compensating control (ADR-0017).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-sandbox-egress
+  namespace: openshell
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchExpressions:
+      - key: agents.x-k8s.io/sandbox-name-hash
+        operator: Exists
+  policyTypes: ["Egress"]
+  egress:
+    # DNS — keycloak/allow-egress-dns PROVEN pattern: :53 AND :5353 (UDP+TCP) to the openshift-dns
+    # namespace. OVN-K CoreDNS pods listen on 5353; the NP is enforced on the DNAT'd pod port, so :53
+    # alone is NOT enough (that was the original DNS-break bug).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+      ports:
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # in-cluster planes: OpenShell gateway (:8080 in ns openshell), MCP gateway, SPIRE/identity
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshell}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: mcp-gateway}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: zero-trust-workload-identity-manager}}
+    # external TLS via the apps router VIP (keycloak / mcp-gateway / spire-oidc routes) — keycloak-proven CIDR
+    - to:
+        - ipBlock: {cidr: 172.16.2.52/32}
+      ports:
+        - {protocol: TCP, port: 443}
+    # LiteLLM agent brain
+    - to:
+        - ipBlock: {cidr: 172.16.2.251/32}
+      ports:
+        - {protocol: TCP, port: 4000}
+    # Kagenti AuthBridge path (proxy-sidecar): the authbridge-proxy sidecar talks to the
+    # IN-CLUSTER Keycloak service (keycloak-service.keycloak.svc:8080) for the client-credentials
+    # grant + federated-JWT token-exchange — NOT the apps-VIP :443 route the spawn-shell path uses.
+    # Without this rule the grant times out ("context deadline exceeded" to .../realms/kagenti/.../token).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: keycloak}}
+      ports:
+        - {protocol: TCP, port: 8080}
+    # Kagenti AuthBridge target plane: the MCP servers the AuthBridge forwards to after token-exchange
+    # (echo-mcp.agentic-mcp.svc:8000, and other agentic-mcp servers on :8000).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: agentic-mcp}}
+      ports:
+        - {protocol: TCP, port: 8000}
+---
+# Egress for the jit-gate pod in ns openshell (added 2026-06-21 for the OpenShell Kagenti loop).
+# jit-gate is NOT a sandbox pod (no agents.x-k8s.io/sandbox-name-hash label) so the
+# openshell-sandbox-egress NP above does not select it. ns openshell has no default-deny egress
+# today, so jit-gate currently has unrestricted egress; this rule SCOPES it (zero-trust hygiene)
+# and makes the allow-set explicit + GitOps-durable, so it survives any future default-deny.
+# jit-gate needs: DNS; jit-approver /jwks (mcp-gateway:8080) to verify the capability JWT; and its
+# UPSTREAM echo-mcp (agentic-mcp:8000). The matching INGRESS rules are
+# allow-ingress-jwks-from-openshell (mcp-gateway) + allow-ingress-echo-from-openshell (agentic-mcp).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-jit-gate-egress
+  namespace: openshell
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  podSelector:
+    matchLabels:
+      app: jit-gate
+  policyTypes: ["Egress"]
+  egress:
+    # DNS — same :53 + :5353 (UDP+TCP) pattern as the sandbox egress NP (OVN-K CoreDNS on 5353).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+      ports:
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # jit-approver /jwks — verify the X-JIT-Session-JWT capability token (aud=kyverno-authz).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: mcp-gateway}}
+      ports:
+        - {protocol: TCP, port: 8080}
+    # UPSTREAM — echo-mcp.agentic-mcp.svc:8000 (the protected MCP target jit-gate forwards to).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: agentic-mcp}}
+      ports:
+        - {protocol: TCP, port: 8000}

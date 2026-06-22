@@ -5,6 +5,8 @@ No network. No SPIFFE socket. All SPIRE interaction is mocked.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import time
 from pathlib import Path
@@ -25,6 +27,14 @@ def _make_svid_file(tmp_path: Path, content: str, age_s: float = 0) -> Path:
         mtime = time.time() - age_s
         os.utime(p, (mtime, mtime))
     return p
+
+
+def _make_jwt(sub: str) -> str:
+    """Build an UNSIGNED JWT with the given `sub` claim (shape-guard tests only)."""
+    def _b64(d: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+
+    return f"{_b64({'alg': 'RS256'})}.{_b64({'sub': sub})}.sig"
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +82,48 @@ class TestTryReadSvidFile:
         p = _make_svid_file(tmp_path, "  token.value\n  ")
         result = _try_read_svid_file(str(p))
         assert result == "token.value"
+
+    def test_shape_guard_accepts_uuid_shaped_svid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With SVID_REQUIRE_PATH_SUBSTR set, a /sandbox/ (UUID-shaped) token passes."""
+        from agent_harness.svid_bearer import _try_read_svid_file
+
+        monkeypatch.setenv("SVID_REQUIRE_PATH_SUBSTR", "/sandbox/")
+        tok = _make_jwt("spiffe://anaeem.na-launch.com/ns/openshell/sandbox/abc-123")
+        p = _make_svid_file(tmp_path, tok)
+        assert _try_read_svid_file(str(p)) == tok
+
+    def test_shape_guard_rejects_sa_shaped_svid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail closed: a SA-shaped (kagenti) token is REJECTED (would 401 at ext-proc)."""
+        from agent_harness.svid_bearer import _try_read_svid_file
+
+        monkeypatch.setenv("SVID_REQUIRE_PATH_SUBSTR", "/sandbox/")
+        tok = _make_jwt("spiffe://anaeem.na-launch.com/ns/kagenti-test/sa/test-agent")
+        p = _make_svid_file(tmp_path, tok)
+        assert _try_read_svid_file(str(p)) is None
+
+    def test_shape_guard_rejects_unparseable_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail closed: a non-JWT file is rejected when the shape guard is active."""
+        from agent_harness.svid_bearer import _try_read_svid_file
+
+        monkeypatch.setenv("SVID_REQUIRE_PATH_SUBSTR", "/sandbox/")
+        p = _make_svid_file(tmp_path, "not-a-jwt")
+        assert _try_read_svid_file(str(p)) is None
+
+    def test_no_guard_returns_token_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without SVID_REQUIRE_PATH_SUBSTR the legacy verbatim behaviour is preserved."""
+        from agent_harness.svid_bearer import _try_read_svid_file
+
+        monkeypatch.delenv("SVID_REQUIRE_PATH_SUBSTR", raising=False)
+        p = _make_svid_file(tmp_path, "any.legacy.token")
+        assert _try_read_svid_file(str(p)) == "any.legacy.token"
 
 
 # ---------------------------------------------------------------------------

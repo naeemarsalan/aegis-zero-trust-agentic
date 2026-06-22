@@ -8,10 +8,68 @@ resources:
 
 images:
   - name: oci.arsalan.io/nvidia-ida/sandbox-launcher
-    # Native brain boot via ExecSandbox (gateway 0.0.62 reserves
-    # OPENSHELL_SANDBOX_COMMAND, so the runner is exec'd into the ready sandbox
-    # instead of being set as the boot command). Rollback: newTag: dev (prior build).
-    newTag: execboot-20260621-173204
+    # SYSTEM-INTERPRETER brain boot (2026-06-21, round 2): _brain_boot_command() now
+    # boots /usr/bin/python3.11 (system interp, root 0755, NEEDS NO pyvenv.cfg) with the
+    # venv site-packages (/opt/app-root/lib/python3.11/site-packages) on PYTHONPATH, NOT
+    # bare `python`. Bare `python` is the /opt/app-root VENV interp; its startup
+    # init_import_site reads /opt/app-root/pyvenv.cfg, which EPERMs under the confined
+    # sandbox uid 1000 (setns/MCS), so CPython aborts "Fatal Python error:
+    # init_import_site" ~1s after boot — the detached brain booted then immediately died,
+    # never making a single MCP call (round-1 blocker; reproduced + fix proven locally).
+    # The readiness probe is hardened (sleep 2 to pass the crash window + Fatal/Traceback
+    # detection) so a crashed brain is no longer falsely reported ready.
+    # Builds on the DETACHED boot (nohup+setsid, brain survives stream close) + ext-proc
+    # brain-boot routing + execboot-pythonpath ExecSandbox.
+    # Also injects PYTHONPATH (incl the venv site-packages) via the ExecSandbox ENVIRONMENT
+    # map in _brain_env (belt-and-suspenders to the inline export). PROVEN: the crash is
+    # exactly the venv-site path missing — `import agent_harness.agent_runner` sets
+    # sdk_query=None with PYTHONPATH=/app/src only, and to a real function with the venv
+    # path added; a full manual boot then runs SVID-fetch -> real pfSense MCP call ->
+    # HTTP 403 grant_absent -> coherent result, zero crash.
+    # SVID-FETCH GATE launcher (2026-06-21, round 4): the FIXED 75s settle (round 3)
+    # still raced SPIRE on a loaded node — the brain's first fetch failed and the
+    # py-spiffe per-process poisoning kept every in-process AND brain-spawned-subprocess
+    # retry failing for the whole window, while a fresh INDEPENDENT process fetched the
+    # SVID fine throughout. So the launcher no longer TIMES the boot — it GATES it on
+    # ground truth: _boot_brain_when_ready now polls openshell.probe_agent_svid (a
+    # SEPARATE short-lived ExecSandbox that runs the same _try_workload_api one-shot in a
+    # FRESH process — the always-works channel) until a real SVID comes back, THEN execs
+    # the brain, whose own first fetch then succeeds on attempt 1 and never poisons. The
+    # 75s settle becomes a 10s floor; gate polls up to BRAIN_BOOT_SVID_PROBE_TIMEOUT_S
+    # (180s) at BRAIN_BOOT_SVID_PROBE_INTERVAL_S (5s). Belt-and-suspenders: the brain's
+    # _try_workload_api_subprocess now runs close_fds + start_new_session + GRPC_*-stripped
+    # env (that hardening ships in the brain image, NOT this launcher build).
+    # NOTE (round 4): the probe-gate diagnoses but CANNOT cure the autonomous-brain
+    # blocker — the gateway ExecSandbox masks /spiffe-workload-api with an empty 4k
+    # tmpfs, so the brain can never reach the SPIRE socket via the launcher boot path.
+    # The durable cure (PROVEN: a brain via ExecSandbox reads /sandbox/svid-gw.jwt fine)
+    # is an OPERATOR/WEBHOOK change: have spiffe-helper write an mcp-gateway-audience
+    # JWT-SVID into the agent-visible /sandbox workspace (no shared volume exists today).
+    # SVID-FILE brain boot (2026-06-22 — the CURE the round-4 NOTE above predicted): _brain_env now
+    # sets SVID_JWT_PATH=/shared/mcp-gateway-svid.jwt. The AuthBridge-injected spiffe-helper (which
+    # runs in the NORMAL/attestable container ns, NOT the gateway-masked confined ns) fetches the
+    # mcp-gateway-audience JWT-SVID and writes it to the shared-data emptyDir mounted at /shared in
+    # BOTH helper and brain (platform/openshell/kagenti-authbridge/configmaps.yaml spiffe-helper-config
+    # 2nd jwt_svids entry). NOTE the round-4 note assumed "no shared volume exists today" — the
+    # AuthBridge injection DOES provide one (shared-data emptyDir at /shared, proven on kagenti-test);
+    # /shared replaces the /sandbox workspace idea. The brain reads the file FIRST (svid_bearer
+    # fetch order), bypassing the masked SPIRE socket. A fail-closed UUID-shape guard in
+    # _try_read_svid_file rejects an SA-shaped (kagenti) token so ext-proc never 401s on the wrong
+    # SVID. Pairs with SANDBOX_IMAGE brain-svidfile-20260622-010059.
+    # Rollback: newTag: svidprobe-gate-20260621-232243 (masked-socket probe-gate, pre-svid-file).
+    # Rollback: newTag: svidprobe-gate-20260621-231038 (probe code, pre-masking-diagnostic-log).
+    # Rollback: newTag: svidsettle-brain-20260621-224241 (fixed 75s settle; still races SPIRE).
+    # Rollback: newTag: sysinterp-brain-20260621-214136 (no SVID settle; eager boot races SPIRE).
+    # Rollback: newTag: sysinterp-brain-20260621-213258 (boot-cmd fix only, no env PYTHONPATH).
+    # Rollback: newTag: detach-brain-20260621-201858 (detached but bare-python crash).
+    # LLM "policy_denied" ROOT CAUSE (2026-06-22, round-5): the brain's claude CLI POST to the
+    # LiteLLM endpoint (172.16.2.251:4000) was denied by the OpenShell gateway's per-sandbox
+    # forward proxy enforcing the deny-by-default baseline EGRESS allowlist, whose `inference`
+    # rule listed ONLY api.anthropic.com. FIX is in configmap-baseline-policy.yaml (added
+    # 172.16.2.251:4000 to inference endpoints), NOT a launcher code change. This noproxy-llm
+    # launcher image == svidfile-20260622-010033 behaviour (round-5 build, no behaviour change).
+    # Rollback: newTag: svidfile-20260622-010033
+    newTag: llmgate-20260622-153517
 
 patches:
   - path: deployment-patch.yaml

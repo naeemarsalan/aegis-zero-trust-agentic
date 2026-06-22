@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-echo-from-openshell
+  namespace: agentic-mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: echo-mcp
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshell
+    ports:
+    - port: 8000
+      protocol: TCP

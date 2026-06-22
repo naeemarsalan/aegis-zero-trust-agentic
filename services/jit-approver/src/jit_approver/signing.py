@@ -91,14 +91,29 @@ class _SigningKeys:
         return self._private_key.public_key()
 
 
+_REQUIRE_STABLE_KEY_ENV = "JIT_REQUIRE_STABLE_KEY"
+
+
 def _load_or_generate_key() -> _SigningKeys:
     """Load the signing key from ``JIT_SIGNING_KEY_PATH`` (PEM) or generate one.
 
     Generation is a PoC convenience: an ephemeral RSA-2048 keypair so that /jwks
     and minting work out of the box. Production should mount a stable PEM so the
     JWKS (and thus already-issued tokens) survive a restart.
+
+    Fail-closed guard (L0):
+        When ``JIT_SIGNING_KEY_PATH`` is set AND ``JIT_REQUIRE_STABLE_KEY=true``,
+        a missing or unreadable PEM file raises ``RuntimeError`` instead of
+        silently falling back to an ephemeral key.  This ensures a misconfigured
+        prod deployment crashloops rather than serving with an ephemeral key that
+        invalidates previously-issued session JWTs.
+
+        When ``JIT_REQUIRE_STABLE_KEY`` is unset or ``false`` (the default / PoC
+        mode), the ephemeral fallback is preserved unchanged.
     """
     path = os.environ.get(_SIGNING_KEY_PATH_ENV, "")
+    require_stable = os.environ.get(_REQUIRE_STABLE_KEY_ENV, "").strip().lower() == "true"
+
     if path:
         try:
             with open(path, "rb") as fh:
@@ -106,17 +121,52 @@ def _load_or_generate_key() -> _SigningKeys:
             private_key = serialization.load_pem_private_key(pem, password=None)
             if not isinstance(private_key, rsa.RSAPrivateKey):
                 raise TypeError("JIT signing key is not an RSA private key")
-            logger.info("jit_signing_key_loaded", extra={"path": path, "kid": JIT_SIGNING_KID})
+            logger.info(
+                "jit_signing_key_stable_pem_loaded",
+                extra={"path": path, "kid": JIT_SIGNING_KID, "key_source": "stable-pem"},
+            )
             return _SigningKeys(private_key)
         except FileNotFoundError:
+            if require_stable:
+                # FAIL CLOSED: missing stable key + JIT_REQUIRE_STABLE_KEY=true.
+                # Raise so the pod crashloops rather than silently degrading to an
+                # ephemeral key that would invalidate live session JWTs.
+                raise RuntimeError(
+                    f"JIT_REQUIRE_STABLE_KEY=true but signing PEM not found at {path!r}. "
+                    "Ensure the Vault Agent Injector has written the jit-signing-key secret "
+                    "to /vault/secrets/jit-signing-key before starting the service."
+                )
             logger.warning(
-                "jit_signing_key_missing_generating_ephemeral",
-                extra={"path": path, "kid": JIT_SIGNING_KID},
+                "jit_signing_key_missing_ephemeral_fallback",
+                extra={
+                    "path": path,
+                    "kid": JIT_SIGNING_KID,
+                    "key_source": "ephemeral-fallback",
+                    "warn": (
+                        "PoC ephemeral key in use — tokens will NOT survive a restart. "
+                        "Mount a stable PEM for production or set JIT_REQUIRE_STABLE_KEY=true "
+                        "to fail closed on a missing key."
+                    ),
+                },
             )
+        except Exception as exc:
+            if require_stable:
+                raise RuntimeError(
+                    f"JIT_REQUIRE_STABLE_KEY=true but signing PEM at {path!r} is unreadable: {exc}"
+                ) from exc
+            logger.warning(
+                "jit_signing_key_unreadable_ephemeral_fallback",
+                extra={"path": path, "error": str(exc), "key_source": "ephemeral-fallback"},
+            )
+
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     logger.info(
         "jit_signing_key_generated_ephemeral",
-        extra={"kid": JIT_SIGNING_KID, "note": "PoC ephemeral key; mount a PEM in prod"},
+        extra={
+            "kid": JIT_SIGNING_KID,
+            "key_source": "ephemeral",
+            "note": "PoC ephemeral key; mount a stable PEM in prod (set JIT_SIGNING_KEY_PATH)",
+        },
     )
     return _SigningKeys(private_key)
 

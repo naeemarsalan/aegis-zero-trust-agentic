@@ -230,6 +230,25 @@ vault write auth/kubernetes/role/jit-approver \
   token_ttl="15m" \
   token_max_ttl="1h"
 
+# The sandbox-launcher writes per-sandbox consent grants (Option-D delegated
+# identity) via Kubernetes auth. ONE role/policy serves both the Vault Agent
+# injector (READS the OIDC secret it mounts) and the app (WRITES the grant) —
+# see sandbox-launcher.hcl. Previously created out-of-band; declared here to make
+# the launcher's Vault wiring GitOps-durable. (The OIDC secret VALUE at
+# secret/data/sandbox-launcher/launcher-oidc-secret is provisioned separately —
+# it is a real Keycloak client secret and never lives in git.)
+# NOTE before re-running on a live Vault: this OVERWRITES any existing
+# sandbox-launcher role/policy. Confirm `vault policy read sandbox-launcher` is a
+# subset of sandbox-launcher.hcl first so OIDC injection is not regressed.
+log "Writing sandbox-launcher policy and Kubernetes auth role..."
+vault policy write sandbox-launcher "${SCRIPT_DIR}/sandbox-launcher.hcl"
+vault write auth/kubernetes/role/sandbox-launcher \
+  bound_service_account_names="sandbox-launcher" \
+  bound_service_account_namespaces="mcp-gateway" \
+  token_policies="sandbox-launcher" \
+  token_ttl="15m" \
+  token_max_ttl="1h"
+
 # ── 6. KV secrets — MCP tool credentials ─────────────────────────────────────
 # Values come from environment/.env — NEVER committed to git.
 log "Writing pfsense MCP tool credentials to KV..."
@@ -290,8 +309,33 @@ vault kv put secret/jit-approver/gitea-token token="${GITEA_TOKEN:-REPLACE-WITH-
 if ! vault kv get -field=secret secret/jit-approver/webhook-secret >/dev/null 2>&1; then
   vault kv put secret/jit-approver/webhook-secret secret="$(openssl rand -hex 24)" >/dev/null
 fi
+# L0 hardening: the RS256 signing PEM MUST remain stable once seeded.
+# Rotating it would invalidate all live session JWTs being verified by the
+# ext-proc Kyverno gate.  This block:
+#   1. If the key is ABSENT -> seed it once (create-once-if-absent, unchanged).
+#   2. If the key is PRESENT -> validate it parses as an RSA private key.
+#      If malformed: log loudly and DO NOT overwrite (refuse to rotate a live key).
+#      If valid: log confirmation and leave it UNTOUCHED (idempotent).
+# This guard never rotates an existing key, so re-running bootstrap is safe.
 if ! vault kv get -field=pem secret/jit-approver/jit-signing-key >/dev/null 2>&1; then
-  vault kv put secret/jit-approver/jit-signing-key pem="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)" >/dev/null
+  log "Seeding jit-approver RS256 signing key (first-time only)..."
+  vault kv put secret/jit-approver/jit-signing-key \
+    pem="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)" >/dev/null
+  log "jit-signing-key seeded at secret/jit-approver/jit-signing-key"
+else
+  # Key already exists — validate it is a parseable RSA private key.
+  # NEVER overwrite a present key (rotation would invalidate live session JWTs).
+  existing_pem="$(vault kv get -field=pem secret/jit-approver/jit-signing-key 2>/dev/null)"
+  if echo "${existing_pem}" | openssl pkey -in - -noout 2>/dev/null; then
+    log "jit-signing-key already present and parses as a valid RSA key — leaving UNTOUCHED (stable)"
+  else
+    # LOUD ERROR: present but malformed.  Do NOT overwrite — a human must investigate.
+    warn "WARNING: secret/jit-approver/jit-signing-key exists but does NOT parse as an RSA private key."
+    warn "  -> NOT overwriting (overwriting would rotate the key and invalidate live session JWTs)."
+    warn "  -> Manual remediation required: inspect the key, back it up, then re-run bootstrap."
+    warn "  -> Until the key is repaired, signing.py will fall back to an ephemeral key (or"
+    warn "     crashloop if JIT_REQUIRE_STABLE_KEY=true is set on the deployment)."
+  fi
 fi
 
 # Phase 5 capstone — the sandboxed agent's inference credential. The agent reads

@@ -1,0 +1,90 @@
+# Kyverno mutate: mount the kagenti-webhook-injected `svid-output` emptyDir into the AGENT/brain
+# container so the UNATTENDED brain can read its mcp-gateway JWT-SVID from a FILE.
+#
+# WHY THIS EXISTS (round-1 blocker, defect 1):
+# The gateway ExecSandbox enters the sandbox via a confined setns and masks /spiffe-workload-api with
+# an empty 4k tmpfs, so the brain CANNOT fetch its SVID from the SPIRE Workload API socket. The fix is
+# the file handoff: the AuthBridge spiffe-helper sidecar (NORMAL namespace, can attest) fetches the
+# mcp-gateway-audience JWT-SVID and writes it to cert_dir=/opt, which is the operator-injected
+# `svid-output` emptyDir (PROVEN in kagenti-operator container_builder.go: svid-output -> /opt mounted
+# in the spiffe-helper + authbridge-proxy sidecars). BUT the kagenti webhook mounts `svid-output` ONLY
+# into its own sidecars — it touches the agent container only to relocate its port (pod_mutator.go
+# ~531-587). So the agent never sees the file. This policy adds that one missing read-only mount.
+#
+# PAIRS WITH:
+#  - spiffe-helper-config (configmaps.yaml): jwt_svids mcp-gateway entry now uses a RELATIVE filename
+#    `mcp-gateway-svid.jwt` so path.Join(cert_dir=/opt, name) == /opt/mcp-gateway-svid.jwt (an ABSOLUTE
+#    /shared/... does NOT escape /opt under Go path.Join — that was defect 2).
+#  - the launcher _brain_env: SVID_JWT_PATH=/svid-out/mcp-gateway-svid.jwt (set via the launcher pod env
+#    override; the same file via the read-only `svid-output` mount this policy adds at /svid-out).
+#
+# MOUNTPATH CHOICE — /svid-out, NOT /opt: the agent already mounts `openshell-supervisor-bin` at
+# /opt/openshell/bin; mounting svid-output at /opt would SHADOW the supervisor bin and break the
+# gateway-fixed `sleep infinity` supervisor. A fresh path avoids any collision.
+#
+# ORDERING (the fragile bit, documented honestly): `svid-output` is added to podSpec.Volumes by the
+# kagenti inject.kagenti.io webhook (reinvocationPolicy: IfNeeded, failurePolicy: Fail). This Kyverno
+# mutate must run AFTER that injection or the volume won't exist yet. Kyverno's resource mutating
+# webhook is reinvocationPolicy: IfNeeded too, so a first pass before kagenti is a no-op (precondition
+# below fails closed) and the post-kagenti reinvocation applies the mount. The precondition makes the
+# rule a strict no-op until BOTH (a) `svid-output` is present and (b) the agent does not already mount
+# it — so it is idempotent and order-safe (never errors if the volume is absent on the first pass).
+#
+# SEPARATE, DISTINCT-NAMED policy on purpose: it is NOT named mutate-openshell-sandbox-* (those — the
+# CLOSED setns SYS_CHROOT fix and the kagenti-enroll switch — are protected and must not be edited).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mount-svid-output-on-openshell-agent
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Mount svid-output into the OpenShell agent for the file-SVID brain handoff
+    policies.kyverno.io/description: >
+      Adds a read-only volumeMount of the kagenti-webhook-injected `svid-output` emptyDir at /svid-out
+      to the OpenShell sandbox agent container, so the unattended brain can read its mcp-gateway JWT-SVID
+      from /svid-out/mcp-gateway-svid.jwt (the SPIRE Workload API socket is masked by the gateway
+      ExecSandbox). No-op unless svid-output is present and not already mounted (idempotent, order-safe).
+spec:
+  background: false   # mutate at admission (CREATE); reinvoked after the kagenti injection
+  rules:
+    - name: mount-svid-output-on-agent-container
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              selector:
+                matchExpressions:
+                  # Every OpenShell-launched sandbox carries this label (excludes the gateway
+                  # statefulset openshell-0). Same selector the proven SYS_CHROOT policy uses.
+                  - key: agents.x-k8s.io/sandbox-name-hash
+                    operator: Exists
+      preconditions:
+        all:
+          # Fire ONLY once the kagenti webhook has injected the svid-output volume. Until then this is
+          # a strict no-op (so a pre-kagenti reinvocation cannot reference a missing volume / error).
+          - key: "svid-output"
+            operator: AnyIn
+            value: "{{ request.object.spec.volumes[].name || `[]` }}"
+      mutate:
+        foreach:
+          # Patch the agent/brain container — the one that mounts the OpenShell workspace at /sandbox.
+          # Idempotent: skip any container that already mounts svid-output (reinvocation re-entry).
+          - list: "request.object.spec.containers"
+            preconditions:
+              all:
+                - key: "/sandbox"
+                  operator: AnyIn
+                  value: "{{ element.volumeMounts[].mountPath || `[]` }}"
+                - key: "svid-output"
+                  operator: AnyNotIn
+                  value: "{{ element.volumeMounts[].name || `[]` }}"
+            patchesJson6902: |-
+              - op: add
+                path: "/spec/containers/{{ elementIndex }}/volumeMounts/-"
+                value:
+                  name: svid-output
+                  mountPath: /tmp/svid-out
+                  readOnly: true

@@ -45,10 +45,14 @@ type SVIDClaims struct {
 	SpiffeID string
 
 	// SandboxUID is the sandbox UUID parsed from the SPIFFE URI path segment
-	// following "/sandbox/". It equals the k8s Sandbox CR uid and the Vault
-	// grant key (secret/data/sandbox-grants/<SandboxUID>). Always non-empty on
-	// a successful VerifySVID call; VerifySVID fails closed if the sub has no
-	// "/sandbox/<uuid>" segment.
+	// following "/sandbox/". It equals the OpenShell sandbox id
+	// (resp.sandbox.metadata.id, which the sandbox-launcher uses as the Vault
+	// grant key — sandbox_launcher/api.py:463,483) and is delivered onto the pod
+	// as the openshell.io/sandbox-id annotation that the ClusterSPIFFEID template
+	// renders into this path. NOTE: it is NOT the k8s Sandbox CR uid (a different
+	// UUID). It is the Vault grant key: secret/data/sandbox-grants/<SandboxUID>.
+	// Always non-empty on a successful VerifySVID call; VerifySVID fails closed if
+	// the sub has no "/sandbox/<uuid>" segment.
 	SandboxUID string
 
 	// SandboxNonce is vestigial and always empty. Real SPIRE JWT-SVIDs cannot

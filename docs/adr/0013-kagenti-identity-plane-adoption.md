@@ -2,6 +2,8 @@
 
 **Status:** In progress — operator INSTALLED + integration recipe verified; STOPPED before shared-realm mutation + ext-proc cutover (see "Why stopped"). 2026-06-19.
 
+**UPDATE 2026-06-22:** Kagenti is now EXTENDED to OpenShell sandboxes (beyond the kagenti-test agent): a Kyverno policy mutates the **Sandbox CR** podTemplate (`kagenti.io/type=agent` + `kagenti.io/authbridge-mode=proxy-sidecar`) → the agent-sandbox controller propagates the labels to the pod → the AuthBridge webhook injects `spiffe-helper`+`authbridge-proxy` → federated-jwt (realm `kagenti`) → token-exchange → `jit-gate` → `echo-mcp` (**GREEN**). Required: the operator `agents.x-k8s.io/sandboxes/finalizers` RBAC (`platform/kagenti/operator-finalizer-rbac.yaml`) and an **SA-shaped** SVID matching the per-SA KC federated-jwt client. The native sandbox now carries **two** SVIDs and uses **both planes**: Kagenti→echo-mcp (SA-shaped) AND ext-proc→**real** pfSense/k8s (a 2nd UUID-shaped CSID). **The OBO "dead-end" premise below was DISPROVEN** on the live RHBK 26.6.3 — it is NOT the #40328 NPE, just unconfigured fine-grained impersonation perms on the agentic `mcp-gateway` client (PROVEN viable in the isolated `kagenti` realm; see memory `project-keycloak-obo-constraint`). Full detail: `docs/reviews/phaseA-delegation-worklog-and-issues-2026-06-20.md`.
+
 ## Decision
 Replace the custom identity logic in `ext-proc-delegation` (SVID verify → Vault consent grant →
 RFC8693 Keycloak exchange → inject) with **Kagenti** (the Red Hat-incubation agentic platform:

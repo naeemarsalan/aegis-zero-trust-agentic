@@ -1,8 +1,16 @@
 # ADR-0009: OpenShell-native delegation; and the OCP/CRI-O provider_spiffe blocker
 
+> **⚠️ ROOT CAUSE SUPERSEDED 2026-06-20 by [ADR-0017](0017-provider-spiffe-setns-selinux-confinement.md).**
+> This ADR's `provider_spiffe` blocker diagnosis (mount-propagation / rshared CSI) is **WRONG**. The
+> setns-EPERM was CONFIRMED LIVE to be **SELinux `container_t` confinement** denying the `setns`-back
+> (class `capability` perm `sys_admin`) — proven by a `spc_t` positive control that succeeds with the
+> real CSI mount present. It is NOT propagation and NOT a userns mismatch. Do not act on the
+> mount-propagation analysis below; see ADR-0017 for the cause, proof, and remediation. The
+> Decision-1 native-delegation design is otherwise retained.
+
 Status: **Proposed** (supersedes the delegation approach in agent-harness.md; records a hard OCP blocker)
 Date: 2026-06-16
-Related: ADR-0008, docs/design/agent-harness.md
+Related: ADR-0008, ADR-0017, docs/design/agent-harness.md
 
 ## Decision 1 — Use OpenShell's NATIVE provider token-grant; retire our bolt-on
 

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Platform manifests for the central skills Gitea repo (C3).
+# Apply ONLY after the Gitea service is reachable and GITEA_TOKEN Secret is present.
+# Gated: see Phase C plan Loop C3, gate G-C3a.
+
+resources:
+  - seed-job/seed-job.yaml
+  - seed-job/skills-repo-read-secret.example.yaml

@@ -50,6 +50,19 @@ spec:
               value: "5"
             - name: PYTHONUNBUFFERED
               value: "1"
+            # ---------------------------------------------------------------------------
+            # L1: console-side mint gate (ADR-0007)
+            # ---------------------------------------------------------------------------
+            # Use POST /requests/{id}/mint instead of Gitea PR merge for approval.
+            # Set to 'false' to fall back to Gitea PR merge (rollback lever).
+            - name: JIT_APPROVE_VIA_MINT
+              value: "true"
+            # JIT_MINT_CONSOLE_TOKEN_OVERRIDE: test/dev seam — leave empty in production.
+            # In production the console sends its projected SA token from
+            # /var/run/secrets/kubernetes.io/serviceaccount/token automatically
+            # (read by _mint_headers() in app.py when this env var is absent).
+            # - name: JIT_MINT_CONSOLE_TOKEN_OVERRIDE
+            #   value: ""
           # Vault injector annotation (optional in overlay): if the Vault injector
           # is active, add vault.hashicorp.com/agent-inject annotations to write
           # the token to /vault/secrets/gitea-token. See overlays/anaeem.

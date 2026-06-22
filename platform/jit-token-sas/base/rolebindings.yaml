@@ -1,0 +1,67 @@
+# RoleBindings: bind per-capability SAs to their minimal Roles (Loop B3).
+#
+# Each binding is namespace-scoped (Role, not ClusterRole) to prevent
+# cross-namespace privilege escape.  The SA and the Role are in the same namespace.
+#
+# GATED: apply only after the corresponding Roles and ServiceAccounts are created.
+# ---------------------------------------------------------------------------
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jit-firewall-write-binding
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: jit-firewall-write
+    app.kubernetes.io/component: jit-token-binding
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jit-firewall-write-role
+subjects:
+  - kind: ServiceAccount
+    name: jit-firewall-write
+    namespace: agentic-mcp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jit-resources-scale-binding
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: jit-resources-scale
+    app.kubernetes.io/component: jit-token-binding
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jit-resources-scale-role
+subjects:
+  - kind: ServiceAccount
+    name: jit-resources-scale
+    namespace: agent-sandbox
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jit-pods-exec-binding
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: jit-pods-exec
+    app.kubernetes.io/component: jit-token-binding
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jit-pods-exec-role
+subjects:
+  - kind: ServiceAccount
+    name: jit-pods-exec
+    namespace: agent-sandbox

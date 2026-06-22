@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Per-capability narrow ServiceAccounts for Loop B3 (short-lived TokenRequest minting).
+# These SAs are minted by jit-approver via the k8s TokenRequest API on JIT approval.
+# Each SA has exactly the minimum RBAC needed for its approved operation class;
+# jit-approver's own SA has create on serviceaccounts/token scoped to these names only.
+#
+# GATED: oc apply -k platform/jit-token-sas/base
+# Do not apply without human go (cluster mutation).
+
+resources:
+  - serviceaccounts.yaml
+  - roles.yaml
+  - rolebindings.yaml

@@ -560,3 +560,249 @@ class TestSVIDRetryHeuristic:
         assert svid_fetch_count["n"] == 2, (
             f"Expected 2 SVID fetches for 'svid expired', got {svid_fetch_count['n']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Transient LLM-gateway policy_denied (403) retry (round-3 diagnosis)
+# ---------------------------------------------------------------------------
+
+
+def _result_msg(*, is_error: bool, result: str = "", errors=None):
+    m = MagicMock()
+    m.__class__.__name__ = "ResultMessage"
+    m.is_error = is_error
+    m.result = result
+    m.stop_reason = "error" if is_error else "end_turn"
+    m.num_turns = 1
+    m.errors = errors
+    return m
+
+
+class TestGatewayPolicyRetry:
+    """A one-shot LLM-gateway policy_denied 403 (surfaced as an is_error
+    ResultMessage) must be retried ONCE; a genuine downstream authz DENY
+    (403 Forbidden / grant_scope_denied) must NOT be retried."""
+
+    @pytest.mark.asyncio
+    async def test_policy_denied_result_retries_then_succeeds(
+        self, monkeypatch
+    ) -> None:
+        from agent_harness import agent_runner
+
+        # No real sleep in the test.
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_BACKOFF_S", "0")
+
+        call_count = {"n": 0}
+
+        async def _query(*, prompt, options):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First request after boot: gateway policy_denied 403 (delivered
+                # as an is_error ResultMessage that completes the stream).
+                yield _result_msg(
+                    is_error=True,
+                    result=(
+                        "POST 172.16.2.251:4000/v1/messages?beta=true not "
+                        "permitted by policy"
+                    ),
+                    errors=["policy_denied"],
+                )
+            else:
+                yield _result_msg(is_error=False, result="done")
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with (
+                patch.object(agent_runner, "fetch_agent_svid", return_value="fake.svid"),
+                patch.object(agent_runner, "sdk_query", _query),
+                patch.object(agent_runner, "_build_options", return_value=MagicMock()),
+            ):
+                result = await agent_runner.run_agent(
+                    goal="list rules", session_id="gw-retry-test"
+                )
+
+        assert result is True, "transient policy_denied should be retried and succeed"
+        assert call_count["n"] == 2, (
+            f"Expected the query to be re-issued once (2 total), got {call_count['n']}"
+        )
+        lines = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        assert any(
+            l.get("subtype") == "gateway_policy_retry" for l in lines
+        ), "expected a gateway_policy_retry system line"
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_fresh_canonical_uuid_session(self, monkeypatch) -> None:
+        """The gateway retry MUST rebuild options with a FRESH, canonical
+        hyphenated UUID session id — the claude CLI rejects both a re-used id
+        ("already in use") and a hyphen-less .hex id ("Invalid session ID. Must
+        be a valid UUID."). Both were observed live."""
+        import re
+        import uuid as _uuid
+        from agent_harness import agent_runner
+
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_BACKOFF_S", "0")
+        captured_sessions: list[str] = []
+
+        def _fake_build_options(svid_token, session_id):
+            captured_sessions.append(session_id)
+            return MagicMock()
+
+        call_count = {"n": 0}
+
+        async def _query(*, prompt, options):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                yield _result_msg(
+                    is_error=True,
+                    result="not permitted by policy",
+                    errors=["policy_denied"],
+                )
+            else:
+                yield _result_msg(is_error=False, result="done")
+
+        buf = StringIO()
+        original_session = "11111111-1111-1111-1111-111111111111"
+        with patch("sys.stdout", buf):
+            with (
+                patch.object(agent_runner, "fetch_agent_svid", return_value="fake.svid"),
+                patch.object(agent_runner, "sdk_query", _query),
+                patch.object(agent_runner, "_build_options", _fake_build_options),
+            ):
+                result = await agent_runner.run_agent(
+                    goal="list rules", session_id=original_session
+                )
+
+        assert result is True
+        # _build_options called twice: once at start (original), once on retry (fresh).
+        assert len(captured_sessions) == 2, captured_sessions
+        retry_session = captured_sessions[1]
+        assert retry_session != original_session, "retry must use a NEW session id"
+        # Must be a canonical hyphenated UUID — str(uuid4()) round-trips cleanly.
+        assert str(_uuid.UUID(retry_session)) == retry_session, (
+            f"retry session id must be a canonical hyphenated UUID, got {retry_session!r}"
+        )
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            retry_session,
+        ), retry_session
+
+    @pytest.mark.asyncio
+    async def test_resultmsg_then_exception_same_iteration_retries(
+        self, monkeypatch
+    ) -> None:
+        """LIVE FAILURE MODE (observed on SNO): the SDK yields an is_error
+        ResultMessage carrying the policy_denied body AND THEN raises a bare
+        Exception on the same stream iteration. The retry decision must use the
+        captured ResultMessage signal (not str(exc), which is empty)."""
+        from agent_harness import agent_runner
+
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_BACKOFF_S", "0")
+        call_count = {"n": 0}
+
+        async def _query(*, prompt, options):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Same iteration: ResultMessage with the gateway body, THEN raise.
+                yield _result_msg(
+                    is_error=True,
+                    result=(
+                        "Failed to authenticate. API Error: 403 "
+                        '{"detail":"POST 172.16.2.251:4000/v1/messages?beta=true '
+                        'not permitted by policy","error":"policy_denied"}'
+                    ),
+                    errors=None,
+                )
+                raise Exception()  # bare — str(exc) carries no policy detail
+            else:
+                yield _result_msg(is_error=False, result="done")
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with (
+                patch.object(agent_runner, "fetch_agent_svid", return_value="fake.svid"),
+                patch.object(agent_runner, "sdk_query", _query),
+                patch.object(agent_runner, "_build_options", return_value=MagicMock()),
+            ):
+                result = await agent_runner.run_agent(
+                    goal="list rules", session_id="gw-retry-resultthenexc"
+                )
+
+        assert result is True, (
+            "the ResultMessage-then-Exception boot 403 must be retried and succeed"
+        )
+        assert call_count["n"] == 2, (
+            f"Expected the query re-issued once (2 total), got {call_count['n']}"
+        )
+        lines = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        assert any(
+            l.get("subtype") == "gateway_policy_retry" for l in lines
+        ), "expected a gateway_policy_retry system line"
+
+    @pytest.mark.asyncio
+    async def test_policy_denied_retry_is_bounded(self, monkeypatch) -> None:
+        """If the gateway keeps denying, retry is bounded (here pinned to 1)
+        then return False — it never loops forever."""
+        from agent_harness import agent_runner
+
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_BACKOFF_S", "0")
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_MAX", "1")
+        call_count = {"n": 0}
+
+        async def _always_denied(*, prompt, options):
+            call_count["n"] += 1
+            yield _result_msg(
+                is_error=True,
+                result="not permitted by policy",
+                errors=["policy_denied"],
+            )
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with (
+                patch.object(agent_runner, "fetch_agent_svid", return_value="fake.svid"),
+                patch.object(agent_runner, "sdk_query", _always_denied),
+                patch.object(agent_runner, "_build_options", return_value=MagicMock()),
+            ):
+                result = await agent_runner.run_agent(
+                    goal="list rules", session_id="gw-retry-bounded"
+                )
+
+        assert result is False
+        assert call_count["n"] == 2, (
+            f"With MAX=1 the gateway retry must be 1 re-issue (2 total), got {call_count['n']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_genuine_authz_deny_not_retried(self, monkeypatch) -> None:
+        """A real downstream DENY (403 Forbidden / grant_scope_denied) is the
+        agent's signal to self-escalate via mcp-call — it must NOT be silently
+        re-fired by the gateway-retry path."""
+        from agent_harness import agent_runner
+
+        monkeypatch.setenv("AGENT_GATEWAY_RETRY_BACKOFF_S", "0")
+        call_count = {"n": 0}
+
+        async def _authz_deny(*, prompt, options):
+            call_count["n"] += 1
+            yield _result_msg(
+                is_error=True,
+                result="403 Forbidden: grant_scope_denied",
+                errors=["403 Forbidden"],
+            )
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with (
+                patch.object(agent_runner, "fetch_agent_svid", return_value="fake.svid"),
+                patch.object(agent_runner, "sdk_query", _authz_deny),
+                patch.object(agent_runner, "_build_options", return_value=MagicMock()),
+            ):
+                result = await agent_runner.run_agent(
+                    goal="list rules", session_id="authz-deny-test"
+                )
+
+        assert result is False
+        assert call_count["n"] == 1, (
+            f"A genuine authz DENY must NOT trigger the gateway retry; "
+            f"expected 1 query, got {call_count['n']}"
+        )

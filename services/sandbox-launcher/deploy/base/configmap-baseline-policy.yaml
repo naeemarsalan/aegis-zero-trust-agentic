@@ -83,6 +83,26 @@ data:
             tls: terminate
             enforcement: enforce
             access: full
+          # LiteLLM agent-brain (172.16.2.251:4000) — the ACTUAL inference endpoint the
+          # brain's claude CLI dials (ANTHROPIC_BASE_URL=http://172.16.2.251:4000), NOT the
+          # public api.anthropic.com. ROOT CAUSE (round-5, 2026-06-22) of the "policy_denied"
+          # blocker rounds 1-4 misattributed to an external LiteLLM credit/policy gate: the
+          # OpenShell gateway's per-sandbox forward proxy (openshell-sandbox pid-1 on the
+          # confined brain netns' default route) enforces THIS deny-by-default egress
+          # allowlist; with only api.anthropic.com listed, the brain's POST to
+          # 172.16.2.251:4000 matched no rule -> proxy returned 403 {"error":"policy_denied",
+          # "detail":"POST 172.16.2.251:4000/v1/messages?beta=true not permitted by policy"}.
+          # Proven: a byte-identical curl from the AGENT container (whose netns uses the
+          # openshell-sandbox-egress NetworkPolicy that DOES allow 172.16.2.251:4000, not this
+          # proxy) returned 200 — which is exactly why a replay never reproduced the denial.
+          # plain HTTP on :4000 (in-cluster LiteLLM); tls=passthrough (no termination, the
+          # proto `tls` field is a string of "terminate"|"passthrough", NOT a bool).
+          - host: 172.16.2.251
+            port: 4000
+            protocol: rest
+            tls: passthrough
+            enforcement: enforce
+            access: full
         binaries:
           - { path: /sandbox-agent }
           - { path: /usr/bin/python3 }

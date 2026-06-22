@@ -1,5 +1,68 @@
 # Runbook — pin the native `provider_spiffe` setns-EPERM cause (READ-ONLY first)
 
+> **✅ RESOLVED 2026-06-20 — the cause is a missing `CAP_SYS_CHROOT`; see [ADR-0017](../adr/0017-provider-spiffe-setns-selinux-confinement.md).**
+> The supervisor's `setns`-back re-roots into the original mount ns, which the kernel gates on
+> `CAP_SYS_CHROOT` (on top of `CAP_SYS_ADMIN`). The sandbox has `SYS_ADMIN` but not `SYS_CHROOT` →
+> EPERM. Proven: `container_t` (confined, MCS intact) + `[SYS_ADMIN, SYS_CHROOT]` → setns OK. It is
+> **NOT** SELinux, seccomp, userns, or propagation (all ruled out live — an earlier same-day SELinux
+> conclusion was a `privileged`-confounded misdiagnosis, since `privileged:true` grants all caps incl.
+> SYS_CHROOT). Fix = Kyverno mutate appends `SYS_CHROOT`. The procedure below remains a valid
+> read-only repro; the userns/SELinux framing is historical.
+>
+> ---
+>
+> (historical SELinux/userns framing follows)
+> It was thought to be **SELinux `container_t` confinement**, NOT userns and NOT propagation. The Tier-1 userns
+> hypothesis below was DISPROVED live (the sandbox runs in the **init userns** — `uid_map "0 0
+> 4294967295"`, `NS_GET_USERNS` of the mnt-ns → 4026531837 — with a working `CAP_SYS_ADMIN`). The
+> "CONFIRMED PROCEDURE" section immediately below is what actually pinned and proved it; the original
+> Tier-1/Tier-2 sections are retained for provenance only.
+>
+> ## CONFIRMED PROCEDURE (what pinned + proved the SELinux cause, mostly READ-ONLY)
+>
+> Set `export KUBECONFIG=/home/anaeem/.kube/anaeem-sno.kubeconfig`. `POD` = a running
+> `openshell/agent-arsalan-*` sandbox.
+>
+> **1. Reproduce the EPERM (read-only, process-local).** In the confined sandbox, replay the
+> supervisor sequence in a throwaway forked child — it EPERMs in EVERY variant (no-mount;
+> `MS_REC|MS_PRIVATE /`; non-recursive `MS_PRIVATE`; `MS_SLAVE`; and a pure no-op `setns`), via both
+> python `ctypes` and the stock CLI: `oc -n openshell exec "$POD" -- sh -c 'unshare -m sh -c "nsenter
+> --mount=/proc/1/ns/mnt true"'` → `Operation not permitted`. → Rules out propagation (no-mount fails)
+> and the ADR-0011 scoped-remount fork-patch (`MS_PRIVATE`/`MS_SLAVE` fail identically).
+>
+> **2. Rule out userns (read-only).** `oc -n openshell exec "$POD" -- sh -c 'cat /proc/1/uid_map;
+> readlink /proc/1/ns/user'` → `0 0 4294967295` + `user:[4026531837]` (init userns); `CAP_SYS_ADMIN`
+> is effective AND functional (`unshare`/`mount` succeed). So the cap triple should pass → an LSM veto.
+>
+> **3. Pin SELinux (read-only).** Sandbox domain = `container_t:s0:cX,cY` (confined); the comparison
+> privileged pod `spire-agent` = `spc_t:s0` (unconfined): `oc ... exec ... -- cat
+> /proc/self/attr/current`. Node `getenforce` = Enforcing; no AVC (dontaudit-masked). Policy delta
+> (from the node's `container-selinux-2.237.0` policy.33): `container_t` has `cap_userns{sys_admin}`
+> unconditionally but `capability{sys_admin}` only behind `virt_sandbox_use_sys_admin` (OFF); `spc_t`
+> has `capability{sys_admin}` unconditionally. The kernel selects class `capability` (not `cap_userns`)
+> because `mnt_ns->user_ns == init_user_ns`.
+>
+> **4. Positive control (ONE throwaway pod — minimal mutation, auto-torn-down).** Create a pod with
+> the **real `csi.spiffe.io` volume** + `securityContext.seLinuxOptions.type: spc_t` + `privileged`
+> (throwaway SA granted the `privileged` SCC). Run the FULL supervisor sequence: `unshare(CLONE_NEWNS)`
+> → `mount(MS_REC|MS_PRIVATE,/)` → tmpfs overlay on `/spiffe-workload-api` → `setns`-back. Under
+> `spc_t` ALL succeed (vs EPERM under `container_t`) → SELinux domain is the SOLE cause; **no
+> compounding CSI-propagation blocker.** Tear down pod + SA + SCC grant immediately. *(This replaced
+> the heavier gateway-wide `provider_spiffe` Helm flip + sandbox teardown — same proof, far smaller
+> blast radius.)*
+>
+> **Pre-gates carried forward for the live cutover** (enabling `provider_spiffe` for real): confirm
+> supervisor image is pre-refactor `ghcr.io/nvidia/openshell/supervisor:0.0.62`; **etcd defrag** if
+> `dbSize` > ~800MB (`oc -n openshift-etcd exec etcd-<node> -c etcdctl -- etcdctl defrag
+> --command-timeout=120s`; done 2026-06-20, 1.2GB→728MB); fix the Gate-2 SVID registration
+> (`openshell-sandbox-workloads` ClusterSPIFFEID selects 0 pods — labels mismatch). `provider_spiffe`
+> enable is gateway-wide (Helm TOML) → tear down other sandboxes for that window. Remediation +
+> remaining work: ADR-0017.
+
+---
+
+## (ORIGINAL — retained for provenance; the userns hypothesis below was DISPROVED, see above)
+
 **Why:** ADR-0011's off-cluster disproof (`experiments/phaseA-epmm-fixture/FINDINGS.md`) showed
 `setns(CLONE_NEWNS)` back to the original mount namespace EPERMs **only** on the capability triple
 in `fs/namespace.c::mntns_install` — it has **no** mount-propagation reconciliation. So the live

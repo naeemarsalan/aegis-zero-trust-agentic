@@ -428,6 +428,145 @@ def _boot_brain_when_ready(
             )
             return
 
+        # SVID-FETCH GATE / DIAGNOSTIC (2026-06-21, round 4 — TRUE ROOT CAUSE found):
+        # The round-1..3 story (a SPIRE propagation race + py-spiffe in-process
+        # poisoning) was a MISDIAGNOSIS. Proven live this round: the per-sandbox SVID
+        # is fetchable the WHOLE time (a fresh ``oc exec`` in the agent container
+        # returns the 710-char UUID SVID immediately) — what fails is the GATEWAY's
+        # ExecSandbox boot path itself. The gateway/supervisor 0.0.62 ExecSandbox enters
+        # the container via a confined ``setns`` and mounts an EMPTY 4k tmpfs OVER
+        # ``/spiffe-workload-api`` (proven: /proc/self/mountinfo shows an extra
+        # ``0:3874 / /spiffe-workload-api ro …size=4k,mode=555`` on top of the real
+        # SPIRE socket tmpfs that PID1 sees), so ANY ExecSandbox-booted process —
+        # the brain AND every subprocess it spawns — sees ``spire-agent.sock`` MISSING
+        # and can never reach the Workload API. No retry/settle/gate can change that;
+        # the socket is structurally masked from the exec mount namespace. The brain's
+        # FILE-SVID fallback also can't help today: the spiffe-helper sidecar writes
+        # SVIDs to volumes (svid-output ``/opt`` + shared-data ``/shared``) that the
+        # AGENT container does NOT mount, and only for the Kagenti audience — there is
+        # no shared, agent-visible path carrying an ``mcp-gateway``-audience JWT-SVID.
+        #
+        # So this probe NO LONGER gates a long wait (it would just burn latency on a
+        # condition that can never flip under ExecSandbox). It runs ONCE as ground-truth
+        # diagnostics: a positive result means a future fix (un-masking the socket, or a
+        # shared file path) has landed and the brain can run autonomously; a negative
+        # result is the expected current state and is logged loudly so the blocker is
+        # visible in the launch audit. We then boot the brain regardless (no regression
+        # vs prior rounds; the sandbox is still a usable interactive shell, and an
+        # operator can drive the proven byte-identical ``oc exec`` brain boot manually).
+        # Set BRAIN_BOOT_SVID_PROBE_TIMEOUT_S>0 to re-enable polling once a real fix is
+        # in (e.g. after the spiffe-helper writes an mcp-gateway SVID to /sandbox).
+        floor = float(os.environ.get("BRAIN_BOOT_SVID_SETTLE_S", "5"))
+        if floor > 0:
+            logger.info(
+                "brain_boot_svid_floor_settle",
+                extra={"sandbox_id": sandbox_id, "floor_s": floor},
+            )
+            _time.sleep(floor)
+
+        probe_deadline = _time.monotonic() + float(
+            os.environ.get("BRAIN_BOOT_SVID_PROBE_TIMEOUT_S", "0")
+        )
+        probe_interval = float(os.environ.get("BRAIN_BOOT_SVID_PROBE_INTERVAL_S", "5"))
+        svid_ready = False
+        probe_attempt = 0
+        while True:
+            probe_attempt += 1
+            try:
+                svid_ready = openshell.probe_agent_svid(sandbox_id=sandbox_id)
+            except Exception as exc:  # noqa: BLE001 — probe is best-effort diagnostics
+                logger.warning(
+                    "brain_boot_svid_probe_error",
+                    extra={"sandbox_id": sandbox_id, "attempt": probe_attempt, "error": str(exc)},
+                )
+                svid_ready = False
+            if svid_ready:
+                logger.info(
+                    "brain_boot_svid_probe_positive",
+                    extra={"sandbox_id": sandbox_id, "attempt": probe_attempt},
+                )
+                break
+            logger.info(
+                "brain_boot_svid_probe_negative",
+                extra={"sandbox_id": sandbox_id, "attempt": probe_attempt},
+            )
+            if _time.monotonic() >= probe_deadline:
+                break
+            _time.sleep(probe_interval)
+
+        if not svid_ready:
+            logger.warning(
+                "brain_boot_svid_unreachable_known_blocker_booting_anyway",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "attempts": probe_attempt,
+                    "blocker": (
+                        "gateway ExecSandbox masks /spiffe-workload-api (empty 4k tmpfs "
+                        "overlay) so the brain cannot reach the SPIRE Workload API socket; "
+                        "no agent-visible mcp-gateway-audience SVID file exists either. "
+                        "Autonomous brain cannot fetch its SVID via ExecSandbox — needs an "
+                        "operator/webhook fix (see ADR / worklog). Booting as interactive "
+                        "shell; manual oc-exec brain boot still works."
+                    ),
+                },
+            )
+
+        # LLM-reachability gate (2026-06-22, round-5): the gateway applies the
+        # per-sandbox baseline egress policy ~1-2 min AFTER the pod is Ready. The
+        # baseline now allows the LiteLLM endpoint (172.16.2.251:4000), but if the
+        # one-shot brain fires its first request before the policy settles, the
+        # gateway forward proxy returns 403 policy_denied and the brain dies before
+        # its gw-403 retry budget (≈48s) can outlast the window. So gate the boot on
+        # a fresh-process probe that curls the LLM through the proxy until it returns
+        # 200 (policy settled) — the same fresh-ExecSandbox channel pattern as the
+        # SVID probe. Bounded; on timeout we boot anyway (the gw-403 retry then has a
+        # chance, and an operator can drive the manual oc-exec brain).
+        llm_floor = float(os.environ.get("BRAIN_BOOT_LLM_SETTLE_S", "0"))
+        if llm_floor > 0:
+            _time.sleep(llm_floor)
+        llm_deadline = _time.monotonic() + float(
+            os.environ.get("BRAIN_BOOT_LLM_PROBE_TIMEOUT_S", "180")
+        )
+        llm_interval = float(os.environ.get("BRAIN_BOOT_LLM_PROBE_INTERVAL_S", "8"))
+        llm_ready = False
+        llm_attempt = 0
+        while True:
+            llm_attempt += 1
+            try:
+                llm_ready = openshell.probe_llm_reachable(sandbox_id=sandbox_id)
+            except Exception as exc:  # noqa: BLE001 — probe is best-effort
+                logger.warning(
+                    "brain_boot_llm_probe_error",
+                    extra={"sandbox_id": sandbox_id, "attempt": llm_attempt, "error": str(exc)},
+                )
+                llm_ready = False
+            if llm_ready:
+                logger.info(
+                    "brain_boot_llm_probe_positive",
+                    extra={"sandbox_id": sandbox_id, "attempt": llm_attempt},
+                )
+                break
+            logger.info(
+                "brain_boot_llm_probe_negative",
+                extra={"sandbox_id": sandbox_id, "attempt": llm_attempt},
+            )
+            if _time.monotonic() >= llm_deadline:
+                logger.warning(
+                    "brain_boot_llm_unreachable_booting_anyway",
+                    extra={
+                        "sandbox_id": sandbox_id,
+                        "attempts": llm_attempt,
+                        "note": (
+                            "LLM still policy_denied through the gateway egress proxy "
+                            "after the probe deadline; the baseline inference endpoint "
+                            "(172.16.2.251:4000) may not have settled. Booting anyway — "
+                            "the brain gw-403 retry may still recover."
+                        ),
+                    },
+                )
+                break
+            _time.sleep(llm_interval)
+
         exit_code = openshell.exec_agent_brain(
             sandbox_id=sandbox_id,
             goal=goal,

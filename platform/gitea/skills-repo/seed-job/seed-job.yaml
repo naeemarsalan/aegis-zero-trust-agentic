@@ -1,0 +1,125 @@
+---
+# Seed Job — creates the 'agents/skills' Gitea repo and pushes the initial skill directories.
+#
+# GATED: apply only after:
+#   G-C2a: Gitea org 'agents' created (or this job creates it)
+#   G-C3a: GITEA_ADMIN_TOKEN Secret present in ns openshell
+#
+# Idempotent: checks if repo exists before creating; git push is --force so re-runs are safe.
+# Image: alpine/git with curl; no custom build required.
+#
+# The seed content is baked into a ConfigMap (skills-repo-seed) to avoid a git clone
+# at job time. This ConfigMap is generated from the canonical skill files by running:
+#   kubectl create configmap skills-repo-seed \
+#     --from-file=list-firewall-rules.md=services/agent-sandbox/agent-harness/.claude/skills/list-firewall-rules/SKILL.md \
+#     --from-file=openshift-troubleshoot.md=services/agent-sandbox/agent-harness/.claude/skills/openshift-troubleshoot/SKILL.md \
+#     --from-file=pfsense-firewall.md=services/agent-sandbox/agent-harness/.claude/skills/pfsense-firewall/SKILL.md \
+#     -n openshell --dry-run=client -o yaml
+# (run this command and commit the output; it is intentionally not auto-applied here).
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-skills-repo
+  namespace: openshell
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    app.kubernetes.io/component: skills-seed
+  annotations:
+    # GATED: do not apply until G-C3a is complete.
+    openshell.ai/phase-gate: "G-C3a"
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: false   # git needs to write to tmpfs
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seed
+          image: alpine/git:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GITEA_URL
+              value: "https://git.arsalan.io"
+            - name: GITEA_ORG
+              value: "agents"
+            - name: GITEA_REPO_NAME
+              value: "skills"
+            - name: GITEA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  # Created out-of-band.  See oauth2-secret.example.yaml convention.
+                  name: gitea-admin-token
+                  key: token
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              FULL_REPO="${GITEA_ORG}/${GITEA_REPO_NAME}"
+              API="${GITEA_URL}/api/v1"
+              AUTH="Authorization: token ${GITEA_TOKEN}"
+
+              # Ensure org exists.
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "${AUTH}" "${API}/orgs/${GITEA_ORG}")
+              if [ "$STATUS" = "404" ]; then
+                echo "Creating org ${GITEA_ORG}..."
+                curl -sf -X POST -H "${AUTH}" -H "Content-Type: application/json" \
+                  "${API}/orgs" -d "{\"username\":\"${GITEA_ORG}\",\"visibility\":\"private\"}"
+              fi
+
+              # Ensure repo exists.
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "${AUTH}" "${API}/repos/${FULL_REPO}")
+              if [ "$STATUS" = "404" ]; then
+                echo "Creating repo ${FULL_REPO}..."
+                curl -sf -X POST -H "${AUTH}" -H "Content-Type: application/json" \
+                  "${API}/orgs/${GITEA_ORG}/repos" \
+                  -d "{\"name\":\"${GITEA_REPO_NAME}\",\"private\":true,\"auto_init\":true,\"default_branch\":\"main\"}"
+              fi
+
+              # Clone and seed skill files from ConfigMap mount.
+              CLONE_URL="${GITEA_URL/https:\/\//https://x-token:${GITEA_TOKEN}@}/${FULL_REPO}.git"
+              git config --global user.email "seed@openshell.local"
+              git config --global user.name "Skills Seed Job"
+              git clone "$CLONE_URL" /tmp/skills-repo
+
+              # Copy skill directories from ConfigMap.
+              for skill in list-firewall-rules openshift-troubleshoot pfsense-firewall; do
+                mkdir -p "/tmp/skills-repo/${skill}"
+                if [ -f "/skills-seed/${skill}.md" ]; then
+                  cp "/skills-seed/${skill}.md" "/tmp/skills-repo/${skill}/SKILL.md"
+                fi
+              done
+
+              cd /tmp/skills-repo
+              git add -A
+              git diff --cached --quiet && echo "Nothing to commit, repo already seeded." && exit 0
+              git commit -m "Seed skills repo from nvidia-ida agent-harness"
+              git push --force origin main
+              echo "Skills repo seeded successfully."
+          volumeMounts:
+            - name: skills-seed
+              mountPath: /skills-seed
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: skills-seed
+          # Generated ConfigMap from the canonical skill SKILL.md files.
+          # Run the kubectl create configmap command documented above to generate this.
+          configMap:
+            name: skills-repo-seed

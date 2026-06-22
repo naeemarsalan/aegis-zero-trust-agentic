@@ -1,0 +1,55 @@
+# ClusterRoleBinding: grant jit-approver the system:auth-delegator role.
+#
+# Purpose:
+#   The jit-approver service's POST /requests/{id}/mint endpoint (L1, ADR-0007)
+#   uses an interim Kubernetes SA TokenReview to authenticate the approval-console
+#   caller when JIT_MINT_REQUIRE_MTLS=false.  The TokenReview API requires the
+#   calling principal to have system:auth-delegator (which grants
+#   tokenreviews:create in kube-system).
+#
+#   Without this binding every /mint call from the console fails with HTTP 403:
+#     "tokenreviews.authentication.k8s.io is forbidden: User "system:serviceaccount:
+#     mcp-gateway:jit-approver" cannot create resource "tokenreviews" ..."
+#
+# Security posture:
+#   system:auth-delegator is a well-understood ClusterRole that exists for exactly
+#   this pattern (aggregated API servers and delegating auth proxies).  It allows
+#   the bearer to ask the kube-apiserver "is this token valid?" — it does NOT grant
+#   any data-plane access, impersonation, or write capability.  The jit-approver SA
+#   already has namespace-scoped RBAC for its own namespace; this is the one cluster-
+#   scoped capability needed for the TokenReview delegation pattern.
+#
+#   The live cluster already has comparable bindings for: cert-manager-webhook,
+#   openshift-console, keda, vault, and the postgresql-operator (verified 2026-06-22
+#   via `oc get clusterrolebinding | grep auth-delegator`).  This binding follows
+#   the exact same pattern.
+#
+# Apply:
+#   oc apply -f platform/jit-approver-db/rbac/jit-approver-auth-delegator.yaml
+#   (or include in the kustomization referenced by the jit-approver ArgoCD app)
+#
+# GATED: this is a cluster-scoped mutation.  Do not apply without human go.
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jit-approver-auth-delegator
+  labels:
+    app.kubernetes.io/name: jit-approver
+    app.kubernetes.io/component: jit-token
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    # ADR-0007 (console mint-gate), Loop B2 (Phase B plan).
+    # Grants system:auth-delegator to jit-approver SA so it can validate the
+    # approval-console's SA TokenReview on the /mint path (interim auth until
+    # JIT_MINT_REQUIRE_MTLS=true is wired with a SPIRE SVID on this hop).
+    nvidia-ida/adr: "0007"
+    nvidia-ida/loop: "B2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: jit-approver
+    namespace: mcp-gateway

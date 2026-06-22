@@ -9,9 +9,11 @@ Scope ceiling (enforced at validation time):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from enum import Enum
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -64,6 +66,7 @@ class EscalationRequest(BaseModel):
     )
     requester_sub: str = Field(
         ...,
+        min_length=1,
         description="OIDC sub claim of the human or agent principal requesting access",
     )
     namespace: str = Field(
@@ -224,3 +227,78 @@ class SessionSummary(BaseModel):
         default_factory=list,
         description="Any errors encountered during the privileged session",
     )
+
+
+# ---------------------------------------------------------------------------
+# L1: MintRequest — body of POST /requests/{id}/mint
+# ---------------------------------------------------------------------------
+
+
+class MintRequest(BaseModel):
+    """Body of POST /requests/{id}/mint.
+
+    approver_sub is the Keycloak-resolved identity of the human approver,
+    taken from server-trusted oauth2-proxy forwarded headers in the console
+    and forwarded here. NEVER accepted from an untrusted source.
+
+    scope_hash binds the approver's view of the scope to the stored request
+    (anti-TOCTOU): the console computes canonical_scope_hash(detail) and
+    sends it; the mint handler recomputes from the stored EscalationRequest
+    and rejects on mismatch.
+    """
+
+    approver_sub: str = Field(
+        ...,
+        min_length=1,
+        description="Keycloak preferred_username / OIDC sub of the approving operator",
+    )
+    reviewed_scope: Optional[dict] = Field(
+        default=None,
+        description="Optional echo of the scope the operator reviewed (for audit); "
+        "issuance is from the stored request, not this field.",
+    )
+    scope_hash: str = Field(
+        ...,
+        min_length=1,
+        description="SHA-256 hex of canonical_scope_hash(stored_req) — must match "
+        "the server-side recomputed hash to prevent TOCTOU scope substitution.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# L1: canonical_scope_hash — single source of truth for scope binding
+# ---------------------------------------------------------------------------
+
+
+def canonical_scope_hash(req: "EscalationRequest") -> str:
+    """Return the SHA-256 hex digest of the canonical JSON representation of the
+    ceiling-relevant scope fields.
+
+    The fields included mirror agent_harness.agent_runner._hash_args (the hash
+    the agent computes over tool arguments).  Sorting is applied to all
+    collection fields so the hash is stable under reordering.
+
+    Fields:
+      namespace         — target Kubernetes namespace
+      verbs             — sorted list of requested verbs
+      resources         — sorted list of requested resources
+      duration_minutes  — grant duration
+      sandbox           — OpenShell sandbox name (None if absent)
+      policy_delta      — sorted list of "host:port" strings
+
+    The console's _canonical_scope_hash() helper MUST produce identical output
+    for the same scope (tested in test_mint.py::test_canonical_scope_hash_cross_check).
+    """
+    delta_sorted = sorted(
+        f"{pd.host}:{pd.port}" for pd in (req.policy_delta or [])
+    )
+    canonical: dict = {
+        "namespace": req.namespace,
+        "verbs": sorted(req.verbs),
+        "resources": sorted(req.resources),
+        "duration_minutes": req.duration_minutes,
+        "sandbox": req.sandbox,
+        "policy_delta": delta_sorted,
+    }
+    raw = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()

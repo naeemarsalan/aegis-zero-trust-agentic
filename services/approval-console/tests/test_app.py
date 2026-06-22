@@ -26,6 +26,10 @@ os.environ.setdefault("GITEA_URL", "https://gitea-mock")
 os.environ.setdefault("GITEA_TOKEN", "test-token-deadbeef")
 os.environ.setdefault("GITEA_REPO", "anaeem/nvidia-ida")
 os.environ.setdefault("POLL_INTERVAL_SECONDS", "5")
+# Activate the mint gate path (L1 default).
+os.environ.setdefault("JIT_APPROVE_VIA_MINT", "true")
+# Synthetic console SA token for /mint auth (test seam).
+os.environ.setdefault("JIT_MINT_CONSOLE_TOKEN_OVERRIDE", "test-console-token")
 
 from approval_console import app as _app_module  # noqa: E402
 from approval_console.app import app  # noqa: E402
@@ -199,19 +203,27 @@ async def test_get_status_jit_unreachable_502():
 
 
 # ---------------------------------------------------------------------------
-# POST /api/approve/{id} — happy path
+# POST /api/approve/{id} — L1 mint gate path (JIT_APPROVE_VIA_MINT=true, default)
 # ---------------------------------------------------------------------------
 
+MINT_URL = f"{JIT_URL}/requests/{SESSION_ID}/mint"
 
-async def test_approve_happy_path():
-    """Full flow: detail fetch -> Gitea merge -> status poll."""
+
+async def test_approve_happy_path_via_mint():
+    """L1 mint gate: detail fetch -> POST /mint -> status poll.
+
+    Asserts:
+    - No Gitea /merge call is made (console no longer reads GITEA_TOKEN).
+    - approver_sub is forwarded from X-Forwarded-Preferred-Username.
+    - /mint is called with the scope_hash.
+    """
     with respx.mock(assert_all_mocked=True) as m:
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json=_DETAIL_RESPONSE)
         )
-        m.post(
-            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
-        ).mock(return_value=Response(200, json={}))
+        mint_route = m.post(MINT_URL).mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": "2026-06-18T12:30:00Z"})
+        )
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
             return_value=Response(
                 200,
@@ -224,19 +236,144 @@ async def test_approve_happy_path():
             )
         )
         async with _ac() as c:
-            resp = await c.post(f"/api/approve/{SESSION_ID}")
+            resp = await c.post(
+                f"/api/approve/{SESSION_ID}",
+                headers={"X-Forwarded-Preferred-Username": "bob@example.com"},
+            )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["merge_result"] == "merged"
-    assert data["pr_number"] == 42
+    assert data["merge_result"] == "minted"
     assert data["session_state"] == "issued"
     assert data["expires_at"] == "2026-06-18T12:30:00Z"
     assert data["session_id"] == SESSION_ID
 
+    # Verify /mint was called with the approver_sub from the forwarded header.
+    assert mint_route.called, "POST /mint must be called"
+    mint_body = mint_route.calls[0].request.content
+    mint_json = json.loads(mint_body)
+    assert mint_json["approver_sub"] == "bob@example.com", (
+        f"approver_sub must come from forwarded header, got {mint_json['approver_sub']!r}"
+    )
+    assert "scope_hash" in mint_json, "scope_hash must be included in /mint body"
+    assert len(mint_json["scope_hash"]) == 64, "scope_hash must be a SHA-256 hex digest"
+
+
+async def test_approve_via_mint_no_gitea_call():
+    """The mint gate path must NOT call the Gitea merge endpoint (no GITEA_TOKEN usage)."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(MINT_URL).mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": None})
+        )
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(200, json={"state": "issued", "expires_at": None})
+        )
+        # No Gitea mock registered — any Gitea call would raise respx.NotAllowed.
+        async with _ac() as c:
+            resp = await c.post(f"/api/approve/{SESSION_ID}")
+
+    assert resp.status_code == 200
+    assert resp.json()["merge_result"] == "minted"
+
+
+async def test_approve_mint_self_approval_403_surfaced():
+    """When /mint returns 403 (self-approval), the console must return 403
+    with a clear self-approval message."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(MINT_URL).mock(
+            return_value=Response(
+                403,
+                json={"detail": "approver_sub must differ from requester_sub (self-approval denied)"},
+            )
+        )
+        async with _ac() as c:
+            resp = await c.post(
+                f"/api/approve/{SESSION_ID}",
+                # Requester is also the approver
+                headers={"X-Forwarded-Preferred-Username": "alice@example.com"},
+            )
+
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert "self-approval" in detail.lower() or "cannot approve your own" in detail.lower()
+
+
+async def test_approve_mint_approver_sub_from_forwarded_header():
+    """approver_sub must come from X-Forwarded-Preferred-Username (Keycloak identity),
+    NEVER from a user-controlled field."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        mint_route = m.post(MINT_URL).mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": None})
+        )
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(200, json={"state": "issued", "expires_at": None})
+        )
+        async with _ac() as c:
+            resp = await c.post(
+                f"/api/approve/{SESSION_ID}",
+                headers={"X-Forwarded-Preferred-Username": "operator-jane"},
+            )
+
+    assert resp.status_code == 200
+    mint_json = json.loads(mint_route.calls[0].request.content)
+    assert mint_json["approver_sub"] == "operator-jane"
+
+
+async def test_approve_mint_approver_sub_anonymous_when_no_header():
+    """Without forwarded headers, approver_sub defaults to 'anonymous'."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        mint_route = m.post(MINT_URL).mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": None})
+        )
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(200, json={"state": "issued", "expires_at": None})
+        )
+        async with _ac() as c:
+            resp = await c.post(f"/api/approve/{SESSION_ID}")
+
+    assert resp.status_code == 200
+    mint_json = json.loads(mint_route.calls[0].request.content)
+    assert mint_json["approver_sub"] == "anonymous"
+
+
+async def test_approve_jit_unreachable_502():
+    """jit-approver unreachable on detail fetch -> 502."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        async with _ac() as c:
+            resp = await c.post(f"/api/approve/{SESSION_ID}")
+    assert resp.status_code == 502
+    assert "unreachable" in resp.json()["detail"].lower()
+
+
+async def test_approve_mint_unreachable_502():
+    """jit-approver /mint unreachable -> 502."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(MINT_URL).mock(side_effect=httpx.ConnectError("refused"))
+        async with _ac() as c:
+            resp = await c.post(f"/api/approve/{SESSION_ID}")
+    assert resp.status_code == 502
+
 
 # ---------------------------------------------------------------------------
-# POST /api/approve/{id} — deny / error paths
+# POST /api/approve/{id} — common deny paths (apply regardless of mint vs git path)
 # ---------------------------------------------------------------------------
 
 
@@ -271,17 +408,71 @@ async def test_approve_session_expired_409():
     assert resp.status_code == 409
 
 
-async def test_approve_no_pr_url_422():
+# ---------------------------------------------------------------------------
+# POST /api/approve/{id} — legacy Gitea PR-merge path (JIT_APPROVE_VIA_MINT=false)
+# ---------------------------------------------------------------------------
+
+
+async def test_approve_legacy_gitea_path():
+    """With JIT_APPROVE_VIA_MINT=false, approve() uses the Gitea PR merge."""
+    with respx.mock(assert_all_mocked=True) as m:
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
+            return_value=Response(200, json=_DETAIL_RESPONSE)
+        )
+        m.post(
+            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
+        ).mock(return_value=Response(200, json={}))
+        m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
+            return_value=Response(
+                200,
+                json={
+                    "id": SESSION_ID,
+                    "state": "issued",
+                    "pr_url": PR_URL,
+                    "expires_at": "2026-06-18T12:30:00Z",
+                },
+            )
+        )
+        import approval_console.app as _app_mod
+
+        original = _app_mod._approve_via_mint
+        _app_mod._approve_via_mint = lambda: False
+        try:
+            async with _ac() as c:
+                resp = await c.post(f"/api/approve/{SESSION_ID}")
+        finally:
+            _app_mod._approve_via_mint = original
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["merge_result"] == "merged"
+    assert data["pr_number"] == 42
+    assert data["session_state"] == "issued"
+
+
+async def test_approve_legacy_no_pr_url_422():
+    """Legacy path: session with no pr_url -> 422."""
+    import approval_console.app as _app_mod
+
     with respx.mock(assert_all_mocked=True) as m:
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json={**_DETAIL_RESPONSE, "pr_url": None})
         )
-        async with _ac() as c:
-            resp = await c.post(f"/api/approve/{SESSION_ID}")
+        original = _app_mod._approve_via_mint
+        _app_mod._approve_via_mint = lambda: False
+        try:
+            async with _ac() as c:
+                resp = await c.post(f"/api/approve/{SESSION_ID}")
+        finally:
+            _app_mod._approve_via_mint = original
+
     assert resp.status_code == 422
 
 
-async def test_approve_gitea_merge_failure_propagates():
+async def test_approve_legacy_gitea_failure_propagates():
+    """Legacy path: Gitea merge failure propagates to the caller."""
+    import approval_console.app as _app_mod
+
     with respx.mock(assert_all_mocked=True) as m:
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json=_DETAIL_RESPONSE)
@@ -289,12 +480,22 @@ async def test_approve_gitea_merge_failure_propagates():
         m.post(
             f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
         ).mock(return_value=Response(405, text="PR already merged"))
-        async with _ac() as c:
-            resp = await c.post(f"/api/approve/{SESSION_ID}")
+
+        original = _app_mod._approve_via_mint
+        _app_mod._approve_via_mint = lambda: False
+        try:
+            async with _ac() as c:
+                resp = await c.post(f"/api/approve/{SESSION_ID}")
+        finally:
+            _app_mod._approve_via_mint = original
+
     assert resp.status_code == 405
 
 
-async def test_approve_gitea_unreachable_502():
+async def test_approve_legacy_gitea_unreachable_502():
+    """Legacy path: Gitea unreachable -> 502."""
+    import approval_console.app as _app_mod
+
     with respx.mock(assert_all_mocked=True) as m:
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json=_DETAIL_RESPONSE)
@@ -302,10 +503,53 @@ async def test_approve_gitea_unreachable_502():
         m.post(
             f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
         ).mock(side_effect=httpx.ConnectError("refused"))
-        async with _ac() as c:
-            resp = await c.post(f"/api/approve/{SESSION_ID}")
+
+        original = _app_mod._approve_via_mint
+        _app_mod._approve_via_mint = lambda: False
+        try:
+            async with _ac() as c:
+                resp = await c.post(f"/api/approve/{SESSION_ID}")
+        finally:
+            _app_mod._approve_via_mint = original
+
     assert resp.status_code == 502
     assert "gitea" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# L1: canonical_scope_hash consistency test (console side)
+# ---------------------------------------------------------------------------
+
+
+async def test_canonical_scope_hash_consistent_with_server():
+    """The console's _canonical_scope_hash must produce the same digest as the
+    server-side canonical_scope_hash from jit_approver.models for the same scope.
+
+    This is a local consistency check: we replicate the server algorithm and
+    verify the console's implementation matches it exactly.
+    """
+    from approval_console.app import _canonical_scope_hash
+
+    # Replicate jit_approver.models.canonical_scope_hash inline (same algorithm).
+    def _server_hash(detail: dict) -> str:
+        policy_delta = detail.get("policy_delta") or []
+        delta_sorted = sorted(
+            f"{pd.get('host', '')}:{pd.get('port', 443)}" for pd in policy_delta
+        )
+        canonical = {
+            "namespace": detail.get("namespace", ""),
+            "verbs": sorted(detail.get("verbs") or []),
+            "resources": sorted(detail.get("resources") or []),
+            "duration_minutes": detail.get("duration_minutes", 0),
+            "sandbox": detail.get("sandbox"),
+            "policy_delta": delta_sorted,
+        }
+        import hashlib as _hl
+        raw = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        return _hl.sha256(raw).hexdigest()
+
+    detail = dict(_DETAIL_RESPONSE)
+    assert _canonical_scope_hash(detail) == _server_hash(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -678,9 +922,10 @@ async def test_approve_audits_real_approver(monkeypatch):
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json=_DETAIL_RESPONSE)
         )
-        m.post(
-            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
-        ).mock(return_value=Response(200, json={}))
+        # L1: /mint is called instead of Gitea merge.
+        m.post(f"{JIT_URL}/requests/{SESSION_ID}/mint").mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": "2026-06-19T12:00:00Z"})
+        )
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
             return_value=Response(
                 200,
@@ -722,9 +967,10 @@ async def test_approve_approver_anonymous_without_header(monkeypatch):
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/detail").mock(
             return_value=Response(200, json=_DETAIL_RESPONSE)
         )
-        m.post(
-            f"{GITEA_URL}/api/v1/repos/anaeem/nvidia-ida/pulls/42/merge"
-        ).mock(return_value=Response(200, json={}))
+        # L1: /mint is called instead of Gitea merge.
+        m.post(f"{JIT_URL}/requests/{SESSION_ID}/mint").mock(
+            return_value=Response(200, json={"status": "issued", "session_id": SESSION_ID, "expires_at": None})
+        )
         m.get(f"{JIT_URL}/requests/{SESSION_ID}/status").mock(
             return_value=Response(200, json={"state": "issued", "expires_at": None})
         )

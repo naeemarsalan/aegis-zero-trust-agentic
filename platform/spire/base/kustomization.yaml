@@ -16,6 +16,9 @@ resources:
   - oidc-route.yaml
   # ClusterSPIFFEIDs are cluster-scoped; the namespace field above does not apply.
   - cluster-spiffe-ids.yaml
+  # SECOND CSID for the OpenShell sandbox ext-proc/pfSense UUID plane (additive to the
+  # SA-shaped openshell-sandbox-workloads CSID in the file above — see its header).
+  - cluster-spiffe-id-openshell-sandbox-extproc.yaml
 
 labels:
   - pairs:

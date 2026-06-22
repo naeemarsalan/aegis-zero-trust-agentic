@@ -1,0 +1,119 @@
+# Kyverno mutate — enroll OpenShell sandboxes into Kagenti AuthBridge by stamping kagenti.io/type=agent
+# onto the SANDBOX CR's spec.podTemplate.metadata.labels at CREATE (NOT the pod).
+#
+# WHY the CR and not the pod: the AuthBridge webhook (inject.kagenti.io) evaluates its objectSelector
+# against the POD's labels at admission time. A Kyverno mutate ON THE POD adds the label too late
+# (the webhook is sorted/evaluated before Kyverno's mutate, and reinvocation does not newly invoke a
+# selector-skipped webhook) — proven to fail 2026-06-20. Mutating the SANDBOX CR instead means the
+# agent-sandbox controller copies podTemplate.metadata.labels onto the pod AT CREATION
+# (sandbox_controller.go:698-700), so the label is present before the webhook's objectSelector check.
+#
+# Requires: ns openshell labeled kagenti-enabled=true + the authbridge config CMs (configmaps.yaml).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-openshell-sandbox-cr-kagenti-label
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Stamp kagenti.io/type=agent on OpenShell Sandbox CRs
+    policies.kyverno.io/description: >
+      Adds kagenti.io/type=agent to spec.podTemplate.metadata.labels of OpenShell Sandbox CRs at
+      CREATE so the controller propagates it to the pod and the inject.kagenti.io AuthBridge webhook
+      injects the identity sidecars.
+spec:
+  background: false
+  rules:
+    - name: stamp-kagenti-type-on-sandbox-cr
+      match:
+        any:
+          - resources:
+              kinds:
+                - agents.x-k8s.io/v1alpha1/Sandbox
+              namespaces: ["openshell"]
+              operations: ["CREATE"]
+      mutate:
+        # Labels + annotations are MAPS — strategic-merge merges them safely (no list clobber).
+        patchStrategicMerge:
+          spec:
+            podTemplate:
+              metadata:
+                labels:
+                  kagenti.io/type: agent
+                # FIX 2 — force proxy-sidecar mode. The inject.kagenti.io webhook reads this
+                # annotation off the POD at admission; without it the webhook defaults to
+                # envoy-sidecar (envoy-proxy + proxy-init iptables path, OCP-hostile). Setting
+                # it on the Sandbox CR's podTemplate.metadata.annotations means the agent-sandbox
+                # controller propagates it to the pod BEFORE the webhook's check, so the operator
+                # injects agent + authbridge-proxy + spiffe-helper (authbridge-light, no proxy-init).
+                annotations:
+                  kagenti.io/authbridge-mode: proxy-sidecar
+    # FIX 3 (2026-06-21, REWORKED 2026-06-21) — BRAIN/CONTROL-PLANE PROXY ISOLATION via NO_PROXY.
+    #
+    # WHY A SEPARATE RULE WITH patchesJson6902 (NOT patchStrategicMerge):
+    # The earlier FIX-3 added NO_PROXY via patchStrategicMerge on spec.podTemplate.spec.containers.
+    # That CLOBBERED the launcher-built agent container down to {name:agent, env:[NO_PROXY,no_proxy]}
+    # with image=None -> the controller submitted an image-less pod -> admission rejected
+    # (spec.containers[0].image: Required value) -> sandbox never got a pod. PROVEN 2026-06-21 by a
+    # server-side dry-run CREATE: the merged container lost image/command/OPENSHELL_* env.
+    # ROOT CAUSE: Kyverno's strategic merge does NOT honor a CUSTOM resource's CRD
+    # x-kubernetes-list-map-keys=[name] on spec.podTemplate.spec.containers (that metadata is only
+    # consulted for built-in Pod types / server-side-apply, not Kyverno's strategic-merge engine on
+    # an arbitrary CRD path), so it REPLACES the containers list element instead of merging by name.
+    # This is the exact same trap the proven mutate-openshell-sandbox-syschroot policy avoids by
+    # using a JSON6902 append on the caps list. We mirror that pattern here.
+    #
+    # The webhook sets HTTP_PROXY/HTTPS_PROXY=127.0.0.1:8081 on the 'agent' container process-wide,
+    # so an OpenShell sandbox running the Claude Agent SDK would route its LLM-brain call (LiteLLM
+    # 172.16.2.251:4000, ANTHROPIC_BASE_URL) AND its OpenShell control calls
+    # (openshell.openshell.svc.cluster.local:8080) through the authbridge-proxy. With
+    # default_policy=exchange the proxy would mint a kagenti token + REWRITE Authorization on the
+    # brain call -> LiteLLM rejects -> brain breaks. We pre-set NO_PROXY on the CR podTemplate so it
+    # is present BEFORE the webhook (which is APPEND-ONLY for NO_PROXY: a pre-existing value survives).
+    #
+    # SCOPING IS DELIBERATE — EXACT hosts/IPs, NOT a broad `.svc` wildcard. A `.svc.cluster.local`
+    # wildcard would ALSO bypass the MCP target (jit-gate.openshell.svc.cluster.local /
+    # echo-mcp.agentic-mcp.svc.cluster.local), which MUST stay proxied for kagenti token-exchange +
+    # jit-gate enforcement. We exclude ONLY: brain IP (172.16.2.251), apps-router VIP (172.16.2.52),
+    # OpenShell gateway host, kube apiserver (kubernetes.default + clusterIP 172.30.0.1), loopback.
+    #
+    # ext-proc / pfSense plane (2026-06-21): the PUBLIC mcp-gateway route host
+    # (mcp-gateway.apps.anaeem.na-launch.com) IS now in NO_PROXY so the real-tool ext-proc call
+    # bypasses the kagenti proxy. WHY: mcp-call sends `Authorization: Bearer <agent-SVID>` to the
+    # mcp-gateway; with DEFAULT_OUTBOUND_POLICY=exchange any non-NO_PROXY host falls through to
+    # kagenti token-exchange, which REWRITES Authorization and replaces the SVID Bearer ->
+    # ext-proc SVID verification breaks. NO_PROXY matches by request HOSTNAME (httpx), so the
+    # literal route host is the entry that takes effect (the VIP 172.16.2.52 alone is not enough).
+    # The in-cluster jit-gate.openshell / echo-mcp.agentic-mcp service hosts are STILL ABSENT, so
+    # the Kagenti SA-shaped/echo-mcp loop stays proxied + exchanged + jit-gate-enforced.
+    - name: append-no-proxy-to-sandbox-cr-agent-env
+      match:
+        any:
+          - resources:
+              kinds:
+                - agents.x-k8s.io/v1alpha1/Sandbox
+              namespaces: ["openshell"]
+              operations: ["CREATE"]
+      mutate:
+        foreach:
+          - list: "request.object.spec.podTemplate.spec.containers"
+            # Idempotent: only fire for a container that does NOT already carry NO_PROXY. The
+            # JSON6902 `add ... /env/-` APPENDS to the existing env list, preserving image/command
+            # and all OPENSHELL_* vars (unlike strategic-merge, which replaced the whole element).
+            preconditions:
+              all:
+                - key: "NO_PROXY"
+                  operator: AnyNotIn
+                  value: "{{ element.env[].name || `[]` }}"
+            patchesJson6902: |-
+              - op: add
+                path: "/spec/podTemplate/spec/containers/{{ elementIndex }}/env/-"
+                value:
+                  name: NO_PROXY
+                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.anaeem.na-launch.com"
+              - op: add
+                path: "/spec/podTemplate/spec/containers/{{ elementIndex }}/env/-"
+                value:
+                  name: no_proxy
+                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.anaeem.na-launch.com"

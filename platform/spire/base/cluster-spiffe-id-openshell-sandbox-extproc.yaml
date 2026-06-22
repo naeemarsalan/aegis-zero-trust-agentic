@@ -1,0 +1,61 @@
+---
+# SECOND ClusterSPIFFEID for OpenShell launcher-created sandbox pods (ns openshell) —
+# the ext-proc / pfSense UUID plane. This is ADDITIVE to (and MUST NOT replace) the
+# SA-shaped openshell-sandbox-workloads CSID, which the Kagenti AuthBridge path depends on.
+#
+# WHY a SECOND CSID (not an edit of the first):
+#   - openshell-sandbox-workloads mints the STABLE SA-shaped SVID
+#     spiffe://anaeem.na-launch.com/ns/openshell/sa/openshell-sandbox. The Kagenti
+#     operator registers ONE Keycloak federated-jwt client whose jwt.credential.sub
+#     equals that SA path; the in-sandbox spiffe-helper MUST present an SVID with that
+#     exact sub or Keycloak rejects the assertion. So that CSID is load-bearing and is
+#     left untouched.
+#   - The pfSense real-tool plane (ext-proc) instead verifies a PER-SANDBOX-UUID SVID
+#     whose path == openshell.io/sandbox-id annotation == the launcher's Vault-grant key
+#     (SandboxResponse.metadata.id, written to secret/data/sandbox-grants/<uuid>). ext-proc
+#     parses /sandbox/<uuid> from the SVID sub and reads the matching grant to resolve the
+#     on-behalf-of human.
+#
+# Because BOTH CSIDs match the SAME podSelector (agents.x-k8s.io/sandbox-name-hash Exists),
+# SPIRE issues TWO entries per matching sandbox pod: the SA-shaped one (Kagenti) AND this
+# UUID-shaped one (ext-proc). The agent harness selects the /sandbox/<uuid> SVID for the
+# ext-proc call (svid_bearer SVID_REQUIRE_PATH_SUBSTR=/sandbox/).
+#
+# className is REQUIRED — the spire-controller-manager only reconciles CSIDs whose
+# spec.className equals its configured class (zero-trust-workload-identity-manager-spire).
+# Without it the CSID is silently ignored (empty .status, 0 entries) — see ADR-0018.
+#
+# RISK GUARD: the spiffeIDTemplate reads the openshell.io/sandbox-id annotation. The
+# gateway stamps it on every sandbox pod (verified live on all current pods). If a pod
+# ever lacks it the template renders an empty /sandbox/ segment; the universal
+# sandbox-name-hash selector is paired with a sandbox-id annotation-existence intent —
+# the gateway is the sole creator of these pods and always stamps the annotation.
+#
+# TARGETED-APPLY ONLY: apply this single document on its own (python-extract + oc apply -f -).
+# Do NOT whole-file `oc apply` cluster-spiffe-ids.yaml (the agent-sandbox-e2e-harness CSID
+# in that file has drifted from its committed form — SAFETY note).
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: openshell-sandbox-extproc
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  # DETERMINISTIC SHAPE SELECTION (2026-06-22, round 2): both CSIDs match the same pod, so the
+  # AuthBridge spiffe-helper's FetchJWTSVID(audience=mcp-gateway) returned the SA-shaped and this
+  # UUID-shaped SVID in a NON-DETERMINISTIC order (brain got the wrong SA shape on ~half the launches).
+  # spiffe-helper 0.11.0-dev rejects a per-jwt_svids-entry `hint` key, and the no-WithHint default is
+  # non-deterministic (PROVEN: both hint placements still flipped). The working lever is the helper's
+  # TOP-LEVEL `hint` (platform/openshell/kagenti-authbridge/configmaps.yaml: hint = "mcp-gateway"),
+  # which applies WithHint to its fetches. For that to resolve to THIS UUID entry, this entry carries
+  # the matching SPIRE entry hint `mcp-gateway`. The SA-shaped openshell-sandbox-workloads CSID stays
+  # hint-less. The brain reads only the mcp-gateway UUID SVID for the pfSense/ext-proc plane
+  # (mcp-gateway.apps... is in NO_PROXY -> direct, bypassing the authbridge-proxy + its jwt_svid.token).
+  hint: mcp-gateway
+  spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sandbox/{{ index .PodMeta.Annotations "openshell.io/sandbox-id" }}'
+  podSelector:
+    matchExpressions:
+      - key: agents.x-k8s.io/sandbox-name-hash
+        operator: Exists
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: openshell

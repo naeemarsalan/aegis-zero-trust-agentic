@@ -441,11 +441,87 @@ def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
         if val:
             env[var] = val
 
+    # ---------------------------------------------------------------------------
+    # ext-proc routing plane (real pfSense via the mcp-gateway ext-proc).
+    #
+    # The ExecSandbox brain env does NOT inherit the brain image's Dockerfile ENV,
+    # and mcp-call's routing knobs are *code defaults* the in-image harness picks up
+    # implicitly — so the native sandbox brain needs them set EXPLICITLY here, exactly
+    # mirroring the e2e-harness recipe that drives the REAL pfSense ext-proc loop:
+    #   MCP_GATEWAY_URL  -> the public gateway route (read AND write go here for pfSense)
+    #   MCP_SEND_SVID    -> "true": pfSense ext-proc verifies the agent SVID Bearer
+    #                       (the OPPOSITE of the k8s/OpenShift session, which sets false)
+    #   JIT_TARGET_NAMESPACE -> "agentic-mcp": pfSense write maps to
+    #                       verb=create resource=networkpolicies in the JIT request
+    #   SVID_REQUIRE_PATH_SUBSTR -> "/sandbox/": svid_bearer fail-closed selection of the
+    #                       UUID-shaped ext-proc SVID over the SA-shaped Kagenti SVID
+    #                       (the pod has BOTH registered). Without it the socket fetch is
+    #                       non-deterministic and may present the SA-shaped one -> 401.
+    # Sourced from launcher pod env (read_env_or_file) with mcp-call's own defaults so a
+    # missing literal still produces the correct pfSense recipe; secrets are never here.
+    mcp_gw = _read_env_or_file("MCP_GATEWAY_URL") or "https://mcp-gateway.apps.anaeem.na-launch.com"
+    env["MCP_GATEWAY_URL"] = mcp_gw
+    # MCP_READ_URL / MCP_WRITE_URL default to MCP_GATEWAY_URL in mcp-call; set them
+    # explicitly only if the launcher overrides (kept unset otherwise so the helper's
+    # default-to-gateway logic stays the single source of truth).
+    for var in ("MCP_READ_URL", "MCP_WRITE_URL"):
+        val = _read_env_or_file(var)
+        if val:
+            env[var] = val
+    env["MCP_SEND_SVID"] = (_read_env_or_file("MCP_SEND_SVID") or "true")
+    env["JIT_TARGET_NAMESPACE"] = (_read_env_or_file("JIT_TARGET_NAMESPACE") or "agentic-mcp")
+    # Deterministic ext-proc SVID selection (see svid_bearer.SVID_REQUIRE_PATH_SUBSTR).
+    # Applies to BOTH the Workload-API path AND (as of 2026-06-22) the file path: when
+    # SVID_JWT_PATH is set, svid_bearer._try_read_svid_file decodes the JWT `sub` and
+    # rejects the file unless its SPIFFE id contains this substring — so an SA-shaped
+    # kagenti token in /shared can NEVER be presented to ext-proc (it would 401).
+    env["SVID_REQUIRE_PATH_SUBSTR"] = (_read_env_or_file("SVID_REQUIRE_PATH_SUBSTR") or "/sandbox/")
+    # SVID file path (2026-06-22, CORRECTED round 2): the AuthBridge-injected spiffe-helper runs in
+    # the NORMAL (attestable) container namespace and fetches the mcp-gateway-audience JWT-SVID that
+    # the brain CANNOT fetch itself — the gateway ExecSandbox masks /spiffe-workload-api with an empty
+    # tmpfs inside the brain's confined setns/MCS namespace (api.py ~431-458). The helper writes the
+    # token to cert_dir=/opt, which is the operator-injected `svid-output` emptyDir (PROVEN in
+    # kagenti-operator container_builder.go: svid-output -> /opt). Defect-2 fix: the jwt_svids entry
+    # now uses a RELATIVE filename `mcp-gateway-svid.jwt` because Go path.Join("/opt","/shared/..")
+    # does NOT escape /opt (it yields /opt/shared/.. — the old absolute value misfiled the token onto
+    # svid-output's /opt/shared/ subdir, which nothing then mounted). Defect-1 fix: the sibling Kyverno
+    # policy kyverno-mount-svid-output-on-agent.yaml mounts that SAME `svid-output` volume READ-ONLY
+    # into the agent UNDER /tmp (at /tmp/svid-out).
+    #
+    # FILESYSTEM-CONFINEMENT FIX (2026-06-22, round 2 — the TRUE last defect): the gateway
+    # ExecSandbox confines the DETACHED brain's filesystem access to a fixed path allowlist
+    # (proven live via ExecSandbox probes: opening files succeeds ONLY under /sandbox, /tmp, /app;
+    # /opt, /home, /var/tmp, and the old /svid-out mount ALL return EACCES(13) on open() REGARDLESS
+    # of DAC mode (644) or SELinux label (exact c-category match) — it is a Landlock-style path
+    # confinement, not a perms problem; a foreign-uid-1001 644 file placed under /tmp/<sub> reads
+    # fine). So the svid-output mount MUST live under an allowed prefix: /tmp/svid-out. The brain
+    # then reads /tmp/svid-out/mcp-gateway-svid.jwt. svid_bearer.fetch_agent_svid() reads
+    # SVID_JWT_PATH FIRST (file wins over the masked socket); the UUID-vs-SA guard above keeps it safe.
+    env["SVID_JWT_PATH"] = (_read_env_or_file("SVID_JWT_PATH") or "/tmp/svid-out/mcp-gateway-svid.jwt")
+
     # The bundled claude-agent-sdk binary ignores ANTHROPIC_BASE_URL; the brain
     # image installs the system claude CLI at /usr/local/bin/claude and pins it via
     # CLAUDE_CLI_PATH so the runner spawns the URL-honouring CLI. The image already
     # sets this as ENV, but set it explicitly so a command override cannot drop it.
     env.setdefault("CLAUDE_CLI_PATH", "/usr/local/bin/claude")
+
+    # PYTHONPATH (2026-06-21, round 2): inject the FULL python path in the exec
+    # ENVIRONMENT (not only the inline `export` in _brain_boot_command). PROVEN live:
+    # the gateway DOES apply the brain image's Dockerfile ENV (PYTHONPATH=/app/src) to
+    # the exec process, but the boot wrapper's inline `export PYTHONPATH=...:venv` did
+    # NOT survive to the runner (the launcher-booted runner's /proc/<pid>/environ showed
+    # only PYTHONPATH=/app/src), so ``from claude_agent_sdk import query`` at module load
+    # silently fell to None and run_agent() raised "claude-agent-sdk not installed".
+    # Setting PYTHONPATH in the exec environment map lands it deterministically (same
+    # channel that delivered /app/src), so the system interpreter sees BOTH /app/src
+    # (agent_harness) AND the venv site-packages (claude_agent_sdk). Because
+    # ``include-system-site-packages = false`` in the venv, the system py3.11 cannot find
+    # the SDK without this. Override the venv path via SANDBOX_BRAIN_VENV_SITE.
+    venv_site = (
+        os.environ.get("SANDBOX_BRAIN_VENV_SITE", "").strip()
+        or "/opt/app-root/lib/python3.11/site-packages"
+    )
+    env["PYTHONPATH"] = f"/app/src:{venv_site}"
     return env
 
 
@@ -455,12 +531,258 @@ def _brain_boot_command() -> list[str]:
     Used by exec_agent_brain() as the ExecSandbox ``command`` (NOT the reserved
     OPENSHELL_SANDBOX_COMMAND, which the gateway controls). Default cds into the
     brain image WORKDIR (/app) so on-disk skills resolve from .claude/skills, then
-    execs the runner module. Override with SANDBOX_BRAIN_COMMAND (a shell string,
-    run via ``sh -c``) for a non-default brain image layout.
+    boots the runner DETACHED so it survives the ExecSandbox stream closing.
+    Override with SANDBOX_BRAIN_COMMAND (a shell string, run via ``sh -c``) for a
+    non-default brain image layout.
+
+    DETACH RATIONALE (the brain-survival fix, 2026-06-21):
+    ExecSandbox is a server-STREAMING transient exec — the gateway 0.0.62 supervisor
+    runs the command in the exec session/process-group, pipes its stdio, and reaps it
+    (sending the ``exit`` event) when the foreground leaf returns or the stream is torn
+    down. The previous ``exec python -m agent_harness.agent_runner`` form made the runner
+    the single FOREGROUND session-leaf, so its lifetime == the ExecSandbox stream's
+    lifetime: the moment the launcher's stream/PTY closed (stdin EOF, SIGHUP to the exec
+    process-group) the brain died (~1s). Detaching breaks that 1:1 coupling:
+      - ``setsid``      : runner gets its OWN session + process-group, so the exec
+                          session's SIGHUP / group-kill on stream close does not reach it;
+      - ``nohup``       : belt-and-suspenders SIGHUP ignore;
+      - ``</dev/null``  : detach stdin so a launcher stdin-close does not EOF/kill it;
+      - ``>/tmp/agent.log 2>&1`` : keep logs (HOME=/tmp in the brain image; the sandbox
+                          rootfs/overlay is rw, so /tmp is writable — inspect via a
+                          read-only ``oc exec ... cat /tmp/agent.log``);
+      - trailing ``&`` + ``exit 0`` : background the runner and make the OUTER sh return
+                          immediately so the gateway sees a clean transient exec (the
+                          ``exit`` event then carries the wrapper's 0, NOT the brain's).
+    The detached child re-parents under the sandbox PID 1 (the gateway-fixed
+    ``sleep infinity`` supervisor) and keeps running after ``channel.close()``.
+
+    NOTE: because the wrapper exits 0, exec_agent_brain() returns 0 == "boot dispatched",
+    NOT "brain succeeded". A follow-up pgrep readiness check confirms the brain came up.
+
+    PYTHONPATH=/app/src is exported inline because ExecSandbox does NOT inherit the
+    brain image's Dockerfile ENV (proven live: the same command WITHOUT PYTHONPATH
+    fails ``ModuleNotFoundError: agent_harness``; WITH it the runner starts and emits
+    its JSONL init). The ``${PYTHONPATH:+:$PYTHONPATH}`` form appends any value the
+    exec environment already carries rather than clobbering it.
     """
     override = os.environ.get("SANDBOX_BRAIN_COMMAND", "").strip()
-    cmd = override or "cd /app && exec python -m agent_harness.agent_runner"
+    # INTERPRETER FIX (2026-06-21, round 2): boot the SYSTEM interpreter
+    # /usr/bin/python3.11 (present in the brain image, owned root 0755, needs no
+    # pyvenv.cfg) instead of bare ``python``. Bare ``python`` resolves to the
+    # UBI app-root VENV interpreter /opt/app-root/bin/python, whose startup
+    # ``init_import_site`` reads /opt/app-root/pyvenv.cfg; under OpenShell's
+    # confined setns/MCS context (the supervisor runs the brain as the ``sandbox``
+    # user, uid 1000) that read fails EPERM, so CPython aborts with
+    # ``Fatal Python error: init_import_site`` BEFORE agent_runner even imports
+    # (proven: round-1 /tmp/agent.log + locally reproduced). The system
+    # interpreter has no pyvenv.cfg dependency, but with
+    # ``include-system-site-packages = false`` it does NOT see the venv's
+    # site-packages — so the brain deps (claude_agent_sdk etc.) MUST be added to
+    # PYTHONPATH explicitly: /opt/app-root/lib/python3.11/site-packages. Proven
+    # locally: ``import claude_agent_sdk, agent_harness.agent_runner`` succeeds as
+    # uid 1000 with pyvenv.cfg unreadable. Override the interpreter + venv path via
+    # SANDBOX_BRAIN_PYTHON / SANDBOX_BRAIN_VENV_SITE for a non-default image layout.
+    brain_python = os.environ.get("SANDBOX_BRAIN_PYTHON", "").strip() or "/usr/bin/python3.11"
+    venv_site = os.environ.get(
+        "SANDBOX_BRAIN_VENV_SITE", ""
+    ).strip() or "/opt/app-root/lib/python3.11/site-packages"
+    cmd = override or (
+        f"export PYTHONPATH=/app/src:{venv_site}${{PYTHONPATH:+:$PYTHONPATH}}; "
+        f"cd /app && nohup setsid {brain_python} -m agent_harness.agent_runner "
+        ">/tmp/agent.log 2>&1 </dev/null & "
+        'echo "brain pid $!"; exit 0'
+    )
     return ["sh", "-c", cmd]
+
+
+def brain_readiness_command() -> list[str]:
+    """Argv for a short read-only ExecSandbox that confirms the detached brain is up.
+
+    Run AFTER the detached boot (which returns immediately). ``pgrep -f`` matches the
+    runner's argv; a non-empty match (exit 0) means the brain re-parented and is
+    resident. Falls back to ``test -s /tmp/agent.log`` so a brain that already emitted
+    output but raced past pgrep still reads as up. Override with SANDBOX_BRAIN_READY_CMD.
+    """
+    override = os.environ.get("SANDBOX_BRAIN_READY_CMD", "").strip()
+    # HARDENED (2026-06-21, round 2): the previous probe was RACY and FALSE-POSITIVE:
+    # it ran immediately (inside the ~1s window before a crashing interpreter died, so
+    # pgrep saw the doomed process) and its ``|| test -s /tmp/agent.log`` fallback
+    # reported "up" even when the log held only a Fatal crash dump. The new probe:
+    #   1. ``sleep 2`` — let the ~1s startup-crash window pass before probing;
+    #   2. if /tmp/agent.log contains a CPython hard-failure signature
+    #      (``Fatal Python error`` or ``Traceback (most recent call last)``) the brain
+    #      is NOT ready — exit 1 regardless of any transient pgrep match;
+    #   3. otherwise require the runner process to actually be RESIDENT (pgrep).
+    # The non-empty-log fallback is dropped: a crash log is non-empty too, so it can
+    # never again mask a dead brain.
+    cmd = override or (
+        "sleep 2; "
+        "if grep -qE 'Fatal Python error|Traceback \\(most recent call last\\)' "
+        "/tmp/agent.log 2>/dev/null; then exit 1; fi; "
+        "pgrep -f agent_harness.agent_runner >/dev/null 2>&1"
+    )
+    return ["sh", "-c", cmd]
+
+
+def svid_probe_command() -> list[str]:
+    """Argv for a short read-only ExecSandbox that confirms the agent SVID is FETCHABLE.
+
+    THE SVID-RACE FIX (2026-06-21, round 4):
+    The launcher must NOT boot the brain on phase==READY alone. The sandbox reaches
+    READY the moment its pod is Running, but the SPIRE agent then takes ~40-90s MORE
+    to propagate this brand-new sandbox's workload-registration entry to the node.
+    PROVEN live across rounds 1-3: if the brain's FIRST Workload API call races that
+    propagation it fails, and then EVERY in-process retry (and even subprocess retries
+    spawned by the poisoned brain) keeps failing for the whole window — while a
+    brand-new, independent process (a fresh ``oc exec`` / a fresh ExecSandbox) fetches
+    the SVID fine the entire time. Neither the launcher's fixed 75s settle nor the
+    brain's 240s subprocess-retry recovered it.
+
+    So instead of timing the boot, we GATE it on ground truth: run THIS probe as a
+    separate short-lived ExecSandbox (the same fresh-process channel that always
+    works) and only exec the brain once the probe returns a real SVID. The brain's
+    own first fetch then succeeds on attempt 1 and never enters the poisoned loop.
+
+    The probe boots the SAME confined system interpreter + PYTHONPATH as the brain
+    (so it exercises the identical import + socket + SVID-selection path, including
+    SVID_REQUIRE_PATH_SUBSTR) and calls svid_bearer._try_workload_api ONCE with a
+    short fetch window. Exit 0 + a SVID on stdout == fetchable; non-zero == not yet.
+    Override with SANDBOX_SVID_PROBE_CMD for a non-default image layout.
+    """
+    override = os.environ.get("SANDBOX_SVID_PROBE_CMD", "").strip()
+    venv_site = os.environ.get(
+        "SANDBOX_BRAIN_VENV_SITE", ""
+    ).strip() or "/opt/app-root/lib/python3.11/site-packages"
+    brain_python = os.environ.get("SANDBOX_BRAIN_PYTHON", "").strip() or "/usr/bin/python3.11"
+    # One-shot fetch: import svid_bearer in a FRESH process and try the Workload API
+    # once. A printed token + exit 0 means the registration entry has propagated.
+    py = (
+        "from agent_harness.svid_bearer import _try_workload_api;"
+        "import os,sys;"
+        "t=_try_workload_api(os.environ.get('SPIFFE_ENDPOINT_SOCKET',"
+        "'unix:///spiffe-workload-api/spire-agent.sock'));"
+        "sys.exit(0) if t else sys.exit(3)"
+    )
+    cmd = override or (
+        f"export PYTHONPATH=/app/src:{venv_site}${{PYTHONPATH:+:$PYTHONPATH}}; "
+        f"cd /app && {brain_python} -c \"{py}\""
+    )
+    return ["sh", "-c", cmd]
+
+
+def probe_agent_svid(sandbox_id: str, timeout_seconds: int = 20) -> bool:
+    """Run svid_probe_command() once via ExecSandbox; True iff the SVID is fetchable.
+
+    A single fresh-process probe inside the sandbox. Returns True on exit 0 (the
+    Workload API returned an SVID matching SVID_REQUIRE_PATH_SUBSTR), False on any
+    non-zero exit or RPC error. Used by the launcher to GATE the brain boot on the
+    SVID actually being available (see svid_probe_command for the race rationale).
+
+    The brain env (SVID_REQUIRE_PATH_SUBSTR, SPIFFE socket, etc.) is delivered so the
+    probe selects the SAME UUID-shaped ext-proc SVID the brain will use.
+    """
+    if not available():
+        raise RuntimeError("OpenShell client not configured")
+    if not sandbox_id:
+        raise RuntimeError("probe_agent_svid requires a sandbox_id (metadata.id)")
+
+    from sandbox_launcher.osh import openshell_pb2 as ph
+
+    # Deliver the same selection knobs the brain uses so the probe picks the
+    # UUID-shaped ext-proc SVID (not the SA-shaped Kagenti one). Reuse _brain_env's
+    # routing block via a minimal env: only SVID selection + socket matter here.
+    probe_env: dict[str, str] = {
+        "SVID_REQUIRE_PATH_SUBSTR": (
+            _read_env_or_file("SVID_REQUIRE_PATH_SUBSTR") or "/sandbox/"
+        ),
+    }
+    sock = _read_env_or_file("SPIFFE_ENDPOINT_SOCKET")
+    if sock:
+        probe_env["SPIFFE_ENDPOINT_SOCKET"] = sock
+
+    stub, channel = _stub_and_channel()
+    rc = 1
+    try:
+        req = ph.ExecSandboxRequest(
+            sandbox_id=sandbox_id,
+            command=svid_probe_command(),
+            environment=probe_env,
+            timeout_seconds=int(timeout_seconds),
+        )
+        for ev in stub.ExecSandbox(req, metadata=_launcher_auth_metadata()):
+            if ev.WhichOneof("payload") == "exit":
+                rc = int(ev.exit.exit_code)
+    finally:
+        channel.close()
+    return rc == 0
+
+
+def llm_probe_command() -> list[str]:
+    """Argv for a short read-only ExecSandbox that confirms the LLM is REACHABLE
+    through the gateway's per-sandbox egress proxy (i.e. the OpenShell baseline
+    egress policy has applied the inference endpoint for this sandbox).
+
+    THE POLICY-SETTLE-RACE FIX (2026-06-22, round-5): the gateway runs the detached
+    brain in a confined netns whose only egress is the gateway forward proxy, which
+    enforces the deny-by-default baseline egress allowlist. That allowlist now lists
+    the LiteLLM endpoint (172.16.2.251:4000) — but the per-sandbox policy APPLIES
+    ~1-2 min AFTER the pod is Ready. If the brain fires its first LLM request before
+    the policy settles, the proxy returns 403 {"error":"policy_denied"} and the
+    one-shot brain dies before the gw-403 retry budget (≈48s) can outlast the window.
+    PROVEN live: a curl through the proxy to the LLM flips 403 -> 200 within ~1-2 min.
+
+    So we GATE the brain boot on this probe (mirroring svid_probe_command): a fresh
+    short-lived ExecSandbox curls the LLM through the proxy; only when it returns 200
+    do we boot the brain. The probe reads ANTHROPIC_BASE_URL + the inference key from
+    the launcher env (same sourcing as the brain) so it exercises the SAME path.
+
+    exit 0 iff the proxy returns HTTP 200 for a tiny /v1/messages call; non-zero
+    otherwise (403 policy_denied while the policy is still settling, or any error).
+    """
+    base = (_read_env_or_file("ANTHROPIC_BASE_URL") or "http://172.16.2.251:4000").rstrip("/")
+    key = _read_env_or_file("ANTHROPIC_API_KEY") or _read_env_or_file("ANTHROPIC_AUTH_TOKEN") or ""
+    # Minimal valid Anthropic-style request; the brain's CLI hits /v1/messages?beta=true.
+    body = (
+        '{"model":"' + (_read_env_or_file("AGENT_MODEL") or "anthropic/claude-sonnet-4")
+        + '","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}'
+    )
+    # curl honours the sandbox's HTTP(S)_PROXY env (the gateway forward proxy) exactly
+    # as the brain's CLI does; -f makes a 4xx (the 403 policy_denied) a non-zero exit.
+    sh = (
+        "curl -sf -o /dev/null --max-time 12 "
+        "-X POST '" + base + "/v1/messages?beta=true' "
+        "-H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' "
+        "-H 'x-api-key: " + key + "' -H 'Authorization: Bearer " + key + "' "
+        "--data '" + body + "'"
+    )
+    return ["sh", "-c", sh]
+
+
+def probe_llm_reachable(sandbox_id: str, timeout_seconds: int = 20) -> bool:
+    """Run llm_probe_command() once via ExecSandbox; True iff the LLM returns 200
+    through the gateway egress proxy (policy has settled). See llm_probe_command."""
+    if not available():
+        raise RuntimeError("OpenShell client not configured")
+    if not sandbox_id:
+        raise RuntimeError("probe_llm_reachable requires a sandbox_id (metadata.id)")
+
+    from sandbox_launcher.osh import openshell_pb2 as ph
+
+    stub, channel = _stub_and_channel()
+    rc = 1
+    try:
+        req = ph.ExecSandboxRequest(
+            sandbox_id=sandbox_id,
+            command=llm_probe_command(),
+            environment={},
+            timeout_seconds=int(timeout_seconds),
+        )
+        for ev in stub.ExecSandbox(req, metadata=_launcher_auth_metadata()):
+            if ev.WhichOneof("payload") == "exit":
+                rc = int(ev.exit.exit_code)
+    finally:
+        channel.close()
+    return rc == 0
 
 
 def exec_agent_brain(
@@ -539,13 +861,55 @@ def exec_agent_brain(
             which = ev.WhichOneof("payload")
             if which == "exit":
                 exit_code = int(ev.exit.exit_code)
+        # With the DETACHED boot wrapper (see _brain_boot_command) this exit_code is
+        # the WRAPPER's (expected 0 == "boot dispatched"), NOT the brain's — the brain
+        # is now backgrounded under the sandbox PID 1 and survives this stream closing.
         logger.info(
             "sandbox_brain_exec_finished",
-            extra={"sandbox_id": sandbox_id, "exit_code": exit_code},
+            extra={
+                "sandbox_id": sandbox_id,
+                "exit_code": exit_code,
+                "meaning": "boot_dispatched" if exit_code == 0 else "boot_failed",
+            },
         )
-        return exit_code
     finally:
         channel.close()
+
+    # Follow-up readiness probe: a second short read-only exec confirming the detached
+    # brain actually re-parented and is resident. Best-effort — never fails the launch
+    # (the sandbox is still a usable shell either way); just records ground truth.
+    if exit_code == 0:
+        try:
+            ready_rc = 0
+            ready_stub, ready_channel = _stub_and_channel()
+            try:
+                ready_req = ph.ExecSandboxRequest(
+                    sandbox_id=sandbox_id,
+                    command=brain_readiness_command(),
+                    timeout_seconds=10,
+                )
+                for ev in ready_stub.ExecSandbox(
+                    ready_req, metadata=_launcher_auth_metadata()
+                ):
+                    if ev.WhichOneof("payload") == "exit":
+                        ready_rc = int(ev.exit.exit_code)
+            finally:
+                ready_channel.close()
+            logger.info(
+                "sandbox_brain_readiness",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "running": ready_rc == 0,
+                    "readiness_exit_code": ready_rc,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — readiness probe is advisory only
+            logger.warning(
+                "sandbox_brain_readiness_probe_failed",
+                extra={"sandbox_id": sandbox_id, "error": str(exc)},
+            )
+
+    return exit_code
 
 
 def create_sandbox(

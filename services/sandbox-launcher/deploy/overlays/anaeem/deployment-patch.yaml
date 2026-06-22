@@ -38,9 +38,106 @@ spec:
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json"
             - name: RHDH_TOKEN_ISSUER
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
-            # Sandbox workload configuration
+            # Sandbox workload configuration.
+            # NATIVE-BRAIN image: agent-harness runtime (python + agent_harness +
+            # claude CLI + .claude/skills + mcp-call) PLUS the OpenShell supervisor
+            # requirements the bare webshell (sh3) satisfied — sh/tar/gzip + a
+            # `sandbox` user (uid/gid 1000) the baseline policy demands. Built from
+            # services/agent-sandbox/agent-harness/Dockerfile.native-brain.
+            # Rollback to the bare webshell (no brain): sandbox-agent:sh3.
+            # ext-proc-aware brain (2026-06-21): carries the svid_bearer
+            # SVID_REQUIRE_PATH_SUBSTR=/sandbox/ deterministic SVID selection
+            # (fetch_jwt_svids plural + fail-closed substring match) so the agent presents
+            # the UUID-shaped ext-proc SVID, not the SA-shaped Kagenti one. The launcher's
+            # _brain_env sets SVID_REQUIRE_PATH_SUBSTR in the exec env; this image HONORS it.
+            # Rollback (pre-svid-fix brain): sandbox-agent:brain-20260621-174258.
+            # DIAGNOSTIC brain (2026-06-21, round 3): agent_runner.py now (a) captures the
+            # REAL claude_agent_sdk import error in sdk_import_error (the old guarded
+            # `except ImportError: None` swallowed it, so the gateway-exec boot died with an
+            # opaque "claude-agent-sdk not installed"), and (b) RE-IMPORTS the SDK once inside
+            # run_agent() so a module-load-time context failure under the gateway's confined
+            # ExecSandbox setns boot can self-heal. PROVEN: a MANUAL exec of the identical boot
+            # command runs the FULL journey (read 200 -> write 403 -> JIT PR), but the
+            # launcher's ExecSandbox setns boot sets sdk_query=None — this image surfaces why.
+            # Rollback (pre-diagnostic brain): sandbox-agent:brain-extproc-20260621-194530.
+            # ENV-PYTHONPATH brain (2026-06-21, round 3 FIX): bakes the UBI venv
+            # site-packages (/opt/app-root/lib/python3.11/site-packages) into the IMAGE
+            # ENV PYTHONPATH (alongside /app/src). ROOT CAUSE proven by the diagnostic
+            # brain: the gateway's confined ExecSandbox setns boot honors ONLY the image
+            # ENV PYTHONPATH — NOT the launcher's inline `export` NOR the ExecSandbox
+            # `environment` map override — so the old single-path ENV left the booted
+            # brain with ModuleNotFoundError: No module named 'claude_agent_sdk', dying
+            # before any MCP call. Carries the round-3 agent_runner diagnostic (real
+            # import error in sdk_import_error + late re-import).
+            # Rollback (diagnostic, single-path ENV): sandbox-agent:brain-extproc-diag-20260621-220530.
+            # PTH-LINKAGE brain (2026-06-21, round 3 REAL FIX): drops a .pth into the system
+            # interpreter's built-in site dir (/usr/lib/python3.11/site-packages/zzz-agent-venv.pth)
+            # pointing at the UBI venv site-packages. CPython's `site` reads it at startup
+            # WITHOUT any PYTHONPATH. PROVEN root cause: the gateway's confined ExecSandbox
+            # setns boot runs python3.11 with NO venv on sys.path despite the image ENV
+            # PYTHONPATH + inline export + env-map ALL setting it (they reach a plain oc exec
+            # but NOT the gateway-booted child), so envpath/diag brains died
+            # ModuleNotFoundError: No module named 'claude_agent_sdk'. The .pth survives
+            # because it does not depend on env delivery at all (build-time check:
+            # `env -u PYTHONPATH python3.11 -c "import claude_agent_sdk"` succeeds).
+            # Rollback (envpath ENV, gateway-stripped): sandbox-agent:brain-extproc-envpath-20260621-221108.
+            # SRC-VENDOR brain (2026-06-21, round 3 FINAL): copies the UBI venv site-packages
+            # INTO /app/src, the ONLY sys.path entry proven effective under the gateway's
+            # confined ExecSandbox setns boot (which impairs CPython `site` — so .pth AND
+            # pyvenv.cfg are both ignored, and only PYTHONPATH=/app/src survives). Build-time
+            # check imports claude_agent_sdk with `-S` (site disabled) + PYTHONPATH=/app/src
+            # only — faithfully emulating the gateway boot — and PASSES. After three prior
+            # boots died ModuleNotFoundError (envpath ENV, then .pth, both stripped by the
+            # gateway), this removes ALL dependence on env delivery and `site`.
+            # Rollback (.pth, gateway-site-impaired): sandbox-agent:brain-extproc-pth-20260621-222323.
+            # SVID-RETRY brain (2026-06-21, round 3): srcvendor (SDK importable under the
+            # gateway boot) PLUS a bounded startup retry in svid_bearer.fetch_agent_svid.
+            # PROVEN: the srcvendor brain booted + imported the SDK fine but died ~0.2s in
+            # with "SVID fetch failed" — the launcher boots the brain only seconds after the
+            # pod goes Running, BEFORE the SPIRE agent propagates the new sandbox's workload
+            # registration entry, so the first fetch raised. The retry (default 30s / 2s
+            # interval, tunable via SVID_FETCH_RETRY_SECONDS) waits out registration
+            # propagation so the autonomous brain reaches the real pfSense journey.
+            # Rollback (srcvendor, no SVID retry): sandbox-agent:brain-extproc-srcvendor-20260621-222730.
+            # SVID-90s brain (2026-06-21, round 3): same srcvendor + retry, but the retry
+            # window default is 90s (was 30s). PROVEN: a new native sandbox's SPIRE workload
+            # registration took ~40-60s to propagate — the 30s window exhausted with the
+            # entry still absent, then a fetch ~10s later got the UUID ext-proc SVID. 90s
+            # covers propagation so the eager launcher boot reaches read 200 -> write 403 ->
+            # JIT PR autonomously.
+            # Rollback (30s window): sandbox-agent:brain-extproc-svidretry-20260621-223253.
+            # SVID-SUBPROC brain (2026-06-21, round 3 FINAL SVID fix): each Workload API
+            # retry now runs in a FRESH subprocess. PROVEN in the live sandbox: once the
+            # long-lived brain process makes ONE failed Workload API call (racing SPIRE
+            # registration propagation at boot) EVERY in-process retry keeps failing for
+            # 90s+, while a brand-new process fetches the SVID fine the whole time
+            # (py-spiffe/SPIRE per-process poisoning). Fetching in a fresh child each
+            # attempt sidesteps it. Pairs with the launcher 75s SVID settle (margin).
+            # Rollback (in-process retry, poisoned): sandbox-agent:brain-extproc-svid90-20260621-223705.
+            # SVID-240 brain (2026-06-21, round 3): subprocess SVID fetch + 240s retry window
+            # (was 90s). PROVEN: SPIRE registration propagation for a fresh native sandbox can
+            # exceed 90s on this loaded node even with the launcher 75s settle, so the brain
+            # raced out. Subprocess retries are cheap, so a wide window reliably catches the
+            # SVID once propagated. Pairs with launcher BRAIN_BOOT_SVID_SETTLE_S=75.
+            # Rollback (90s subproc window): sandbox-agent:brain-extproc-svidsubproc-20260621-224710.
+            # SVID-FILE brain (2026-06-22): svid_bearer reads the mcp-gateway SVID from
+            # /shared/mcp-gateway-svid.jwt (written by the AuthBridge spiffe-helper) FIRST, with a
+            # fail-closed UUID-shape guard in _try_read_svid_file that rejects an SA-shaped token.
+            # This is what lets the unattended brain present a valid ext-proc SVID despite the
+            # gateway masking /spiffe-workload-api in the confined ns. Pairs with launcher
+            # SVID_JWT_PATH=/shared/mcp-gateway-svid.jwt (set in _brain_env).
+            # Rollback (socket-only, pre-file): sandbox-agent:brain-extproc-svid240-20260621-225335.
+            # GW-403-RETRY brain (2026-06-22): agent_runner retries (bounded, 3s backoff, max 3) on a
+            # transient LLM-gateway policy_denied 403 — the boot-time 403 that the byte-identical
+            # request clears seconds later. LIVE-OBSERVED failure mode: the SDK yields an is_error
+            # ResultMessage carrying the policy_denied body AND THEN raises a bare Exception on the
+            # SAME iteration, so the retry consults the captured ResultMessage signal (not str(exc),
+            # which is empty). Narrow discriminator ("policy_denied" / "not permitted by policy") so
+            # a genuine downstream authz DENY (403 Forbidden / grant_scope_denied) is NEVER retried.
+            # Rollback (gw-403 v1, post-loop-only): sandbox-agent:brain-gw403retry-20260622-133739.
+            # Rollback (svid-file, no gw-403 retry): sandbox-agent:brain-svidfile-20260622-010059.
             - name: SANDBOX_IMAGE
-              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:sh3"
+              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:brain-gw403retry5-20260622-142214"
             - name: SANDBOX_RUNTIME_CLASS
               value: ""
             - name: SANDBOX_NAMESPACE
@@ -57,6 +154,28 @@ spec:
               value: "true"
             - name: MCP_GATEWAY_URL
               value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+            # File-SVID handoff (2026-06-22, round 2 — GitOps-durable; previously oc-set drift).
+            # The unattended brain reads its mcp-gateway JWT-SVID from a FILE because the gateway
+            # ExecSandbox masks /spiffe-workload-api in the confined ns. The AuthBridge spiffe-helper
+            # writes the token to cert_dir=/opt == the `svid-output` emptyDir (kagenti-operator
+            # container_builder.go), and the sibling Kyverno policy
+            # kyverno-mount-svid-output-on-agent.yaml mounts that volume READ-ONLY into the agent at
+            # /svid-out. CORRECTED from /shared/mcp-gateway-svid.jwt: Go path.Join("/opt","/shared/..")
+            # does NOT escape /opt, so the helper actually wrote to /opt/shared/.. on svid-output (the
+            # round-1 file-handoff blocker); the jwt_svids entry is now a relative name landing at
+            # /opt/mcp-gateway-svid.jwt == /svid-out/mcp-gateway-svid.jwt in the agent.
+            # FILESYSTEM-CONFINEMENT FIX (2026-06-22, round 2): the ExecSandbox-confined detached
+            # brain can open files ONLY under /sandbox, /tmp, /app (proven via ExecSandbox probes:
+            # /opt, /home, /var/tmp, the old /svid-out all EACCES on open regardless of perms/label —
+            # Landlock-style path confinement). So svid-output is mounted at /tmp/svid-out (see
+            # kyverno-mount-svid-output-on-agent.yaml) and the brain reads it from there.
+            - name: SVID_JWT_PATH
+              value: "/tmp/svid-out/mcp-gateway-svid.jwt"
+            # Fail-closed UUID-vs-SA SVID selection: the pod matches BOTH a SA-shaped (kagenti) and a
+            # UUID-shaped (ext-proc /sandbox/) ClusterSPIFFEID; svid_bearer rejects a file/socket SVID
+            # whose `sub` lacks this substring, so an SA-shaped token can never be presented to ext-proc.
+            - name: SVID_REQUIRE_PATH_SUBSTR
+              value: "/sandbox/"
             # Baseline policy ConfigMap mount path
             - name: OPENSHELL_BASELINE_POLICY_PATH
               value: "/etc/openshell-baseline/baseline.yaml"

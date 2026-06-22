@@ -1,0 +1,129 @@
+# Native-brain sandbox image for OpenShell-NATIVE sandboxes.
+#
+# Combines:
+#   1. The agent-harness brain runtime (python + agent_harness + claude CLI +
+#      .claude/skills) — the proven Variant-B brain.
+#   2. The OpenShell supervisor requirements that the bare webshell (sandbox-agent)
+#      satisfies but the agent-harness image lacks:
+#        - sh / tar / gzip / findutils  (UBI9 already ships these — verified)
+#        - a `sandbox` user+group (uid/gid 1000) — REQUIRED by the baseline policy
+#          process.run_as_user/group=sandbox; the supervisor execs the workload as
+#          this user, so it must resolve in /etc/passwd.
+#   3. bin/mcp-call baked onto PATH — the JIT self-escalation helper the runner
+#      invokes when AGENT_ALLOWED_TOOLS=Bash (Variant B delivers it via ConfigMap;
+#      the native sandbox has no such mount, so it must be in the image).
+#
+# The launcher boots the runner via ExecSandbox: `cd /app && exec python -m
+# agent_harness.agent_runner` (SANDBOX_BRAIN_COMMAND default). cwd /app so the SDK
+# resolves on-disk skills from /app/.claude/skills.
+#
+# Build:
+#   podman build -f Dockerfile.native-brain -t oci.arsalan.io/nvidia-ida/sandbox-agent:brain-<tag> .
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER 0
+WORKDIR /app
+
+# OpenShell supervisor requirement: a `sandbox` user+group at uid/gid 1000 so the
+# baseline policy process.run_as_user/group=sandbox resolves (the supervisor execs
+# the workload as this user). UBI9 ships shadow-utils (useradd/groupadd).
+RUN groupadd -g 1000 sandbox 2>/dev/null || true \
+ && useradd -u 1000 -g 1000 -m -d /sandbox -s /bin/sh sandbox 2>/dev/null || true \
+ && command -v sh tar gzip find
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && python3 -c "import claude_agent_sdk, httpx; print('deps import OK')"
+
+# PYTHONPATH-INDEPENDENT venv linkage (2026-06-21, round 3 — the REAL fix).
+# ROOT CAUSE proven via the diagnostic brain: the gateway's confined ExecSandbox
+# setns boot runs /usr/bin/python3.11 WITHOUT the venv site-packages on sys.path,
+# even though the image ENV PYTHONPATH, the launcher inline `export`, AND the
+# ExecSandbox `environment` map all set it (every one of those reaches a plain
+# `oc exec` via PID1's OPENSHELL_USER_ENVIRONMENT, but NONE reaches the
+# gateway-booted child — the booted brain dies "ModuleNotFoundError: No module
+# named 'claude_agent_sdk'" before any MCP call). So we stop relying on PYTHONPATH
+# entirely: drop a `.pth` into the SYSTEM interpreter's built-in site dir
+# (/usr/lib/python3.11/site-packages), which CPython's `site` module reads at
+# startup UNCONDITIONALLY (no PYTHONPATH needed). The .pth appends the UBI venv
+# site-packages so claude_agent_sdk/httpx/mcp resolve no matter how (or whether)
+# the gateway delivers env. Verified: `env -u PYTHONPATH python3.11 -c "import
+# claude_agent_sdk"` succeeds with this .pth present. The build-time check below
+# runs WITHOUT PYTHONPATH to prove the linkage holds on the bare system path.
+# VENV-INTO-/app/src (2026-06-21, round 3 — the FINAL fix, after .pth ALSO failed).
+# PROVEN by three successive autonomous launcher boots: the gateway's confined
+# ExecSandbox setns boot runs /usr/bin/python3.11 with CPython's `site` module
+# IMPAIRED — it does NOT process built-in site-dir .pth files (zzz-agent-venv.pth
+# was present + worked under `oc exec` but the gateway-booted brain still got
+# ModuleNotFoundError) and it did NOT read /opt/app-root/pyvenv.cfg (round-1
+# init_import_site Fatal). The ONLY sys.path entry that survives the gateway boot is
+# /app/src (the booted brain reaches /app/src/agent_harness/agent_runner.py:578, so
+# PYTHONPATH=/app/src IS effective there — but the venv path is NOT, regardless of
+# image ENV / inline export / ExecSandbox env-map). So we stop depending on `site`
+# AND on venv-path delivery entirely: COPY the venv site-packages INTO /app/src,
+# the one directory proven reachable under the gateway boot. agent_harness (from
+# `COPY src/`) lands on top afterwards, so it wins on name collisions.
+RUN cp -a /opt/app-root/lib/python3.11/site-packages/. /app/src/ \
+ && rm -rf /app/src/agent_harness 2>/dev/null || true
+
+COPY src/ ./src/
+COPY .claude/ ./.claude/
+
+# Faithfully emulate the gateway's impaired-`site` boot: -S disables site (no .pth,
+# no pyvenv.cfg) and PYTHONPATH carries ONLY /app/src (the gateway-effective path).
+# This MUST import the SDK from the copied-in packages or the gateway boot will fail.
+RUN env -i PATH=/usr/bin PYTHONPATH=/app/src /usr/bin/python3.11 -S -c \
+      "import claude_agent_sdk, httpx, mcp, agent_harness.agent_runner; \
+       print('venv-into-/app/src OK (site disabled, PYTHONPATH=/app/src only)')"
+
+# mcp-call JIT self-escalation helper onto PATH (chmod +x).
+COPY bin/mcp-call /usr/local/bin/mcp-call
+RUN chmod 0755 /usr/local/bin/mcp-call
+
+# System Claude Code CLI (honours ANTHROPIC_BASE_URL; the bundled SDK binary ignores it).
+RUN export HOME=/root \
+ && curl -fsSL https://claude.ai/install.sh | bash \
+ && real="$(readlink -f /root/.local/bin/claude 2>/dev/null || true)"; \
+    { [ -n "$real" ] && [ -f "$real" ]; } || real="$(find / -type f -name claude -executable 2>/dev/null | head -1)"; \
+    echo "resolved claude binary: $real"; [ -n "$real" ] && [ -f "$real" ] \
+ && cp "$real" /usr/local/bin/claude \
+ && chmod 0755 /usr/local/bin/claude \
+ && /usr/local/bin/claude --version
+
+# /app must be readable+writable by the sandbox user (the SDK writes session state).
+RUN chown -R 1000:1000 /app
+
+# Run as the sandbox user (uid 1000) — matches the baseline policy.
+USER 1000
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MCP_GATEWAY_URL=https://mcp-gateway.apps.anaeem.na-launch.com \
+    SPIFFE_ENDPOINT_SOCKET=unix:///spiffe-workload-api/spire-agent.sock \
+    SVID_JWT_PATH=/var/run/secrets/svid-gateway.jwt \
+    # PYTHONPATH must carry BOTH /app/src (agent_harness) AND the UBI venv
+    # site-packages (claude_agent_sdk, httpx, mcp). The venv is built with
+    # include-system-site-packages=false, so the system interpreter
+    # /usr/bin/python3.11 (which the launcher boots to dodge the unreadable
+    # /opt/app-root/pyvenv.cfg under uid 1000) cannot find the SDK without it.
+    # ROOT CAUSE (2026-06-21, round 3, PROVEN via the diagnostic brain): the
+    # gateway's confined ExecSandbox setns boot runs the brain with ONLY this
+    # image-level ENV PYTHONPATH — it does NOT honor the launcher's inline
+    # `export PYTHONPATH=...:venv` (the command is not run through an export-
+    # respecting shell in the booted process) NOR the ExecSandbox `environment`
+    # map's PYTHONPATH override (both reach a normal `oc exec` via PID1's
+    # OPENSHELL_USER_ENVIRONMENT, but NOT the gateway-booted process). With the
+    # old single-path ENV the booted brain got ModuleNotFoundError: No module
+    # named 'claude_agent_sdk' and died at run_agent() before any MCP call.
+    # Baking the venv path into the IMAGE ENV is the only delivery that survives
+    # the gateway boot. Keep in lockstep with SANDBOX_BRAIN_VENV_SITE / the
+    # launcher _brain_env PYTHONPATH (belt-and-suspenders for non-gateway boots).
+    PYTHONPATH=/app/src:/opt/app-root/lib/python3.11/site-packages \
+    CLAUDE_CLI_PATH=/usr/local/bin/claude \
+    HOME=/tmp
+
+# Default entrypoint keeps the sandbox alive for ExecSandbox brain boot; the
+# gateway overrides the boot command (sleep infinity) and the launcher execs the
+# runner in. argv brain run still works if invoked directly.
+ENTRYPOINT ["python", "-m", "agent_harness.agent_runner"]

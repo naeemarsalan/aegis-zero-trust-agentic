@@ -1,0 +1,179 @@
+# Kagenti AuthBridge enrollment config for OpenShell sandbox pods (ns openshell).
+# Mirrors the PROVEN kagenti-test setup (ADR-0013), realm `kagenti` (isolated, already has the
+# spire-spiffe SPIFFE IdP + federated-jwt clients verified on RHBK 26.x). The AuthBridge webhook
+# (inject.kagenti.io) mounts these CMs into the injected sidecars when a sandbox pod carries
+# kagenti.io/type=agent in this kagenti-enabled namespace.
+#
+# Identity model (per ADR-0013 + user decision 2026-06-20): kagenti AGENT-ATTRIBUTED identity
+# (the MCP sees the sandbox SVID) + our jit-gate human-approval on top. NOT ext-proc on-behalf-of.
+# Per-sandbox KC client registration (the launcher registers a federated-jwt client per sandbox
+# UUID SVID) — so the spiffe-helper's JWT-SVID identity is the sandbox's own /sandbox/<uuid> SVID
+# (issued by the openshell-sandbox-workloads ClusterSPIFFEID, ADR-0018).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-config
+  namespace: openshell
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+data:
+  CLIENT_AUTH_TYPE: federated-jwt
+  DEFAULT_OUTBOUND_POLICY: exchange
+  EXPECTED_AUDIENCE: kagenti
+  ISSUER: https://keycloak.apps.anaeem.na-launch.com/realms/kagenti
+  KEYCLOAK_NAMESPACE: keycloak
+  KEYCLOAK_REALM: kagenti
+  KEYCLOAK_URL: http://keycloak-service.keycloak.svc.cluster.local:8080
+  SPIFFE_IDP_ALIAS: spire-spiffe
+  SPIRE_ENABLED: "true"
+  # TARGET_AUDIENCE set to echo-mcp 2026-06-21 to MIRROR THE PROVEN kagenti-test loop: the kagenti-realm
+  # token-exchange mints aud=echo-mcp, jit-gate forwards (does not re-mint), and echo-mcp validates the
+  # exchanged token and attributes the agent SVID. (Was PROVISIONAL=mcp-gateway; the mcp-gateway path was
+  # never validated for a kagenti-exchanged token — echo-mcp.agentic-mcp is the only proven target today.)
+  TARGET_AUDIENCE: echo-mcp
+  TOKEN_URL: http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/token
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-runtime-config
+  namespace: openshell
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+data:
+  config.yaml: |
+    mode: proxy-sidecar
+    pipeline:
+      inbound:
+        plugins:
+          - name: jwt-validation
+            config: {issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/kagenti"}
+      outbound:
+        plugins:
+          - name: token-exchange
+            config:
+              token_url: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/token"
+              default_policy: "exchange"
+              no_token_policy: "client-credentials"
+              identity: {type: spiffe, client_id_file: /shared/client-id.txt}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spiffe-helper-config
+  namespace: openshell
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    cert_dir = "/opt"
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "svid_bundle.pem"
+    # TOP-LEVEL HINT (2026-06-22, round 2 — deterministic UUID selection): the pod matches BOTH the
+    # SA-shaped (openshell-sandbox-workloads) and UUID-shaped (openshell-sandbox-extproc) ClusterSPIFFEIDs,
+    # so a no-WithHint FetchJWTSVID returned them in a NON-DETERMINISTIC order and the brain got the wrong
+    # SA shape on ~half the launches (svid_file_wrong_shape). spiffe-helper 0.11.0-dev rejects a per-
+    # jwt_svids `hint` key, so we set the helper's TOP-LEVEL hint, which applies WithHint to its SVID
+    # fetches. The extproc UUID CSID carries SPIRE entry hint `mcp-gateway`, so the helper now
+    # deterministically writes the UUID-shaped SVID (svid.pem AND mcp-gateway-svid.jwt). The Kagenti
+    # jwt_svid.token also becomes UUID-shaped — acceptable: the pfSense journey reaches mcp-gateway via
+    # NO_PROXY (direct, ext-proc-verified) and never traverses the authbridge-proxy that consumes it.
+    hint = "mcp-gateway"
+    # Two JWT-SVID fetches (per-audience):
+    #  1) the kagenti-realm issuer audience — the PROVEN kagenti-test entry; written to
+    #     cert_dir (/opt) as jwt_svid.token, consumed by the authbridge-proxy token-exchange.
+    #  2) the mcp-gateway / ext-proc audience — added 2026-06-22 so the UNATTENDED brain can
+    #     read its OWN mcp-gateway SVID from a file (SVID_JWT_PATH) instead of the SPIFFE
+    #     Workload-API socket, which the gateway ExecSandbox MASKS with an empty tmpfs inside
+    #     the brain's confined setns/MCS namespace (api.py lines 431-458). The spiffe-helper
+    #     runs in the NORMAL (attestable) container namespace so it CAN fetch this SVID.
+    #
+    #     PATH-RESOLUTION FIX (2026-06-22, round 2): spiffe-helper writes each jwt_svids entry
+    #     to path.Join(cert_dir, jwt_svid_file_name). cert_dir is "/opt" (the operator-injected
+    #     `svid-output` emptyDir; PROVEN in kagenti-operator container_builder.go: svid-output ->
+    #     /opt, shared-data -> /shared). Go's path.Join does NOT let an ABSOLUTE second arg escape
+    #     the first: path.Join("/opt","/shared/mcp-gateway-svid.jwt") == "/opt/shared/mcp-gateway-svid.jwt"
+    #     (verified empirically), so the previous absolute "/shared/..." value MISWROTE the token to
+    #     /opt/shared/... on the svid-output volume — NOT onto shared-data — and the brain never saw it
+    #     (round-1 blocker, defect 2). Fix: use a RELATIVE filename so the token lands deterministically
+    #     in cert_dir == /opt == the `svid-output` volume, i.e. /opt/mcp-gateway-svid.jwt. The agent/brain
+    #     container then reads it via a read-only mount of that SAME `svid-output` volume at /svid-out
+    #     (added by platform/openshell/kagenti-authbridge/kyverno-mount-svid-output-on-agent.yaml — a
+    #     SEPARATE sibling policy, since the kagenti webhook mounts svid-output only into its own
+    #     sidecars, never the agent). So: SVID_JWT_PATH=/svid-out/mcp-gateway-svid.jwt.
+    #     NOTE: UUID-vs-SA selection is enforced in the BRAIN (svid_bearer._try_read_svid_file
+    #     decodes the JWT sub and requires SVID_REQUIRE_PATH_SUBSTR=/sandbox/), because the
+    #     mainline spiffe-helper jwt_svids entry carries no per-entry SPIFFE-ID filter and the
+    #     pod matches BOTH the SA-shaped (kagenti) and UUID-shaped (ext-proc) ClusterSPIFFEIDs.
+    #     (EMPIRICAL 2026-06-22 round-2 re-test: SPIRE now returns the UUID-shaped SVID for the
+    #     mcp-gateway audience deterministically — mcp-gateway-svid.jwt sub == /sandbox/<uuid> and
+    #     the svid.pem SAN matches; the round-1 SA-shape did not reproduce. The brain shape-guard
+    #     remains as defence-in-depth.)
+    #
+    #     FILE-MODE FIX (2026-06-22, round 2): the brain runs as uid 1000 / gid 1000 (no
+    #     supplementary gid-0), while spiffe-helper writes the JWT-SVID files owned uid 1001 / gid 0
+    #     with the helper DEFAULT mode 0600 — so the brain got EACCES (svid_file_read_error) even
+    #     though the path + shape were correct. jwt_svid_file_mode makes the short-lived,
+    #     pod-internal JWT-SVID world-readable (0644) so the brain (any uid in this pod) can read it;
+    #     the X.509 svid_key.pem stays 0600 (key_file_mode untouched). The token is a 5-min SVID on
+    #     a pod-private emptyDir, so 0644 within the pod is an acceptable PoC posture.
+    jwt_svid_file_mode = 0644
+    #     DETERMINISTIC SHAPE SELECTION (2026-06-22, round 2 — the architectural shape blocker):
+    #     the pod matches BOTH CSIDs, so FetchJWTSVID(audience=mcp-gateway) returns the SA-shaped AND
+    #     the UUID-shaped SVID in a non-deterministic order; proven live the helper wrote the file
+    #     alternately SA-/UUID-shaped across launches and the brain shape-guard rejected SA ones.
+    #     NOTE: spiffe-helper 0.11.0-dev does NOT accept a per-entry `hint` key in jwt_svids (it errors
+    #     "unknown key(s) in jwt_svids[N]: hint"), so selection by hint must happen via SPIRE entry
+    #     ordering, not the helper config. The UUID CSID carries hint `mcp-gateway` (audit/marker only);
+    #     deterministic UUID selection is instead enforced by the SA-shaped workloads CSID being scoped
+    #     so it does NOT mint the mcp-gateway audience for this pod (see the workloads CSID jwtTtl/audience
+    #     guard) — and the brain shape-guard (SVID_REQUIRE_PATH_SUBSTR=/sandbox/) remains the fail-closed.
+    jwt_svids = [
+      {jwt_audience="http://keycloak.apps.anaeem.na-launch.com:8080/realms/kagenti", jwt_svid_file_name="jwt_svid.token"},
+      {jwt_audience="mcp-gateway", jwt_svid_file_name="mcp-gateway-svid.jwt"}
+    ]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-config
+  namespace: openshell
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+data:
+  envoy.yaml: |
+    admin: {address: {socket_address: {address: 127.0.0.1, port_value: 9901}}}
+    static_resources: {listeners: [], clusters: []}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authproxy-routes
+  namespace: openshell
+  labels: {app.kubernetes.io/part-of: nvidia-ida}
+data:
+  # Routes the sandbox's outbound MCP calls (via HTTP_PROXY=127.0.0.1:8081) through the
+  # kagenti-realm token-exchange. MIRRORS THE PROVEN kagenti-test routes.yaml (2026-06-21):
+  # BOTH jit-gate** and echo-mcp** exchange to target_audience=echo-mcp. A call to the openshell
+  # jit-gate (jit-gate.openshell.svc) thus rides a kagenti-exchanged token with aud=echo-mcp;
+  # jit-gate forwards it (does not re-mint) to echo-mcp.agentic-mcp.svc:8000, which validates the
+  # exchanged token and attributes the sandbox SVID.
+  #
+  # ONLY these MCP hosts are matched => ONLY these get token-exchanged. The LLM brain
+  # (172.16.2.251:4000) and the OpenShell control plane (openshell.openshell.svc:8080) are an IP
+  # literal and an in-cluster SVC respectively, with NO routes.yaml entry, so they would fall to
+  # the proxy default_policy=exchange IF they reached the proxy — they DON'T, because NO_PROXY on
+  # the agent container (set on the Sandbox CR podTemplate by Kyverno) bypasses the sidecar for the
+  # brain IP + cluster-internal hosts. routes.yaml host-matching alone cannot exempt an IP literal,
+  # so NO_PROXY-by-IP is the reliable isolation (see kyverno-stamp-sandbox-cr.yaml).
+  routes.yaml: |
+    - host: "jit-gate**"
+      target_audience: "echo-mcp"
+      token_scopes: "openid"
+      action: "exchange"
+    - host: "echo-mcp**"
+      target_audience: "echo-mcp"
+      token_scopes: "openid"
+      action: "exchange"

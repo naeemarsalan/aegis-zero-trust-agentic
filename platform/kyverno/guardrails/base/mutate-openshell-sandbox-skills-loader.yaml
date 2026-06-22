@@ -1,0 +1,131 @@
+---
+# Kyverno ClusterPolicy: inject skills-loader init-container into OpenShell sandbox pods (C3).
+#
+# TRIGGER: the sandbox Pod has annotation 'agents.x-k8s.io/skills' with a
+#   comma-separated list of skill directory names (e.g. "pfsense-firewall,openshift-troubleshoot").
+#
+# EFFECT: appends an init-container (skills-loader) and a shared emptyDir volume (claude-skills)
+#   to the Pod spec, then adds a volumeMount on the 'agent' container so the cloned skills are
+#   available at SKILLS_MOUNT_PATH.
+#
+# GATED: apply only after:
+#   G-C3a: agents/skills Gitea repo seeded (seed-job.yaml)
+#   G-C3c: skills-repo-read-token Secret present in ns openshell
+#   Phase A complete + Kyverno admission-controller 1/1
+#
+# This policy is ADDITIVE — it appends to the containers list and volumes list, never replaces.
+# Pattern mirrors the proven mutate-openshell-sandbox-syschroot.yaml (patchesJson6902 append).
+#
+# NOTE: the 'agent' container name is fixed by convention from the sandbox-launcher.
+# If the container name changes, update the last rule's containerName field.
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-openshell-sandbox-skills-loader
+  annotations:
+    policies.kyverno.io/title: "Inject skills-loader init-container into skill-annotated sandboxes"
+    policies.kyverno.io/description: >
+      When an OpenShell sandbox Pod carries the 'agents.x-k8s.io/skills' annotation,
+      this policy injects a skills-loader init-container that clones the selected skills
+      from the central Gitea skills repo into a shared emptyDir, then mounts it into
+      the agent container at the CLAUDE skills path.
+    openshell.ai/phase-gate: "G-C3b"
+spec:
+  rules:
+    # ---------------------------------------------------------------------------
+    # Rule 1: append the claude-skills emptyDir volume.
+    # ---------------------------------------------------------------------------
+    - name: append-skills-volume
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              annotations:
+                "agents.x-k8s.io/skills": "?*"
+      mutate:
+        patchesJson6902: |-
+          - op: add
+            path: /spec/volumes/-
+            value:
+              name: claude-skills
+              emptyDir: {}
+
+    # ---------------------------------------------------------------------------
+    # Rule 2: append the skills-loader init-container.
+    # ---------------------------------------------------------------------------
+    - name: append-skills-loader-initcontainer
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              annotations:
+                "agents.x-k8s.io/skills": "?*"
+      mutate:
+        patchStrategicMerge:
+          spec:
+            initContainers:
+              # append operator: Kyverno appends when the name is not already present.
+              - (name): skills-loader
+                image: "{{ env('SKILLS_LOADER_IMAGE') | default('alpine/git:latest') }}"
+                env:
+                  - name: SKILLS_REPO_URL
+                    value: "{{ env('SKILLS_REPO_URL') | default('https://git.arsalan.io/agents/skills.git') }}"
+                  - name: SKILL_NAMES
+                    value: "{{request.object.metadata.annotations.\"agents.x-k8s.io/skills\"}}"
+                  - name: GITEA_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: skills-repo-read-token
+                        key: token
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -e
+                    mkdir -p /skills-target
+                    git clone --depth=1 \
+                      "https://x-token:${GITEA_TOKEN}@${SKILLS_REPO_URL#https://}" \
+                      /tmp/skills-src
+                    for skill in $(echo "$SKILL_NAMES" | tr ',' ' '); do
+                      if [ -d "/tmp/skills-src/$skill" ]; then
+                        cp -r "/tmp/skills-src/$skill" "/skills-target/$skill"
+                      else
+                        echo "WARNING: skill $skill not found in skills repo" >&2
+                      fi
+                    done
+                volumeMounts:
+                  - name: claude-skills
+                    mountPath: /skills-target
+                resources:
+                  requests:
+                    cpu: "50m"
+                    memory: "64Mi"
+                  limits:
+                    cpu: "200m"
+                    memory: "128Mi"
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+
+    # ---------------------------------------------------------------------------
+    # Rule 3: append the claude-skills volumeMount to the 'agent' container.
+    # ---------------------------------------------------------------------------
+    - name: mount-skills-volume-on-agent
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              annotations:
+                "agents.x-k8s.io/skills": "?*"
+      mutate:
+        patchesJson6902: |-
+          - op: add
+            path: /spec/containers/0/volumeMounts/-
+            value:
+              name: claude-skills
+              mountPath: "{{ env('SKILLS_MOUNT_PATH') | default('/app/src/agent_harness/.claude/skills') }}"

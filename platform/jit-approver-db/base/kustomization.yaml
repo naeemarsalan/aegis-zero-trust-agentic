@@ -1,0 +1,21 @@
+# Kustomization for the jit-approver durable persistence layer (L0).
+#
+# This kustomization is NOT referenced by the default jit-approver deploy
+# (which defaults to JIT_STORE_BACKEND=memory, byte-for-byte unchanged).
+# It is wired into the anaeem overlay ONLY when enabling the durable backend.
+#
+# To apply:
+#   oc apply -k platform/jit-approver-db/base
+#
+# Coexistence lever: after applying this kustomization and confirming the
+# CNPG cluster is ready (cluster.status.readyInstances == 1), flip
+# JIT_STORE_BACKEND=postgres in the jit-approver anaeem overlay deployment patch
+# and restart.  Rollback: set JIT_STORE_BACKEND=memory; no data migration needed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mcp-gateway
+
+resources:
+  - schema-initdb-configmap.yaml
+  - cnpg-cluster.yaml

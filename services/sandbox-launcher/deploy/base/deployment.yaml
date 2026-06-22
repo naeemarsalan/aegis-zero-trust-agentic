@@ -58,7 +58,48 @@ spec:
                 path: baseline.yaml
       containers:
         - name: sandbox-launcher
-          image: oci.arsalan.io/nvidia-ida/sandbox-launcher:dev
+          # BELT-AND-SUSPENDERS image pin (2026-06-21): the overlay's images.newTag is
+          # the source of truth, but a `work-agent` server-side `oc apply` of THIS base
+          # (field-manager=work-agent, ACM ManifestWork ida-launcher-componenta) was
+          # observed re-applying the `:dev` literal and clobbering the overlay-pinned
+          # ReplicaSet. Pinning the real tag here makes even a base-only apply correct.
+          # Tag carries the SYSTEM-INTERPRETER brain boot: _brain_boot_command() calls
+          # /usr/bin/python3.11 (root 0755, no pyvenv.cfg) + the venv site-packages on
+          # PYTHONPATH, instead of bare `python` (the /opt/app-root VENV interp whose
+          # init_import_site read of /opt/app-root/pyvenv.cfg EPERMs under the confined
+          # sandbox uid 1000 -> "Fatal Python error: init_import_site", crashing the brain
+          # ~1s after boot). Plus a hardened readiness probe (sleep 2 + Fatal/Traceback
+          # detection) so a crashed brain is no longer falsely reported ready. On top of
+          # the DETACHED boot (nohup+setsid) and ext-proc brain-boot routing.
+          # Keep in lockstep with deploy/overlays/anaeem/kustomization.yaml images.newTag.
+          # Also injects PYTHONPATH (incl the venv site-packages) via the ExecSandbox
+          # ENVIRONMENT map in _brain_env (belt-and-suspenders to the inline export):
+          # PROVEN the gateway delivers the env map to the exec process, and PROVEN the
+          # crash is exactly the venv-site path missing (sdk_query is None True->False).
+          # SVID-FILE brain (2026-06-22): _brain_env now sets SVID_JWT_PATH=/shared/mcp-gateway-svid.jwt
+          # so the unattended brain reads its mcp-gateway SVID from the shared-data emptyDir the
+          # AuthBridge spiffe-helper writes (the brain CANNOT fetch from the gateway-masked SPIRE
+          # socket). Pairs with the brain-svidfile SANDBOX_IMAGE (svid_bearer file-path shape guard).
+          # LLM "policy_denied" ROOT CAUSE (2026-06-22, round-5): NOT a launcher-code issue and
+          # NOT an external LiteLLM credit/policy gate (rounds 1-4 misdiagnosis). The OpenShell
+          # gateway runs the DETACHED brain in a confined netns whose ONLY egress is the gateway's
+          # per-sandbox forward proxy (openshell-sandbox pid-1 on 10.200.0.1:3128), which enforces
+          # the deny-by-default OpenShell baseline EGRESS allowlist (configmap-baseline-policy.yaml).
+          # That allowlist's `inference` rule listed ONLY api.anthropic.com:443 — so the brain's
+          # POST to the ACTUAL LiteLLM endpoint (172.16.2.251:4000, ANTHROPIC_BASE_URL) matched no
+          # rule and the proxy returned 403 {"error":"policy_denied"}. FIX is in the baseline policy
+          # (added 172.16.2.251:4000 to the inference endpoints), NOT here. A byte-identical curl
+          # from the AGENT container passed (its netns uses openshell-sandbox-egress NP, not this
+          # proxy) — which is why a replay never reproduced the denial.
+          # (This launcher image == svidfile-20260622-010033 code; the noproxy-llm tag is the build
+          # that happened during round-5 investigation — no launcher behaviour change vs svidfile.)
+          # Rollback: sandbox-launcher:svidfile-20260622-010033
+          # Rollback: sandbox-launcher:svidprobe-gate-20260621-232243 (probe-gate, pre-svid-file).
+          # Rollback: sandbox-launcher:sysinterp-brain-20260621-214136 (no SVID file; masked-socket brain).
+          # Rollback: sandbox-launcher:sysinterp-brain-20260621-213258 (boot-cmd fix only, no env PYTHONPATH).
+          # Rollback: sandbox-launcher:detach-brain-20260621-201858 (detached but bare-python crash).
+          # Rollback: sandbox-launcher:extproc-routing-20260621-194237 (foreground-exec boot).
+          image: oci.arsalan.io/nvidia-ida/sandbox-launcher:llmgate-20260622-153517
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -110,13 +151,26 @@ spec:
             - name: RHDH_TOKEN_ISSUER
               value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
             # Sandbox workload configuration.
-            # Brain image: the OpenShell supervisor overrides the container command
-            # via OPENSHELL_SANDBOX_COMMAND (see SANDBOX_BOOT_AGENT below), so the
-            # image ENTRYPOINT is bypassed — but the runner + skills + claude CLI must
-            # be PRESENT in the image. The agent-harness image has them; the legacy
-            # sandbox-agent (Go device-flow capstone) does not.
+            # NATIVE-BRAIN image: agent-harness runtime (python + agent_harness + claude
+            # CLI + .claude/skills + mcp-call) PLUS the OpenShell supervisor requirements
+            # (sh/tar/gzip + a `sandbox` uid/gid 1000). A bare webshell (sandbox-agent:sh3)
+            # has none of these and the brain exec fails `cd: /app: No such file or directory`.
+            # BELT-AND-SUSPENDERS pin (2026-06-21): mirrors the overlay deployment-patch so a
+            # base-only `work-agent` apply does not drift SANDBOX_IMAGE back to sh3.
+            # ext-proc-aware brain — honors SVID_REQUIRE_PATH_SUBSTR=/sandbox/ (deterministic
+            # UUID-shaped ext-proc SVID selection in svid_bearer), AND (2026-06-22) reads the
+            # mcp-gateway SVID from a FILE (SVID_JWT_PATH=/shared/mcp-gateway-svid.jwt) with a
+            # fail-closed shape guard in svid_bearer._try_read_svid_file (rejects SA-shaped tokens).
+            # Keep in lockstep with deploy/overlays/anaeem/deployment-patch.yaml SANDBOX_IMAGE.
+            # Rollback: sandbox-agent:brain-extproc-svid240-20260621-225335 (socket-only, pre-file).
+            # GW-403-RETRY brain (2026-06-22): agent_runner retries (bounded, max 3) on a transient
+            # LLM-gateway policy_denied 403 (boot-time; byte-identical request clears seconds later).
+            # Handles the live ResultMessage-then-Exception ordering + narrow discriminator so a
+            # genuine authz DENY is never silently re-fired.
+            # Rollback (gw-403 v1, post-loop-only): sandbox-agent:brain-gw403retry-20260622-133739.
+            # Rollback (svid-file, no gw-403 retry): sandbox-agent:brain-svidfile-20260622-010059.
             - name: SANDBOX_IMAGE
-              value: "oci.arsalan.io/nvidia-ida/agent-harness:self-escalate"
+              value: "oci.arsalan.io/nvidia-ida/sandbox-agent:brain-gw403retry5-20260622-142214"
             - name: SANDBOX_RUNTIME_CLASS
               value: ""
             - name: SANDBOX_NAMESPACE

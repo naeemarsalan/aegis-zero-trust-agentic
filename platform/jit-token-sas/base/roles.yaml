@@ -1,0 +1,90 @@
+# Minimal Roles for per-capability JIT ServiceAccounts (Loop B3).
+#
+# Each Role grants exactly and only the verbs/resources needed for its
+# operation class.  No wildcards, no secrets, no cluster-scoped access.
+#
+# Naming convention: <sa-name>-role in the same namespace as the SA.
+#
+# Security review required before apply:
+#   - Confirm that no verb/resource combination here allows privilege escalation
+#     (bind, escalate, impersonate are never listed).
+#   - Confirm resourceNames restriction is set where the k8s API supports it
+#     (pods/exec does not support resourceNames; firewall rules may vary by CRD).
+#   - oc auth can-i verify after apply (B3 integration test).
+# ---------------------------------------------------------------------------
+---
+# firewall-write-role: create NetworkPolicy resources in agentic-mcp.
+# The pfSense MCP server manages firewall rules via k8s NetworkPolicy objects
+# (or directly via the pfSense REST API).  This Role permits creating a
+# NetworkPolicy in the agentic-mcp namespace only (Role is namespace-scoped).
+#
+# TODO (B3.1): if the pfSense MCP server uses its own REST API rather than
+# k8s NetworkPolicy objects, replace this Role with the appropriate minimum:
+# e.g. a ConfigMap create for rule storage, or no k8s RBAC at all (the SA
+# token is presented to the MCP server's own authz, not to kube-apiserver).
+# Adjust resources: once the actual MCP server authz surface is confirmed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jit-firewall-write-role
+  namespace: agentic-mcp
+  labels:
+    app.kubernetes.io/name: jit-firewall-write
+    app.kubernetes.io/component: jit-token-role
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list"]
+  # No update/patch/delete: single-use capability should not grant standing edit.
+  # No secrets, roles, rolebindings, clusterroles (DENIED_RESOURCE_TOKENS).
+---
+# resources-scale-role: scale deployments in agent-sandbox.
+# Specifically grants patch on deployments/scale (the subresource the Scale
+# API uses) and create+update on core resources matching the k8s-mcp-edit
+# tool surface.  No delete.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jit-resources-scale-role
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: jit-resources-scale
+    app.kubernetes.io/component: jit-token-role
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["patch", "get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  # No delete, no secrets, no RBAC resources.
+---
+# pods-exec-role: create pods/exec in agent-sandbox (interactive session).
+# pods/exec does NOT support resourceNames restriction in k8s RBAC; the pod
+# name is enforced at the MCP tool level (jit-gate checks tool_scope).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jit-pods-exec-role
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/name: jit-pods-exec
+    app.kubernetes.io/component: jit-token-role
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida/loop: "B3"
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/log"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # No create/update/patch/delete on pods themselves: exec-only.
+  # No secrets, no RBAC resources.

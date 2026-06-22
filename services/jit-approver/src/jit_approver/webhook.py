@@ -39,6 +39,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from jit_approver import audit
+from jit_approver.mint_core import _atomic_issue, _enforce_dual_control
 from jit_approver.models import SessionState
 from jit_approver.store import seen_deliveries, session_store, store_lock
 from jit_approver.vault import issue_credentials
@@ -213,31 +214,25 @@ async def handle_gitea_webhook(
 
     merged_by = pr.get("merged_by", {}).get("login", "unknown")
 
-    # C4: atomically claim the session for issuance. Only pending/approved may
-    # transition to issued, and only once. We flip BEFORE the (network) mint so
-    # a concurrent redelivery sees 'issued' and no-ops. On mint failure we roll
-    # the state back so a genuine retry can still succeed.
+    # Early-out only on a missing/terminal session; the M5 SoD check itself
+    # runs after the merged grant is loaded (see below).
     async with store_lock:
-        session = session_store.get(session_id)
-        if session is None:
+        _sess_check = session_store.get(session_id)
+        if _sess_check is None:
             logger.warning("webhook_no_session_for_pr", extra={"pr_number": pr_number})
             return {"status": "ignored", "reason": f"no session found for PR #{pr_number}"}
-        current_state = session["state"]
+        current_state = _sess_check["state"]
         if current_state in _TERMINAL_STATES:
             logger.info(
                 "webhook_already_terminal",
                 extra={"session_id": session_id, "state": current_state},
             )
             return {"status": "ok", "reason": f"session already {current_state}", "session_id": session_id}
-        # Claim it.
-        session["state"] = SessionState.issued.value
 
-    # Approval decision boundary — audit it (H5).
-    audit.emit_approved(session_id, merged_by, pr_number)
-    logger.info(
-        "webhook_pr_approved",
-        extra={"session_id": session_id, "pr_number": pr_number, "merged_by": merged_by},
-    )
+    # NOTE: requester_sub for the M5 SoD check is taken from the RE-VALIDATED
+    # merged grant (reviewed_req) below — never from the in-memory
+    # session['request'] (C2). This guarantees an authoritative, non-empty
+    # value (min_length=1) and closes the empty-requester_sub skip bypass.
 
     # C2: fetch the REVIEWED merged grant, parse + re-validate through the
     # ceiling, and issue from THAT — never session['request'].
@@ -246,7 +241,7 @@ async def handle_gitea_webhook(
     except Exception as exc:  # noqa: BLE001 — re-validation failure => deny+audit
         async with store_lock:
             sess = session_store.get(session_id)
-            if sess is not None:
+            if sess is not None and sess["state"] not in _TERMINAL_STATES:
                 sess["state"] = SessionState.denied.value
         audit.emit_denied(session_id, f"merged grant failed re-validation: {exc}")
         logger.error(
@@ -255,15 +250,40 @@ async def handle_gitea_webhook(
         )
         return {"status": "denied", "reason": f"merged grant failed re-validation: {exc}"}
 
-    # Trigger credential issuance from the reviewed scope.
+    # M5 SoD check (fail-closed, BEFORE any state change or Vault call), shared
+    # with the /mint path via mint_core._enforce_dual_control. requester_sub
+    # comes from the RE-VALIDATED merged grant (reviewed_req) — authoritative
+    # and, with min_length=1 on the model, guaranteed non-empty, so the webhook
+    # mirror path can never silently skip SoD. A self-approval attempt leaves
+    # the session pending for a legitimate approver.
     try:
-        await issue_credentials(session_id, reviewed_req)
+        _enforce_dual_control(merged_by, reviewed_req.requester_sub)
+    except Exception as exc:  # noqa: BLE001 — HTTPException from _enforce_dual_control
+        audit.emit_denied(
+            session_id,
+            f"webhook SoD violation: merged_by={merged_by!r} "
+            f"requester_sub={reviewed_req.requester_sub!r}",
+        )
+        logger.warning(
+            "webhook_sod_violation",
+            extra={
+                "session_id": session_id,
+                "merged_by": merged_by,
+                "requester_sub": reviewed_req.requester_sub,
+            },
+        )
+        return {"status": "denied", "reason": f"SoD violation: {exc}"}
+
+    logger.info(
+        "webhook_pr_approved",
+        extra={"session_id": session_id, "pr_number": pr_number, "merged_by": merged_by},
+    )
+
+    # Trigger credential issuance via the shared mint_core path (C4 once-only
+    # flip + emit_approved + issue_credentials + emit_issued).
+    try:
+        await _atomic_issue(session_id, reviewed_req, merged_by, pr_number)
     except Exception as exc:  # noqa: BLE001
-        # Roll the claim back so a legitimate redelivery can retry the mint.
-        async with store_lock:
-            sess = session_store.get(session_id)
-            if sess is not None and sess["state"] == SessionState.issued.value:
-                sess["state"] = SessionState.approved.value
         logger.error(
             "webhook_issue_failed",
             extra={"session_id": session_id, "error": str(exc)},
@@ -297,13 +317,6 @@ async def handle_gitea_webhook(
                 "webhook_policy_widen_failed",
                 extra={"session_id": session_id, "sandbox": sandbox, "error": str(exc)},
             )
-
-    audit.emit_issued(
-        session_id,
-        reviewed_req.namespace,
-        reviewed_req.duration_minutes,
-        session_store[session_id].get("expires_at", ""),
-    )
 
     return {"status": "issued", "session_id": session_id}
 

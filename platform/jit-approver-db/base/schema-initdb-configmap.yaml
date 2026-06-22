@@ -1,0 +1,66 @@
+# ConfigMap carrying schema.sql for CNPG bootstrap.initdb.postInitApplicationSQLRefs.
+# CNPG runs this SQL as the initdb superuser BEFORE handing the DB to the app role,
+# so the REVOKE UPDATE,DELETE ON jit_ledger is applied at cluster creation time.
+#
+# The schema is embedded inline here so the kustomization is self-contained.
+# The canonical source of truth is:
+#   services/jit-approver/src/jit_approver/persistence/schema.sql
+#
+# Keep both in sync.  The ConfigMap version is what CNPG actually runs;
+# the source file is used by developers and the startup_check test.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jit-approver-schema
+  namespace: mcp-gateway
+data:
+  schema.sql: |
+    -- JIT-approver persistence schema (L0). Idempotent.
+    -- See services/jit-approver/src/jit_approver/persistence/schema.sql for full comments.
+
+    CREATE TABLE IF NOT EXISTS jit_session (
+        id              TEXT PRIMARY KEY,
+        state           TEXT        NOT NULL DEFAULT 'pending',
+        pr_url          TEXT,
+        pr_number       INTEGER,
+        expires_at      TIMESTAMPTZ,
+        requester_sub   TEXT,
+        approver_sub    TEXT,
+        scope_hash      TEXT,
+        request_json    TEXT,
+        extra_json      TEXT,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS jit_delivery (
+        delivery_id TEXT PRIMARY KEY,
+        seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS jit_ledger (
+        seq          BIGSERIAL   PRIMARY KEY,
+        prev_hash    TEXT        NOT NULL DEFAULT '',
+        entry_hash   TEXT        NOT NULL DEFAULT '',
+        payload_json TEXT        NOT NULL DEFAULT '{}',
+        sig          TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS jit_ledger_head (
+        id        INTEGER PRIMARY KEY DEFAULT 1,
+        seq       BIGINT  NOT NULL DEFAULT 0,
+        head_hash TEXT    NOT NULL DEFAULT '',
+        CONSTRAINT singleton CHECK (id = 1)
+    );
+
+    INSERT INTO jit_ledger_head (id, seq, head_hash)
+    VALUES (1, 0, '')
+    ON CONFLICT (id) DO NOTHING;
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+            REVOKE UPDATE, DELETE ON jit_ledger FROM app;
+        END IF;
+    END
+    $$;

@@ -1,6 +1,16 @@
 # ADR-0011: E2E delegated-agent journey — OpenShell-native vs Variant-B + ext-proc (and the hybrid target)
 
-- **Status:** Proposed — *standing decision (stay on Variant-B + ext-proc) REINFORCED 2026-06-16 by an off-cluster disproof of the native-unblock premise (see "UPDATE" below).*
+> **⚠️ "Chosen unblock path" SUPERSEDED 2026-06-20 by [ADR-0017](0017-provider-spiffe-setns-selinux-confinement.md).**
+> The scoped `MS_SLAVE`/`MS_PRIVATE` remount **fork-patch below is DEAD — do not build it.** The native
+> `provider_spiffe` setns-EPERM was CONFIRMED LIVE to be **SELinux `container_t` confinement** (class
+> `capability` perm `sys_admin`), proven by a `spc_t` positive control that succeeds *with the real CSI
+> mount + tmpfs hide present* — so it is neither mount propagation nor a userns mismatch (both ruled out
+> three ways). The fix is a custom confined SELinux domain `openshell_sandbox_t`, delivered via SPO +
+> Kyverno (ADR-0017). This ADR's **standing hybrid decision is RETAINED**: ext-proc stays in front as
+> the per-tool tool-scope gate + audit emitter; jit-approver's `UpdateConfig` network elevator stays
+> native; native supplies the credential mint only.
+
+- **Status:** Proposed — *standing decision (stay on Variant-B + ext-proc) REINFORCED 2026-06-16 by an off-cluster disproof of the native-unblock premise (see "UPDATE" below); native-unblock CAUSE+FIX resolved 2026-06-20 in ADR-0017.*
 - **Date:** 2026-06-16
 - **Related:** ADR-0008 (SVID into launched sandbox), ADR-0009 (native delegation + OCP/CRI-O blocker; provider-spiffe EPMM mount-propagation), ADR-0010 (ida TUI hybrid compose over OpenShell)
 

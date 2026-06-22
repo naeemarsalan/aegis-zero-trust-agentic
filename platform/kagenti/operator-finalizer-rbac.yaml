@@ -1,0 +1,56 @@
+# Additive RBAC for the Kagenti operator (controller-manager) — FIX 1.
+#
+# WHY: In the openshell namespace the kagenti-enrolled pod is owned DIRECTLY by a Sandbox CR
+# (pod ownerReferences = {apiVersion: agents.x-k8s.io/v1alpha1, kind: Sandbox,
+# controller:true, blockOwnerDeletion:true}); there is NO Deployment/ReplicaSet/StatefulSet
+# in openshell. When clientregistration creates the Keycloak client-credentials secret it
+# stamps the owner = the Sandbox CR with blockOwnerDeletion:true. The API then requires the
+# operator SA to hold `update` on the OWNER kind's /finalizers subresource =
+# agents.x-k8s.io/sandboxes/finalizers. The helm-managed kagenti-manager-role grants
+# `agents.x-k8s.io sandboxes [get,list,patch,update,watch]` and `sandboxes/scale`, but NOT
+# `sandboxes/finalizers` — the exact missing rule causing:
+#   "cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set
+#    finalizers on"
+# (the empty group/kind in the error text is K8s' generic finalizer-permission message; the
+# gating resource is the owner's /finalizers subresource). This clears the secret creation,
+# which in turn clears the pod FailedMount on the kagenti-keycloak-client-credentials secret.
+#
+# This is a NEW additive ClusterRole + ClusterRoleBinding. It does NOT modify the
+# helm-managed kagenti-manager-role (which helm may revert). Aggregation is avoided on
+# purpose so this stays an independent grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kagenti-operator-sandbox-finalizers
+  labels:
+    app.kubernetes.io/component: operator-rbac
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    nvidia-ida.io/description: >
+      Additive grant: lets the Kagenti operator SA set finalizers / blockOwnerDeletion on
+      Sandbox-owned objects (e.g. the Keycloak client-credentials secret) in the openshell
+      namespace, where the owner is a Sandbox CR rather than a Deployment.
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes/finalizers"]
+    verbs: ["update", "get", "list", "watch"]
+  # Robustness: status writes on the owner kind (additive, harmless if unused).
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kagenti-operator-sandbox-finalizers
+  labels:
+    app.kubernetes.io/component: operator-rbac
+    app.kubernetes.io/part-of: nvidia-ida
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kagenti-operator-sandbox-finalizers
+subjects:
+  - kind: ServiceAccount
+    name: controller-manager
+    namespace: kagenti-system

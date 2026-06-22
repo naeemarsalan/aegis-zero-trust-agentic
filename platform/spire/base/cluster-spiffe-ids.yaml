@@ -52,22 +52,45 @@ spec:
       kubernetes.io/metadata.name: agent-sandbox
 ---
 # ClusterSPIFFEID for OpenShell launcher-created sandbox pods (ns openshell).
-# OpenShell stamps each sandbox pod with openshell.ai/managed-by=openshell and
-# openshell.ai/sandbox-id=<uuid> when providerTokenGrants.spiffe.enabled=true.
-# We encode that sandbox-id into the SVID PATH so each sandbox gets a UNIQUE,
-# cryptographically-bound identity. ext-proc parses <uuid> from the sub and reads
-# the matching Vault grant at secret/data/sandbox-grants/<uuid> — the per-sandbox
-# binding (no spoofable header, no per-sandbox registration needed).
-# SVID format: spiffe://anaeem.na-launch.com/ns/openshell/sandbox/<sandbox-uuid>
+#
+# className is REQUIRED: the spire-controller-manager only reconciles CSIDs whose spec.className
+# equals its configured class (zero-trust-workload-identity-manager-spire). A CSID without it is
+# silently ignored (empty .status, 0 entries) — see ADR-0018.
+#
+# IDENTITY = SA-SHAPED (Kagenti path, decided 2026-06-21). We mint the STABLE SA-shaped SVID
+# spiffe://anaeem.na-launch.com/ns/openshell/sa/openshell-sandbox for sandbox pods. WHY: the
+# delegated-identity plane is Kagenti AuthBridge (ADR-0013) — the kagenti operator registers ONE
+# Keycloak federated-jwt client per ServiceAccount (jwt.credential.sub = .../sa/openshell-sandbox),
+# and the in-sandbox spiffe-helper must present an SVID whose sub MATCHES that client or Keycloak
+# rejects the assertion (CLIENT_LOGIN_ERROR invalid_client_credentials, proven 2026-06-20). So the
+# SVID must be SA-shaped, NOT per-sandbox-UUID.
+# (Earlier this minted a per-sandbox UUID SVID off the openshell.io/sandbox-id annotation for the
+# ext-proc Vault-grant path; that path is retired in favour of Kagenti, so the UUID form + the
+# launcher's Vault grant are no longer on the delegated-read path. Per-sandbox attribution now lives
+# in pod labels/audit; the human is bound via the JIT human-approval, not the SVID sub.)
+#
+# We SELECT on the universal agents.x-k8s.io/sandbox-name-hash label (Exists; excludes the gateway
+# pod openshell-0) and template the SA path off .PodSpec.ServiceAccountName (= openshell-sandbox).
 apiVersion: spire.spiffe.io/v1alpha1
 kind: ClusterSPIFFEID
 metadata:
   name: openshell-sandbox-workloads
 spec:
-  spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sandbox/{{ index .PodMeta.Labels "openshell.ai/sandbox-id" }}'
+  className: zero-trust-workload-identity-manager-spire
+  # DETERMINISTIC SHAPE SELECTION (2026-06-22, round 2): this SA-shaped entry stays HINT-LESS. The
+  # AuthBridge spiffe-helper selects the UUID-shaped openshell-sandbox-extproc SVID for the brain's
+  # mcp-gateway-svid.jwt via its TOP-LEVEL `hint = "mcp-gateway"` (configmaps.yaml), which matches the
+  # extproc entry's SPIRE hint. Earlier attempts to make selection deterministic by hinting THIS entry
+  # were non-deterministic and are reverted. Keep this entry hint-less so the helper's default (no-hint)
+  # X.509/JWT path can still resolve the SA identity the Kagenti federated-jwt client expects when the
+  # echo-mcp path IS exercised. (Not exercised by the pfSense journey; mcp-gateway is in NO_PROXY.)
+  # APPLY PER-DOC ONLY (python-extract this single CSID) — never whole-file apply cluster-spiffe-ids.yaml
+  # (the agent-sandbox-e2e-harness CSID below has drifted; whole-file apply breaks the 4/4 harness).
+  spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}'
   podSelector:
-    matchLabels:
-      openshell.ai/managed-by: openshell
+    matchExpressions:
+      - key: agents.x-k8s.io/sandbox-name-hash
+        operator: Exists
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: openshell
@@ -85,6 +108,12 @@ kind: ClusterSPIFFEID
 metadata:
   name: agent-sandbox-e2e-harness
 spec:
+  # NOTE (drift, do NOT whole-file `oc apply` this CSID): the LIVE harness CSID has
+  # className=zero-trust-workload-identity-manager-spire and a HARDCODED template
+  # spiffeIDTemplate: .../sandbox/e2e0a1b2-c3d4-4e5f-8a9b-000000000001 (matching the
+  # fixed UID hack/spawn-shell.sh writes). This committed templated form was never
+  # applied. Applying it would rewrite the working harness SVID — leave the live CSID
+  # alone; this block is descriptive only until the harness is reconciled separately.
   spiffeIDTemplate: 'spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sandbox/{{ index .PodMeta.Labels "nvidia-ida/sandbox-id" }}'
   podSelector:
     matchLabels:

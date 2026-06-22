@@ -1,0 +1,43 @@
+# Kyverno mutate: enroll OpenShell sandbox pods into Kagenti AuthBridge by stamping the label the
+# inject.kagenti.io webhook gates on (kagenti.io/type=agent) + the one pre-existing volume the webhook
+# expects (shared-data emptyDir). The webhook (reinvocationPolicy: IfNeeded) then injects the
+# authbridge-proxy + spiffe-helper sidecars and adds spire-agent-socket/svid-output/CM/secret mounts.
+#
+# Separate file from mutate-openshell-sandbox-syschroot.yaml (the CLOSED setns fix) — do not merge.
+# NOTE: this is the ACTIVATION switch for kagenti enrollment of sandboxes. It should be applied ONLY
+# once the per-sandbox KC client registration (launcher) exists, else injected pods have no creds.
+# Requires: ns openshell labeled kagenti-enabled=true + the authbridge config CMs (configmaps.yaml).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-openshell-sandbox-kagenti-enroll
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Enroll OpenShell sandboxes into Kagenti AuthBridge
+    policies.kyverno.io/description: >
+      Stamps kagenti.io/type=agent + the shared-data emptyDir onto OpenShell sandbox pods so the
+      inject.kagenti.io webhook injects the AuthBridge identity sidecars (proxy-sidecar mode).
+spec:
+  background: false   # mutate at admission (CREATE)
+  rules:
+    - name: stamp-kagenti-agent-label-and-shared-data
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              selector:
+                matchExpressions:
+                  - key: agents.x-k8s.io/sandbox-name-hash
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              kagenti.io/type: agent
+          spec:
+            volumes:
+              - name: shared-data
+                emptyDir: {}

@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: mutate-openshell-sandbox-syschroot
+  labels:
+    app.kubernetes.io/component: kyverno-guardrail
+    app.kubernetes.io/part-of: nvidia-ida
+  annotations:
+    policies.kyverno.io/title: Grant CAP_SYS_CHROOT to OpenShell sandboxes (provider_spiffe setns fix)
+    policies.kyverno.io/description: >
+      Appends SYS_CHROOT to each container's capabilities in OpenShell sandbox pods. ROOT CAUSE
+      (ADR-0017, proven 2026-06-20): native provider_spiffe's supervisor hides the SPIFFE socket via
+      unshare(CLONE_NEWNS) -> tmpfs overlay -> setns BACK to the original mount ns. The setns-back
+      RE-ROOTS into that ns, gated on CAP_SYS_CHROOT (on top of CAP_SYS_ADMIN). OpenShell grants the
+      sandbox SYS_ADMIN/NET_ADMIN/SYS_PTRACE/SYSLOG but NOT SYS_CHROOT, so the setns-back EPERMs.
+      Proven: container_t (confined, MCS intact) + [SYS_ADMIN, SYS_CHROOT] -> setns OK. NOT a
+      SELinux/seccomp/userns/propagation issue (all ruled out). Uses a JSON-patch APPEND (not strategic
+      merge, which would REPLACE the caps list and strip SYS_ADMIN). Idempotent via the precondition.
+spec:
+  background: false   # mutate at admission
+  rules:
+    - name: append-sys-chroot-to-sandbox-containers
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["openshell"]
+              selector:
+                # Every OpenShell-launched sandbox carries this label (independent of
+                # provider_spiffe). Excludes the gateway statefulset (openshell-0).
+                matchExpressions:
+                  - key: agents.x-k8s.io/sandbox-name-hash
+                    operator: Exists
+      mutate:
+        foreach:
+          - list: "request.object.spec.containers"
+            # Only patch containers that already declare capabilities.add (sandbox containers do)
+            # and do not already have SYS_CHROOT — keeps it idempotent and avoids a missing-path error.
+            preconditions:
+              all:
+                # fire only when SYS_CHROOT is NOT already in this container's add list
+                - key: "SYS_CHROOT"
+                  operator: AnyNotIn
+                  value: "{{ element.securityContext.capabilities.add || `[]` }}"
+            patchesJson6902: |-
+              - op: add
+                path: "/spec/containers/{{ elementIndex }}/securityContext/capabilities/add/-"
+                value: SYS_CHROOT
