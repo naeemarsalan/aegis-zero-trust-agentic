@@ -1,0 +1,25 @@
+# Durable backing store for the persistent-agent records (store.py JSON file).
+# Mounted at /data on the approval-console container; AGENT_STORE_PATH points at
+# /data/agents.json.  WITHOUT this, every console pod restart/rebuild wiped the
+# user's agent list (records were module-level in-memory).
+#
+# storageClassName: local-path — the repo/cluster default and the same class the
+# co-located jit-approver-db PVC uses in this namespace.  WaitForFirstConsumer:
+# the volume binds when the (single-replica) console pod schedules it.  RWO is
+# fine because the deployment is a single replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: approval-console-agent-store
+  namespace: mcp-gateway
+  labels:
+    app: approval-console
+    app.kubernetes.io/name: approval-console
+    app.kubernetes.io/part-of: nvidia-ida
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

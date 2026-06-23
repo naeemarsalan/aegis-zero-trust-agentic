@@ -42,14 +42,22 @@ spec:
             # GITEA_REPO in owner/repo format — matches jit-approver convention
             - name: GITEA_REPO
               value: "anaeem/nvidia-ida"
-            # GITEA_TOKEN: set via Secret + envFrom or Vault injector in overlay.
-            # Leave empty here; the config.py file-fallback reads /vault/secrets/gitea-token.
+            # GITEA_TOKEN sourced from Secret approval-console-gitea (live).
             - name: GITEA_TOKEN
-              value: ""
+              valueFrom:
+                secretKeyRef:
+                  name: approval-console-gitea
+                  key: token
             - name: POLL_INTERVAL_SECONDS
               value: "5"
             - name: PYTHONUNBUFFERED
               value: "1"
+            # Durable agent records: JSON file on the agent-store PVC mounted at
+            # /data.  WITHOUT this the in-memory store lost every agent on each
+            # pod restart/rebuild.  The PVC volume is writable even though the
+            # root filesystem is read-only.
+            - name: AGENT_STORE_PATH
+              value: "/data/agents.json"
             # ---------------------------------------------------------------------------
             # Phase C: persistent-agent provisioning + native-sandbox sessions
             # ---------------------------------------------------------------------------
@@ -59,7 +67,12 @@ spec:
             # Vault (per-sandbox consent grant write at agent-create time).
             - name: VAULT_ADDR
               value: "https://vault.apps.anaeem.na-launch.com"
-            # VAULT_TOKEN sourced from secret approval-console-vault in the overlay/live.
+            # VAULT_TOKEN sourced from Secret approval-console-vault (live).
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: approval-console-vault
+                  key: token
             # Skills repo (per-agent Gitea bootstrap).
             - name: SKILLS_REPO_FULL_NAME
               value: "anaeem/skills"
@@ -117,6 +130,11 @@ spec:
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            # Durable agent-record store (PVC).  Writable despite the read-only
+            # root FS because it is a separate mounted volume.
+            - name: agent-store
+              mountPath: /data
 
         # oauth2-proxy: Keycloak-OIDC authentication sidecar.
         # All external traffic enters on :4180; oauth2-proxy validates the session
@@ -177,6 +195,16 @@ spec:
             seccompProfile:
               type: RuntimeDefault
 
+      volumes:
+        # PVC-backed durable store for persistent-agent records (store.py).
+        - name: agent-store
+          persistentVolumeClaim:
+            claimName: approval-console-agent-store
+
       securityContext:
+        # No explicit fsGroup: the OpenShift restricted-v2 SCC allocates an
+        # fsGroup from the namespace UID range (e.g. 1001040000) and applies it
+        # to the mounted PVC, making /data writable by the non-root process.
+        # Hardcoding fsGroup would conflict with the SCC's allocated range.
         seccompProfile:
           type: RuntimeDefault

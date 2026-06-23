@@ -6,6 +6,7 @@ namespace: mcp-gateway
 resources:
   - namespace.yaml
   - serviceaccount.yaml
+  - pvc-agent-store.yaml
   - deployment.yaml
   - service.yaml
   - route.yaml

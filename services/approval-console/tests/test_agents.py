@@ -79,6 +79,72 @@ def test_archive_agent() -> None:
     store.delete_agent("test-agent-002")
 
 
+def test_persistence_survives_reload(tmp_path) -> None:  # noqa: ANN001
+    """create -> save to file -> reload fresh store -> record still present.
+
+    Proves the PVC-backed JSON store survives a process restart.  We point the
+    module's store path at a temp file, re-enable persistence (the default
+    /data path is non-writable under test so saves are otherwise no-ops), then
+    reload from disk and confirm the agent is still there with its state.
+    """
+    store = agent_store
+    store_file = tmp_path / "agents.json"
+
+    # Repoint persistence at a writable temp file for this test.
+    orig_path = store._STORE_PATH
+    orig_disabled = store._PERSIST_DISABLED
+    store._STORE_PATH = str(store_file)
+    store._PERSIST_DISABLED = False
+    try:
+        a = Agent(
+            agent_id="persist-001",
+            display_name="durable agent",
+            owner="mallory",
+            sandbox_name="agent-mallory-deadbe",
+            sandbox_id="aaaabbbb-cccc-dddd-eeee-ffff00001111",
+            state=AgentState.READY,
+        )
+        store.create_agent(a)
+
+        # File must exist on disk now.
+        assert store_file.exists()
+
+        # Simulate a restart: wipe in-memory state, reload from the file.
+        store.reload_from_disk()
+
+        reloaded = store.get_agent("persist-001")
+        assert reloaded is not None, "agent vanished across reload"
+        assert reloaded.owner == "mallory"
+        assert reloaded.state == AgentState.READY
+        assert reloaded.sandbox_name == "agent-mallory-deadbe"
+        assert reloaded.sandbox_id == "aaaabbbb-cccc-dddd-eeee-ffff00001111"
+    finally:
+        store.delete_agent("persist-001")
+        store._STORE_PATH = orig_path
+        store._PERSIST_DISABLED = orig_disabled
+        # Reload the (non-writable default) store so module state matches other tests.
+        store.reload_from_disk()
+
+
+def test_corrupt_file_starts_empty(tmp_path) -> None:  # noqa: ANN001
+    """A corrupt store file is tolerated: reload starts empty, never raises."""
+    store = agent_store
+    bad = tmp_path / "agents.json"
+    bad.write_text("{not valid json at all")
+
+    orig_path = store._STORE_PATH
+    orig_disabled = store._PERSIST_DISABLED
+    store._STORE_PATH = str(bad)
+    store._PERSIST_DISABLED = False
+    try:
+        store.reload_from_disk()  # must not raise
+        assert store.get_agent("anything") is None
+    finally:
+        store._STORE_PATH = orig_path
+        store._PERSIST_DISABLED = orig_disabled
+        store.reload_from_disk()
+
+
 def test_list_agents_by_owner() -> None:
     store = agent_store
     a1 = Agent(agent_id="test-list-001", display_name="a1", owner="dave")
