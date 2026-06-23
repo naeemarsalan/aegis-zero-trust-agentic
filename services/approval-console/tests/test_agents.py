@@ -182,6 +182,111 @@ async def test_session_on_archived_agent_returns_409() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_native_agent_uses_native_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An agent with a sandbox_name runs its session via the NATIVE exec path."""
+    import approval_console.app as app_mod
+
+    calls: dict[str, object] = {}
+
+    def _fake_native(sid, goal, actor, sandbox_name, sandbox_id):  # noqa: ANN001
+        calls["native"] = (sandbox_name, sandbox_id, goal, actor)
+
+    def _fake_harness(sid, goal, actor="anonymous"):  # noqa: ANN001
+        calls["harness"] = True
+
+    monkeypatch.setattr(app_mod, "_launch_native_agent_thread", _fake_native)
+    monkeypatch.setattr(app_mod, "_launch_agent_thread", _fake_harness)
+
+    a = Agent(
+        agent_id="route-native-001",
+        display_name="native-agent",
+        owner="nora",
+        sandbox_name="agent-nora-abc123",
+        sandbox_id="11112222-3333-4444-5555-666677778888",
+        state=AgentState.READY,
+    )
+    agent_store.create_agent(a)
+    try:
+        async with _ac() as client:
+            r = await client.post(
+                f"/api/agents/{a.agent_id}/sessions",
+                json={"goal": "list firewall rules"},
+                headers=_keycloak_headers("nora"),
+            )
+        assert r.status_code == 202, r.text
+        assert "native" in calls and "harness" not in calls
+        assert calls["native"][0] == "agent-nora-abc123"
+        assert calls["native"][1] == "11112222-3333-4444-5555-666677778888"
+    finally:
+        agent_store.delete_agent(a.agent_id)
+
+
+@pytest.mark.asyncio
+async def test_session_legacy_agent_uses_harness_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An agent WITHOUT a sandbox_name falls back to the legacy harness exec."""
+    import approval_console.app as app_mod
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        app_mod,
+        "_launch_native_agent_thread",
+        lambda *a, **k: calls.setdefault("native", True),
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_launch_agent_thread",
+        lambda *a, **k: calls.setdefault("harness", True),
+    )
+
+    a = Agent(
+        agent_id="route-legacy-001",
+        display_name="legacy-agent",
+        owner="leo",
+        sandbox_name="",  # no native sandbox
+        state=AgentState.READY,
+    )
+    agent_store.create_agent(a)
+    try:
+        async with _ac() as client:
+            r = await client.post(
+                f"/api/agents/{a.agent_id}/sessions",
+                json={"goal": "do something"},
+                headers=_keycloak_headers("leo"),
+            )
+        assert r.status_code == 202, r.text
+        assert "harness" in calls and "native" not in calls
+    finally:
+        agent_store.delete_agent(a.agent_id)
+
+
+def test_native_brain_env_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_native_brain_env carries the ext-proc recipe + forwards inference creds."""
+    import approval_console.app as app_mod
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_MODEL", "anthropic/claude-sonnet-4")
+
+    # bare-hex session id must be converted to a hyphenated UUID for the claude CLI
+    env = app_mod._native_brain_env("list rules", "arsalan", "28d80d19e99d46ff9f64a77b549a2192")
+
+    assert env["AGENT_GOAL"] == "list rules"
+    assert env["AGENT_USER"] == "arsalan"
+    assert env["AGENT_SESSION_ID"] == "28d80d19-e99d-46ff-9f64-a77b549a2192"
+    # ext-proc real-pfSense recipe (mirrors launcher _brain_env)
+    assert env["MCP_SEND_SVID"] == "true"
+    assert env["JIT_TARGET_NAMESPACE"] == "agentic-mcp"
+    assert env["SVID_REQUIRE_PATH_SUBSTR"] == "/sandbox/"
+    assert env["SVID_JWT_PATH"] == "/tmp/svid-out/mcp-gateway-svid.jwt"
+    # inference creds forwarded; both names populated from whichever is set
+    assert env["ANTHROPIC_BASE_URL"] == "http://litellm:4000"
+    assert env["ANTHROPIC_API_KEY"] == "sk-secret"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-secret"
+    assert env["AGENT_MODEL"] == "anthropic/claude-sonnet-4"
+
+
+@pytest.mark.asyncio
 async def test_hard_delete_requires_confirmed() -> None:
     """DELETE /api/agents/{id} without confirmed=true returns 400."""
     a = Agent(agent_id="route-del-001", display_name="to delete", owner="ken")

@@ -51,6 +51,21 @@ spec:
             - name: PYTHONUNBUFFERED
               value: "1"
             # ---------------------------------------------------------------------------
+            # Phase C: persistent-agent provisioning + native-sandbox sessions
+            # ---------------------------------------------------------------------------
+            # sandbox-launcher endpoint (POST /launch creates the OpenShell sandbox).
+            - name: SANDBOX_LAUNCHER_URL
+              value: "http://sandbox-launcher.mcp-gateway.svc.cluster.local:8080"
+            # Vault (per-sandbox consent grant write at agent-create time).
+            - name: VAULT_ADDR
+              value: "https://vault.apps.anaeem.na-launch.com"
+            # VAULT_TOKEN sourced from secret approval-console-vault in the overlay/live.
+            # Skills repo (per-agent Gitea bootstrap).
+            - name: SKILLS_REPO_FULL_NAME
+              value: "anaeem/skills"
+            - name: SKILLS_REPO_URL
+              value: "https://git.arsalan.io/anaeem/skills.git"
+            # ---------------------------------------------------------------------------
             # L1: console-side mint gate (ADR-0007)
             # ---------------------------------------------------------------------------
             # Use POST /requests/{id}/mint instead of Gitea PR merge for approval.
@@ -63,6 +78,16 @@ spec:
             # (read by _mint_headers() in app.py when this env var is absent).
             # - name: JIT_MINT_CONSOLE_TOKEN_OVERRIDE
             #   value: ""
+          # Phase C native-sandbox sessions: the console forwards the LLM inference
+          # creds (ANTHROPIC_BASE_URL/API_KEY/AUTH_TOKEN + model ids) into the brain
+          # exec command. Sourced from the SAME secret the sandbox-launcher uses, so
+          # a console-driven session is identical to a launcher-booted brain. The
+          # secret VALUES are never logged. optional=true so the console still boots
+          # for non-session use if the secret is absent.
+          envFrom:
+            - secretRef:
+                name: agent-harness-inference
+                optional: true
           # Vault injector annotation (optional in overlay): if the Vault injector
           # is active, add vault.hashicorp.com/agent-inject annotations to write
           # the token to /vault/secrets/gitea-token. See overlays/anaeem.

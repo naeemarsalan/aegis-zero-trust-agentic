@@ -105,6 +105,20 @@ class Config:
         """Container name inside the harness pod."""
         return _optional("HARNESS_CONTAINER", "agent")
 
+    # ------------------------------------------------------------------
+    # Native OpenShell sandbox (Phase C — session runs in the agent's own pod)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def native_sandbox_namespace() -> str:
+        """Namespace where native OpenShell agent sandboxes run."""
+        return _optional("NATIVE_SANDBOX_NAMESPACE", "openshell")
+
+    @staticmethod
+    def native_sandbox_container() -> str:
+        """Container name inside a native OpenShell sandbox pod."""
+        return _optional("NATIVE_SANDBOX_CONTAINER", "agent")
+
     @staticmethod
     def k8s_mcp_read_url() -> str:
         """URL of the read-only k8s MCP service surfaced inside the harness."""

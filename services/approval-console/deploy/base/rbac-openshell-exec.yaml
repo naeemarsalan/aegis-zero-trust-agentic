@@ -1,0 +1,36 @@
+# RBAC for approval-console to exec into a native OpenShell agent sandbox pod.
+#
+# Phase C: a console "session" is a task handed to a living agent that owns its
+# own native OpenShell sandbox pod in the `openshell` namespace. The console
+# exec-s the agent-harness brain runner into that pod, so it needs pods (get/list,
+# to confirm the pod is Running) + pods/exec (create) in `openshell`.
+#
+# The approval-console ServiceAccount lives in mcp-gateway; a Role + RoleBinding
+# in openshell grants the minimum required verbs there.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: approval-console-sandbox-exec
+  namespace: openshell
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: approval-console-sandbox-exec
+  namespace: openshell
+subjects:
+  - kind: ServiceAccount
+    name: approval-console
+    namespace: mcp-gateway
+roleRef:
+  kind: Role
+  name: approval-console-sandbox-exec
+  apiGroup: rbac.authorization.k8s.io

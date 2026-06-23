@@ -185,6 +185,208 @@ def _do_k8s_exec(sid: str, goal: str, actor: str = "anonymous") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Native OpenShell sandbox exec path (Phase C)
+# ---------------------------------------------------------------------------
+#
+# A console "session" is a task handed to a LIVING agent that already owns a
+# native OpenShell sandbox pod (created at /api/agents launch time). Instead of
+# exec-ing the brain into the shared e2e-harness pod (the legacy _do_k8s_exec
+# path), we exec the brain runner inside the AGENT'S OWN sandbox pod in the
+# `openshell` namespace, so the ext-proc delegation runs against that sandbox's
+# SVID + Vault consent grant. This is what makes a console session produce a
+# delegated read against the agent's own sandbox_id.
+#
+# CRITICAL — the native sandbox pod env does NOT carry the LLM inference creds
+# (the launcher injects them only at ExecSandbox time). So the exec command MUST
+# carry ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / model
+# ids — sourced from the console process's OWN env via the `agent-harness-inference`
+# secret (envFrom on the console deployment). Secret VALUES are never logged.
+
+# Env keys forwarded from the console process env into the native-sandbox exec
+# command. These mirror sandbox_launcher.openshell._brain_env so a console-driven
+# session is identical to a launcher-booted brain. SVID_JWT_PATH /
+# SVID_REQUIRE_PATH_SUBSTR / MCP_GATEWAY_URL also live here so they can be
+# overridden per-deployment but default to the same values the launcher uses.
+_NATIVE_BRAIN_FORWARD_ENV: tuple[str, ...] = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AGENT_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+)
+
+
+def _native_brain_env(goal: str, actor: str, session_id: str) -> dict[str, str]:
+    """Build the env dict for the native-sandbox brain exec.
+
+    Mirrors sandbox_launcher.openshell._brain_env: the ext-proc routing plane
+    (MCP_GATEWAY_URL, MCP_SEND_SVID=true, JIT_TARGET_NAMESPACE, the UUID-SVID
+    selection knobs) PLUS the inference creds forwarded from the console pod env
+    (sourced via the agent-harness-inference secret envFrom). All non-secret
+    values have sane defaults so a missing literal still yields the correct
+    real-pfSense recipe; secret VALUES are read from os.environ and never logged.
+    """
+    import os as _os
+
+    # AGENT_SESSION_ID must be a HYPHENATED UUID — the claude CLI rejects a bare
+    # 32-char hex id ("Invalid session ID. Must be a valid UUID."). _new_session()
+    # allocates a bare-hex uuid4().hex, so convert it back to the canonical dashed
+    # form here; an already-dashed value (or a non-uuid) is passed through unchanged
+    # and falls back to a CLI-generated UUID in agent_runner if invalid.
+    cli_session_id = session_id
+    try:
+        cli_session_id = str(uuid.UUID(hex=session_id))
+    except (ValueError, AttributeError, TypeError):
+        pass
+
+    env: dict[str, str] = {
+        "AGENT_GOAL": goal,
+        "AGENT_USER": actor,
+        "AGENT_SESSION_ID": cli_session_id,
+        "AGENT_ALLOWED_TOOLS": _os.environ.get("AGENT_ALLOWED_TOOLS", "").strip()
+        or Config.agent_allowed_tools(),
+        "AGENT_MAX_TURNS": Config.agent_max_turns(),
+        # ext-proc routing plane (real pfSense via the mcp-gateway ext-proc).
+        "MCP_GATEWAY_URL": _os.environ.get("MCP_GATEWAY_URL", "").strip()
+        or "https://mcp-gateway.apps.anaeem.na-launch.com",
+        "MCP_SEND_SVID": _os.environ.get("MCP_SEND_SVID", "").strip() or "true",
+        "JIT_TARGET_NAMESPACE": _os.environ.get("JIT_TARGET_NAMESPACE", "").strip()
+        or "agentic-mcp",
+        # Deterministic ext-proc SVID selection (UUID-shaped over SA-shaped).
+        "SVID_REQUIRE_PATH_SUBSTR": _os.environ.get("SVID_REQUIRE_PATH_SUBSTR", "").strip()
+        or "/sandbox/",
+        "SVID_JWT_PATH": _os.environ.get("SVID_JWT_PATH", "").strip()
+        or "/tmp/svid-out/mcp-gateway-svid.jwt",
+        "CLAUDE_CLI_PATH": _os.environ.get("CLAUDE_CLI_PATH", "").strip()
+        or "/usr/local/bin/claude",
+    }
+    # Inference creds + model ids — forwarded from the console process env.
+    # Never logged. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN: populate both from
+    # whichever the console carries so the brain authenticates regardless of name.
+    api_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    auth_token = _os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
+    cred = api_key or auth_token
+    if cred:
+        env["ANTHROPIC_API_KEY"] = cred
+        env["ANTHROPIC_AUTH_TOKEN"] = cred
+    for var in _NATIVE_BRAIN_FORWARD_ENV:
+        if var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            continue
+        val = _os.environ.get(var, "").strip()
+        if val:
+            env[var] = val
+    return env
+
+
+def _do_native_k8s_exec(
+    sid: str,
+    goal: str,
+    actor: str,
+    sandbox_name: str,
+    sandbox_id: str,
+) -> None:
+    """Exec the agent-harness brain runner inside the agent's OWN OpenShell sandbox.
+
+    Targets namespace `openshell`, pod == sandbox_name, container `agent`
+    (Config.native_sandbox_*). Pumps stdout/stderr into the same _SESSIONS store
+    as _do_k8s_exec so the UI transcript stream is identical.
+
+    The brain command is the agent_runner module, fed the goal via AGENT_GOAL and
+    the full inference + ext-proc env (see _native_brain_env). Inference creds are
+    forwarded from the console env; their VALUES are never logged.
+    """
+    from kubernetes import client as k8sclient  # type: ignore[import-untyped]
+    from kubernetes import config as k8sconfig  # type: ignore[import-untyped]
+    from kubernetes.stream import stream  # type: ignore[import-untyped]
+
+    k8sconfig.load_incluster_config()
+    core = k8sclient.CoreV1Api()
+
+    namespace = Config.native_sandbox_namespace()
+    container = Config.native_sandbox_container()
+
+    # Confirm the sandbox pod is Running before exec (fail-closed with a clear msg).
+    pod = core.read_namespaced_pod(sandbox_name, namespace)
+    phase = getattr(pod.status, "phase", "")
+    if phase != "Running":
+        raise RuntimeError(
+            f"Native sandbox pod {sandbox_name!r} in {namespace!r} is phase {phase!r}, not Running"
+        )
+
+    env = _native_brain_env(goal, actor, sid)
+    # Build the inline `KEY=value ` prefix; shlex.quote every value so a goal or
+    # username with shell metacharacters cannot break the sh -c string.
+    env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    cmd = f"cd /app && PYTHONPATH=/app/src {env_prefix} python3 -m agent_harness.agent_runner"
+
+    # Audit (names only — never the secret VALUES).
+    logger.info(
+        "agent_session.native_exec sid=%s sandbox=%s/%s sandbox_id=%s env_keys=%s",
+        sid,
+        namespace,
+        sandbox_name,
+        sandbox_id,
+        ",".join(sorted(env.keys())),
+    )
+
+    resp = stream(
+        core.connect_get_namespaced_pod_exec,
+        sandbox_name,
+        namespace,
+        container=container,
+        command=["sh", "-c", cmd],
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=False,
+    )
+
+    try:
+        while resp.is_open():
+            resp.update(timeout=1)
+            if resp.peek_stdout():
+                for ln in resp.read_stdout().splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        _append_line(sid, ln)
+            if resp.peek_stderr():
+                for ln in resp.read_stderr().splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        _append_line(sid, json.dumps({"type": "stderr", "msg": ln}))
+    finally:
+        resp.close()
+
+
+def _launch_native_agent_thread(
+    sid: str,
+    goal: str,
+    actor: str,
+    sandbox_name: str,
+    sandbox_id: str,
+) -> None:
+    """Background daemon thread: exec the brain in the agent's native sandbox."""
+
+    def _run() -> None:
+        try:
+            _do_native_k8s_exec(sid, goal, actor, sandbox_name, sandbox_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "agent_session.native_launch_error",
+                extra={"sid": sid, "sandbox": sandbox_name, "error": str(exc)},
+            )
+            _append_line(sid, json.dumps({"type": "error", "msg": str(exc)}))
+        finally:
+            _mark_done(sid)
+
+    t = threading.Thread(target=_run, daemon=True, name=f"agent-native-{sid[:8]}")
+    t.start()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

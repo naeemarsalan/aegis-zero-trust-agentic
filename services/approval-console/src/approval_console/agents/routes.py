@@ -352,10 +352,28 @@ async def create_agent_session(
         raise HTTPException(status_code=422, detail="goal is required")
 
     # Reuse the session infrastructure from the main app module.
-    from approval_console.app import _new_session, _launch_agent_thread  # type: ignore[import]
+    from approval_console.app import (  # type: ignore[import]
+        _new_session,
+        _launch_agent_thread,
+        _launch_native_agent_thread,
+    )
 
     sid = _new_session(goal, owner=actor)
-    _launch_agent_thread(sid, goal, actor=actor)
+
+    # Phase C: if this agent owns a native OpenShell sandbox, run the session
+    # INSIDE that sandbox (so ext-proc delegates against the agent's own SVID +
+    # Vault consent grant). Otherwise fall back to the legacy shared e2e-harness
+    # exec path (backward compat with pre-Phase-C agents that have no sandbox).
+    if agent.sandbox_name:
+        _launch_native_agent_thread(
+            sid,
+            goal,
+            actor=actor,
+            sandbox_name=agent.sandbox_name,
+            sandbox_id=agent.sandbox_id,
+        )
+    else:
+        _launch_agent_thread(sid, goal, actor=actor)
 
     agent_session = agent_models.AgentSession(
         session_id=sid,
