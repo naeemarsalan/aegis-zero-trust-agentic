@@ -83,13 +83,41 @@ def _reaper_loop() -> None:
                             agent.agent_id,
                             agent.sandbox_name,
                         )
-                    elif phase == "READY" and agent.state == AgentState.PROVISIONING:
-                        agent_store.update_agent(agent.agent_id, state=AgentState.READY)
-                        logger.info(
-                            "reaper.agent_ready agent_id=%s sandbox=%s",
-                            agent.agent_id,
-                            agent.sandbox_name,
-                        )
+                    elif phase == "READY":
+                        if agent.state == AgentState.PROVISIONING:
+                            agent_store.update_agent(agent.agent_id, state=AgentState.READY)
+                            logger.info(
+                                "reaper.agent_ready agent_id=%s sandbox=%s",
+                                agent.agent_id,
+                                agent.sandbox_name,
+                            )
+                        # Renew the Vault consent grant so a LIVING agent's delegated read
+                        # never silently expires (the grant ttl is short; the agent outlives
+                        # it). This is lifecycle-driven, NOT page/refresh-driven, so an agent
+                        # running autonomously keeps its read access. Writes still require JIT
+                        # regardless of this read-only baseline grant.
+                        if agent.sandbox_id:
+                            try:
+                                from approval_console.agents.routes import (
+                                    _write_consent_grant,
+                                )
+
+                                renewed = loop.run_until_complete(
+                                    _write_consent_grant(
+                                        agent.sandbox_id, agent.owner, "read-only"
+                                    )
+                                )
+                                logger.debug(
+                                    "reaper.grant_renewed agent_id=%s ok=%s",
+                                    agent.agent_id,
+                                    renewed,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "reaper.grant_renew_error agent_id=%s error=%s",
+                                    agent.agent_id,
+                                    exc,
+                                )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("reaper.loop_error agent_id=%s error=%s", agent.agent_id, exc)
         finally:
