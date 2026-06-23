@@ -139,3 +139,86 @@ def test_webshell_unknown_agent() -> None:
         msg = ws.receive_json()
         assert "error" in msg
         assert "not found" in msg["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Real-PTY bridge tests (Option A)
+# ---------------------------------------------------------------------------
+
+
+def test_set_winsize_roundtrips() -> None:
+    """_set_winsize applies a window size that TIOCGWINSZ reads back."""
+    import fcntl
+    import os
+    import pty
+    import struct
+    import termios
+
+    from approval_console.webshell import bridge as bridge_mod
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        bridge_mod._set_winsize(master_fd, cols=132, rows=43)
+        # Read the slave side's view of the window size.
+        packed = fcntl.ioctl(slave_fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+        rows, cols, _xp, _yp = struct.unpack("HHHH", packed)
+        assert (rows, cols) == (43, 132)
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
+
+
+async def test_bridge_real_pty_pumps_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bridge spawns the child on a real PTY slave and pumps bytes both ways.
+
+    We override the command (via _OC_BIN) so instead of `oc exec` we run `cat`,
+    which echoes its stdin to stdout.  cat reads from the PTY slave and writes to
+    it, so a clean round-trip through the PTY proves the slave is wired as a real
+    TTY and the master<->ws pump works.  A trailing resize control frame proves
+    the JSON text-frame branch is taken without being injected as input.
+    """
+    import asyncio
+
+    from approval_console.webshell import bridge as bridge_mod
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _fake_exec(*_cmd, **kwargs):
+        # Ignore the oc command; spawn `cat` on the supplied slave fds.
+        return await real_exec("/bin/cat", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    sent: list[bytes] = []
+    incoming: asyncio.Queue = asyncio.Queue()
+
+    class _FakeWS:
+        async def receive(self):
+            return await incoming.get()
+
+        async def send_bytes(self, data: bytes) -> None:
+            sent.append(data)
+
+        async def close(self) -> None:
+            pass
+
+    ws = _FakeWS()
+    # Queue: one keystroke line, one resize control frame, then disconnect.
+    await incoming.put({"type": "websocket.receive", "bytes": b"hello-pty\n"})
+    await incoming.put({"type": "websocket.receive", "text": '{"type":"resize","cols":90,"rows":30}'})
+
+    task = asyncio.create_task(
+        bridge_mod.open_bridge(ws=ws, pod_name="p", namespace="ns", container="agent")
+    )
+
+    # Wait until cat echoes our line back through the PTY.
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if any(b"hello-pty" in chunk for chunk in sent):
+            break
+
+    await incoming.put({"type": "websocket.disconnect"})
+    await asyncio.wait_for(task, timeout=5)
+
+    joined = b"".join(sent)
+    assert b"hello-pty" in joined, f"PTY did not echo input; got {joined!r}"

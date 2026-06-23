@@ -308,14 +308,24 @@ async function openWebshell(agentId) {
   const wsUrl = location.origin.replace(/^http/, 'ws') + '/api/agents/' + agentId + '/webshell';
   const term = window.open('', '_blank', 'width=900,height=600');
   if (!term) { alert('Allow popups to open the webshell.'); return; }
-  term.document.write('<html><body style="margin:0;background:#000;"><div id="t"></div>'
+  term.document.write('<html><body style="margin:0;background:#000;height:100vh;"><div id="t" style="height:100vh;"></div>'
     + '<script src="https://cdn.jsdelivr.net/npm/xterm@5/lib/xterm.min.js"><\\/script>'
+    + '<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"><\\/script>'
     + '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5/css/xterm.min.css">'
-    + '<script>const t=new Terminal({cursorBlink:true});t.open(document.getElementById("t"));'
+    + '<script>const t=new Terminal({cursorBlink:true});'
+    + 'let fit=null;try{fit=new FitAddon.FitAddon();t.loadAddon(fit);}catch(e){}'
+    + 't.open(document.getElementById("t"));'
     + 'const ws=new WebSocket("' + wsUrl + '");'
     + 'ws.binaryType="arraybuffer";'
     + 'ws.onmessage=e=>t.write(new Uint8Array(e.data));'
-    + 't.onData=d=>ws.send(new TextEncoder().encode(d));<\\/script>'
+    // Terminal keystrokes are sent as raw binary frames (terminal data).
+    + 't.onData=d=>ws.send(new TextEncoder().encode(d));'
+    // Resize is sent as a JSON TEXT frame so the bridge can distinguish it
+    // from terminal input and apply TIOCSWINSZ to the PTY.
+    + 'function sendResize(){if(ws.readyState!==1)return;try{ws.send(JSON.stringify({type:"resize",cols:t.cols,rows:t.rows}));}catch(e){}}'
+    + 'function doFit(){if(fit){try{fit.fit();}catch(e){}}sendResize();}'
+    + 'ws.onopen=()=>{doFit();};'
+    + 'window.addEventListener("resize",doFit);<\\/script>'
     + '</body></html>');
 }
 
