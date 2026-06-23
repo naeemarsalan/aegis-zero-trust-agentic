@@ -1,0 +1,46 @@
+# MaaS default Gateway — REQUIRED to exist BEFORE the modelsasservice DSC component
+# will provision (it refuses with "the specified Gateway must exist before enabling
+# ModelsAsService"). The 3.4-ea operator ships this with annotation
+# opendatahub.io/managed:"false" — i.e. the cluster owner creates+owns it.
+#
+# GOTCHA fixed here: the shipped template uses gatewayClassName: openshift-default,
+# which does NOT exist on this cluster. The only Programmed GW-API class here is
+# data-science-gateway-class (openshift.io/gateway-controller/v1). We point at it and
+# reuse the cluster wildcard TLS secret apps-anaeem-na-launch-com-tls (copied into
+# openshift-ingress) for the https listener, since the authorino-tls-bootstrap cert
+# is not pre-provisioned.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maas-default-gateway
+  namespace: openshift-ingress
+  annotations:
+    opendatahub.io/managed: "false"
+  labels:
+    app.kubernetes.io/name: maas
+    app.kubernetes.io/instance: maas-default-gateway
+    app.kubernetes.io/component: gateway
+    opendatahub.io/managed: "false"
+spec:
+  gatewayClassName: data-science-gateway-class
+  listeners:
+    - name: http
+      hostname: maas.apps.anaeem.na-launch.com
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      hostname: maas.apps.anaeem.na-launch.com
+      port: 443
+      protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: apps-anaeem-na-launch-com-tls
+        mode: Terminate

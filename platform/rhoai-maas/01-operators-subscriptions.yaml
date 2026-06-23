@@ -1,0 +1,65 @@
+# Stage 2 prerequisite operators for RHOAI MaaS.
+#
+# IMPORTANT — why a dedicated namespace (kuadrant-system) and NOT openshift-operators:
+# The shared openshift-operators namespace is POISONED by a pre-existing, orphaned, broken
+# EDB "cloud-native-postgresql" operator upgrade (CSV v1.29.0=Failed + v1.29.1=Pending, deploy 0/1,
+# zero EDB Cluster CRs — failing for ~47 days). OLM resolves a namespace as one SAT problem, so any
+# NEW subscription placed in openshift-operators returns ResolutionFailed ("constraints not
+# satisfiable ... cloud-native-postgresql"). We therefore isolate Kuadrant + LWS in their own
+# namespace with their own OperatorGroups so OLM resolves them independently of that poison.
+#   - kuadrant-operator: AllNamespaces install mode ONLY -> OperatorGroup with no spec (global scope).
+#   - leader-worker-set : OwnNamespace install mode ONLY  -> OperatorGroup targeting its own namespace.
+# (Two OperatorGroups in one namespace is NOT allowed, so LWS gets its own namespace too.)
+#
+# kuadrant-operator (community stable = v0.11.1) brings authorino-operator + limitador-operator
+# as OLM dependencies.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuadrant-system
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kuadrant-system
+  namespace: kuadrant-system
+spec: {}  # no targetNamespaces / no selector == AllNamespaces (global) scope
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kuadrant-operator
+  namespace: kuadrant-system
+spec:
+  channel: stable
+  name: kuadrant-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: leader-worker-set
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: leader-worker-set
+  namespace: leader-worker-set
+spec:
+  targetNamespaces:
+    - leader-worker-set   # OwnNamespace mode
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: leader-worker-set
+  namespace: leader-worker-set
+spec:
+  channel: stable-v1.0
+  name: leader-worker-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

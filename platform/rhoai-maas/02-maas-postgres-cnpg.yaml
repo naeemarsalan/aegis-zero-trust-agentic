@@ -1,0 +1,37 @@
+# Stage 2 (part 2) — dedicated PostgreSQL for the MaaS control plane.
+#
+# We REUSE the already-running upstream CloudNativePG operator (group postgresql.cnpg.io,
+# cnpg-controller-manager 1/1 in cnpg-system) that already runs jit-approver-db/keycloak-db/pg.
+# We do NOT let MaaS auto-provision its own conflicting postgres, and we do NOT touch the
+# separate (broken, unused) EDB cloud-native-postgresql operator.
+#
+# CNPG auto-creates a secret "<cluster>-app" with keys: uri, host, port, dbname, user, username,
+# password, jdbc-uri, fqdn-uri, pgpass. We derive the MaaS-expected secret from that (see 02b).
+#
+# Lives in redhat-ods-applications so it is co-located with the maas-api / RHOAI control plane.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: maas-db
+  namespace: redhat-ods-applications
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: maas
+      owner: maas
+      encoding: UTF8
+  storage:
+    size: 2Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  affinity:
+    podAntiAffinityType: preferred
