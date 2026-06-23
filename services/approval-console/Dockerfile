@@ -39,6 +39,9 @@ RUN pip install --no-cache-dir \
     "kubernetes==31.0.0"
 
 COPY pyproject.toml ./
+# Includes src/approval_console/static/ — the VENDORED xterm.js assets served
+# same-origin at /static (no cross-site CDN, no document.write). The webshell
+# popup page (GET /api/agents/{id}/webshell/ui) references these local files.
 COPY src/ ./src/
 
 RUN pip install --no-cache-dir --no-deps -e .

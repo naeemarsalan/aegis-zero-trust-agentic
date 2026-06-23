@@ -43,6 +43,7 @@ import pty
 import shutil
 import struct
 import termios
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -57,6 +58,30 @@ _KUBECONFIG = os.environ.get("KUBECONFIG", "")
 # resize control frame.  120x40 is a comfortable popup-window default.
 _DEFAULT_COLS = 120
 _DEFAULT_ROWS = 40
+
+
+def _robust_write(fd: int, data: bytes) -> int:
+    """Write all of ``data`` to a non-blocking PTY master fd.
+
+    The master fd is non-blocking (os.set_blocking(master_fd, False) is required
+    for loop.add_reader on the OUTPUT side). A bare os.write on a non-blocking fd
+    can short-write or raise BlockingIOError when the PTY buffer is momentarily
+    full (large pastes). This loops until every byte is written, briefly yielding
+    on EAGAIN so a big paste never silently drops input.
+    """
+    total = 0
+    view = memoryview(data)
+    while total < len(view):
+        try:
+            n = os.write(fd, view[total:])
+            if n <= 0:
+                break
+            total += n
+        except BlockingIOError:
+            # PTY buffer full — yield the GIL briefly and retry.
+            time.sleep(0.001)
+            continue
+    return total
 
 
 def _set_winsize(fd: int, cols: int, rows: int) -> None:
@@ -165,38 +190,58 @@ async def open_bridge(
         """Pump websocket frames to the PTY master.
 
         Binary frames are raw terminal keystrokes.  Text frames are JSON control
-        messages; only {"type":"resize","cols":..,"rows":..} is honored.
+        messages; only {"type":"resize","cols":..,"rows":..} is honored — ANY
+        other text (including non-JSON) is treated as raw keystrokes, so a browser
+        that sends keystrokes as text frames still works.
+
+        Instrumented at INFO level (visible in `oc logs`) so a browser test
+        produces evidence that the keystroke frame actually reached the bridge.
         """
         try:
             while True:
                 msg = await ws.receive()
                 msg_type = msg.get("type")
                 if msg_type == "websocket.disconnect":
+                    logger.info("webshell.in type=disconnect pod=%s", pod_name)
                     break
                 data = msg.get("bytes")
                 if data is not None:
-                    os.write(master_fd, data)
+                    logger.info("webshell.in type=bytes len=%d pod=%s", len(data), pod_name)
+                    written = _robust_write(master_fd, data)
+                    logger.info("webshell.write fd=master len=%d pod=%s", written, pod_name)
                     continue
                 text = msg.get("text")
                 if text is None:
+                    logger.info("webshell.in type=empty pod=%s", pod_name)
                     continue
+                # A text frame is EITHER a {"type":"resize",...} control message
+                # OR raw keystrokes. Try to parse JSON; only a well-formed resize
+                # dict is treated as control — everything else is keystrokes.
+                ctrl = None
                 try:
                     ctrl = json.loads(text)
                 except (ValueError, TypeError):
-                    # Not JSON — treat as raw input bytes for robustness.
-                    os.write(master_fd, text.encode("utf-8", "replace"))
-                    continue
+                    ctrl = None
                 if isinstance(ctrl, dict) and ctrl.get("type") == "resize":
+                    logger.info(
+                        "webshell.in type=resize cols=%s rows=%s pod=%s",
+                        ctrl.get("cols"), ctrl.get("rows"), pod_name,
+                    )
                     _set_winsize(
                         master_fd,
                         ctrl.get("cols", _DEFAULT_COLS),
                         ctrl.get("rows", _DEFAULT_ROWS),
                     )
                 else:
-                    # Unknown control frame — ignore (do not inject into the PTY).
-                    logger.debug("webshell.bridge.unknown_ctrl_frame: %s", text[:120])
+                    # Not a resize control frame — treat the text as raw input.
+                    raw = text.encode("utf-8", "replace")
+                    logger.info("webshell.in type=text len=%d pod=%s", len(raw), pod_name)
+                    written = _robust_write(master_fd, raw)
+                    logger.info("webshell.write fd=master len=%d pod=%s", written, pod_name)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("webshell.bridge.input_pump_error: %s", exc)
+            logger.info("webshell.in type=error err=%s pod=%s", exc, pod_name)
+        finally:
+            logger.info("webshell.in_pump exit pod=%s", pod_name)
 
     output_task = asyncio.create_task(_pump_output())
     input_task = asyncio.create_task(_pump_input())

@@ -34,9 +34,12 @@ from typing import Any
 import contextlib
 from collections.abc import AsyncIterator
 
+import os as _os_mod
+
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from approval_console.config import Config
 
@@ -1662,6 +1665,17 @@ app.include_router(_agents_router)
 app.include_router(_skills_router)
 app.include_router(_ui_router)
 app.include_router(_webshell_router)
+
+# ---------------------------------------------------------------------------
+# Static assets (vendored xterm.js) — served SAME-ORIGIN at /static.
+# This eliminates the parser-blocking, cross-site document.write of CDN <script>
+# tags that the browser warned about (and that broke the webshell input wiring).
+# The webshell popup page (GET /api/agents/{id}/webshell/ui) references these
+# local files with normal <script src="/static/xterm.min.js"> tags.
+# ---------------------------------------------------------------------------
+_STATIC_DIR = _os_mod.path.join(_os_mod.path.dirname(__file__), "static")
+if _os_mod.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 # ---------------------------------------------------------------------------

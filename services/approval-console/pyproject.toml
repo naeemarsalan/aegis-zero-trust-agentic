@@ -31,6 +31,8 @@ approval-console = "approval_console.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/approval_console"]
+# Vendored xterm.js assets (served same-origin from /static; no CDN/document.write).
+artifacts = ["src/approval_console/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

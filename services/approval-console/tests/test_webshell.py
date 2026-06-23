@@ -222,3 +222,80 @@ async def test_bridge_real_pty_pumps_bytes(monkeypatch: pytest.MonkeyPatch) -> N
 
     joined = b"".join(sent)
     assert b"hello-pty" in joined, f"PTY did not echo input; got {joined!r}"
+
+
+# ---------------------------------------------------------------------------
+# Served webshell page — same-origin, vendored xterm, NO document.write/CDN
+# ---------------------------------------------------------------------------
+
+
+def test_webshell_ui_page_is_same_origin_no_cdn() -> None:
+    """GET .../webshell/ui serves a real HTML page using /static xterm, not CDN."""
+    agent = _make_ready_agent("ws-ui-001", "alice")
+    client = TestClient(app)
+    r = client.get(f"/api/agents/{agent.agent_id}/webshell/ui")
+    assert r.status_code == 200
+    body = r.text
+    # Uses the locally-vendored assets, never the CDN.
+    assert '/static/xterm.min.js' in body
+    assert '/static/addon-fit.min.js' in body
+    assert 'cdn.jsdelivr.net' not in body
+    # No document.write of scripts (the root-cause fragility is gone).
+    assert 'document.write' not in body
+    # Input is wired as a REGISTRATION CALL, not an assignment.
+    assert 'term.onData(' in body
+    assert 'term.onData=' not in body.replace(' ', '')
+    # The agent id is injected into the page so the WS URL is correct.
+    assert agent.agent_id in body
+    agent_store.delete_agent(agent.agent_id)
+
+
+# ---------------------------------------------------------------------------
+# Bridge — a TEXT keystroke frame (non-resize) is written to the PTY as input
+# ---------------------------------------------------------------------------
+
+
+async def test_bridge_text_keystroke_written_to_pty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-JSON text frame is treated as raw keystrokes (robustness)."""
+    import asyncio
+
+    from approval_console.webshell import bridge as bridge_mod
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _fake_exec(*_cmd, **kwargs):
+        return await real_exec("/bin/cat", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    sent: list[bytes] = []
+    incoming: asyncio.Queue = asyncio.Queue()
+
+    class _FakeWS:
+        async def receive(self):
+            return await incoming.get()
+
+        async def send_bytes(self, data: bytes) -> None:
+            sent.append(data)
+
+        async def close(self) -> None:
+            pass
+
+    ws = _FakeWS()
+    # A plain text keystroke (NOT a resize JSON) must reach the PTY.
+    await incoming.put({"type": "websocket.receive", "text": "viatext-key\n"})
+
+    task = asyncio.create_task(
+        bridge_mod.open_bridge(ws=ws, pod_name="p", namespace="ns", container="agent")
+    )
+
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if any(b"viatext-key" in chunk for chunk in sent):
+            break
+
+    await incoming.put({"type": "websocket.disconnect"})
+    await asyncio.wait_for(task, timeout=5)
+
+    joined = b"".join(sent)
+    assert b"viatext-key" in joined, f"text keystroke not echoed; got {joined!r}"
