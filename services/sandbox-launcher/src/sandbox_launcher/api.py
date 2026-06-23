@@ -636,6 +636,12 @@ async def launch(
             # Thread the user's goal into the sandbox as AGENT_GOAL so the
             # brain-enabled runner has work to do (see openshell._brain_env).
             goal=body.goal,
+            # Skills (C3): set the agents.x-k8s.io/skills podTemplate annotation so the
+            # skills-loader Kyverno policy injects the init-container that clones them.
+            skills=body.skills,
+            # Harness selector (C-harness): caller-chosen brain image (allowlisted by
+            # SANDBOX_IMAGE_CATALOG); empty -> launcher default SANDBOX_IMAGE.
+            harness_image=body.harness_image,
             extra_labels={
                 "nvidia-ida/verified-identity": str(is_verified).lower(),
                 "nvidia-ida/mode": body.mode.value,
@@ -957,6 +963,25 @@ async def catalog() -> Response:
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
+
+@app.get("/harnesses")
+async def harnesses() -> JSONResponse:
+    """Return the selectable harness-image catalog for the launch form dropdown.
+
+    {"default": "<SANDBOX_IMAGE>", "images": ["<default>", "<alt1>", ...]}.
+    The default image is always first and always present (it's the fallback even
+    when SANDBOX_IMAGE_CATALOG is empty). Cluster-internal read, unauthenticated —
+    consistent with the other launcher GETs.
+    """
+    from sandbox_launcher import openshell
+
+    default_image = os.environ.get(
+        "SANDBOX_IMAGE", "oci.arsalan.io/nvidia-ida/sandbox-agent:dev"
+    )
+    catalog = openshell.harness_image_catalog()
+    images = [default_image] + [c for c in catalog if c != default_image]
+    return JSONResponse(content={"default": default_image, "images": images})
 
 
 @app.get("/healthz")

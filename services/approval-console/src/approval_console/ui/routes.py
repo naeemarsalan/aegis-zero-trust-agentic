@@ -48,6 +48,28 @@ def _hash(args: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+@router.get("/api/harnesses")
+async def harnesses() -> JSONResponse:
+    """Proxy the sandbox-launcher /harnesses catalog for the launch form dropdown.
+
+    Returns {"default": "<image>", "images": [...]}. On any launcher error, returns
+    a safe single-entry catalog (empty default) so the form still renders.
+    """
+    import os as _os
+
+    url = _os.environ.get("SANDBOX_LAUNCHER_URL", "").strip()
+    if not url:
+        return JSONResponse(content={"default": "", "images": []})
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{url}/harnesses")
+        if resp.is_success:
+            return JSONResponse(content=resp.json())
+    except httpx.RequestError as exc:
+        logger.warning("harnesses.proxy_error: %s", exc)
+    return JSONResponse(content={"default": "", "images": []})
+
+
 @router.get("/api/agents/{agent_id}/jit-history")
 async def jit_history(agent_id: str, request: Request) -> JSONResponse:
     """Proxy /requests?sandbox=<sandbox_id> to jit-approver, filtered to this agent."""
@@ -177,6 +199,12 @@ button.approve:disabled { background:#333; color:#666; cursor:default; }
       <label for="agent-name">Agent name</label>
       <input type="text" id="agent-name" placeholder="e.g. pfsense-auditor-1" maxlength="80">
     </div>
+    <div class="form-field">
+      <label for="harness-select">Harness image</label>
+      <select id="harness-select" style="background:#0d1117;color:#e0e0e0;border:1px solid #2a2d34;border-radius:0.3em;padding:0.4em 0.6em;font-size:0.85rem;min-width:300px;">
+        <option value="">Loading harnesses&hellip;</option>
+      </select>
+    </div>
   </div>
   <div><label style="font-size:0.78rem;color:#aaa;">Skills</label></div>
   <div class="skills-picker" id="skills-picker">
@@ -225,18 +253,45 @@ let _tsSource = null;
   } catch(e) { bar.textContent = 'Could not resolve identity.'; }
 })();
 
-// Load skills picker
+// The mcp-helper skill is pre-ticked by default (server also enforces it).
+const DEFAULT_MCP_SKILL = 'pfsense-firewall';
+
+// Load skills picker. The mcp-helper skill is always present + pre-ticked, even if
+// the central skills repo does not list it (it's baked into the harness image).
 (async function() {
   const picker = document.getElementById('skills-picker');
+  let names = [];
   try {
     const r = await fetch('/api/skills');
     const skills = r.ok ? await r.json() : [];
-    if (!skills.length) { picker.innerHTML = '<span style="color:#555">No skills available</span>'; return; }
-    picker.innerHTML = skills.map(s =>
-      `<label class="skill-cb"><input type="checkbox" name="skill" value="${s.name}">${s.name}</label>`
+    names = skills.map(s => s.name);
+  } catch(e) { /* fall through to just the mcp helper */ }
+  // Guarantee the mcp-helper appears so it can be pre-ticked.
+  if (!names.includes(DEFAULT_MCP_SKILL)) names.unshift(DEFAULT_MCP_SKILL);
+  if (!names.length) { picker.innerHTML = '<span style="color:#555">No skills available</span>'; return; }
+  picker.innerHTML = names.map(n => {
+    const checked = (n === DEFAULT_MCP_SKILL) ? ' checked' : '';
+    const tag = (n === DEFAULT_MCP_SKILL) ? ' <span style="color:#76b900;font-size:0.7rem">(mcp helper)</span>' : '';
+    return `<label class="skill-cb"><input type="checkbox" name="skill" value="${n}"${checked}>${n}${tag}</label>`;
+  }).join('');
+})();
+
+// Load harness-image dropdown.
+(async function() {
+  const sel = document.getElementById('harness-select');
+  try {
+    const r = await fetch('/api/harnesses');
+    const d = r.ok ? await r.json() : {images: []};
+    const images = d.images || [];
+    if (!images.length) {
+      sel.innerHTML = '<option value="">launcher default</option>';
+      return;
+    }
+    sel.innerHTML = images.map((img, i) =>
+      `<option value="${img}"${i===0?' selected':''}>${img}${i===0?' (default)':''}</option>`
     ).join('');
   } catch(e) {
-    picker.innerHTML = '<span style="color:#555">Skills unavailable</span>';
+    sel.innerHTML = '<option value="">launcher default</option>';
   }
 })();
 
@@ -286,13 +341,14 @@ async function launchAgent() {
   const name = document.getElementById('agent-name').value.trim();
   if (!name) { status.textContent = 'Agent name is required.'; return; }
   const skills = Array.from(document.querySelectorAll('input[name="skill"]:checked')).map(i => i.value);
+  const harnessImage = (document.getElementById('harness-select') || {}).value || '';
   btn.disabled = true; btn.textContent = 'Launching…';
   status.textContent = '';
   try {
     const r = await fetch('/api/agents', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({display_name: name, skills}),
+      body: JSON.stringify({display_name: name, skills, harness_image: harnessImage}),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(JSON.stringify(d));

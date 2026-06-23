@@ -97,7 +97,12 @@ AGENT_MAX_TURNS_DEFAULT = 10
 # / ANTHROPIC_API_KEY) which the spawned system `claude` CLI inherits — they are
 # NEVER read or emitted by this module.
 AGENT_MODEL_ENV = "AGENT_MODEL"
-AGENT_MODEL_DEFAULT = "anthropic/claude-sonnet-4.5"
+# The LiteLLM proxy (172.16.2.251:4000) virtual key is restricted to exactly
+# ['deepseek-v4-pro', 'deepseek-v4-flash', 'anthropic/claude-sonnet-4']; the
+# 4.5/4.6 slugs return 401 key_model_access_denied. `anthropic/claude-sonnet-4`
+# is the only Sonnet alias this key serves and it returns live 200 completions
+# (routed via OpenRouter), so it is the safe default. Override via AGENT_MODEL.
+AGENT_MODEL_DEFAULT = "anthropic/claude-sonnet-4"
 
 
 def _gateway_mcp_url() -> str:

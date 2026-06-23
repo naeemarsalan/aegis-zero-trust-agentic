@@ -84,6 +84,13 @@ class CreateAgentRequest(BaseModel):
         default_factory=list,
         description="Skill names to load (from central skills repo)",
     )
+    harness_image: str = Field(
+        default="",
+        description=(
+            "Optional brain-harness OCI image, chosen from the launch form's harness "
+            "catalog. Empty = launcher default."
+        ),
+    )
 
     @field_validator("skills", mode="before")
     @classmethod

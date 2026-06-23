@@ -99,6 +99,27 @@ def _require_owner_or_admin(agent: agent_models.Agent, actor: str, is_admin: boo
 
 import os as _os
 
+# The MCP-helper skill — the mcp-call helper that drives the zero-trust gateway
+# (read returns immediately; write fires the JIT approval). It lives baked into the
+# agent-harness image's .claude/skills (services/agent-sandbox/agent-harness) AND can
+# be loaded from the central skills repo. Every new agent gets it by default so the
+# brain can reach the real tools out of the box. Override the name via
+# DEFAULT_MCP_SKILL (e.g. to 'list-firewall-rules' or 'openshift-troubleshoot').
+DEFAULT_MCP_SKILL = _os.environ.get("DEFAULT_MCP_SKILL", "pfsense-firewall").strip() or "pfsense-firewall"
+
+
+def _with_default_skill(skills: list[str]) -> list[str]:
+    """Ensure the mcp-helper skill is present; default it in when skills is empty.
+
+    If the caller passes any skills, respect them but still guarantee the mcp-helper
+    is included (so the brain can always reach the gateway). If none are passed, the
+    result is just [DEFAULT_MCP_SKILL].
+    """
+    cleaned = [s.strip() for s in (skills or []) if s and s.strip()]
+    if DEFAULT_MCP_SKILL not in cleaned:
+        cleaned.insert(0, DEFAULT_MCP_SKILL)
+    return cleaned
+
 
 def _sandbox_launcher_url() -> str:
     url = _os.environ.get("SANDBOX_LAUNCHER_URL", "").strip()
@@ -110,21 +131,34 @@ def _sandbox_launcher_url() -> str:
     return url
 
 
-async def _create_sandbox(agent_id: str, owner: str, skills: list[str]) -> dict[str, str]:
+async def _create_sandbox(
+    agent_id: str,
+    owner: str,
+    skills: list[str],
+    harness_image: str = "",
+) -> dict[str, str]:
     """Call sandbox-launcher POST /launch and return {sandbox_name, sandbox_id}.
 
     Fails closed: raises HTTPException(502) if launcher is unreachable.
     This function is extracted so tests can monkeypatch it on the module.
+
+    `skills` is threaded both as `capabilities` (the launcher's required field) and
+    as `skills` (the field the launcher turns into the agents.x-k8s.io/skills
+    podTemplate annotation, which the skills-loader Kyverno policy reads).
+    `harness_image`, when set, selects the brain image.
     """
     url = _sandbox_launcher_url()
-    payload = {
+    payload: dict[str, Any] = {
         "goal": f"Persistent agent {agent_id} (owner: {owner})",
         "capabilities": skills if skills else ["openshift-troubleshoot"],
+        "skills": skills,
         "mode": "project",
         "userRef": owner,
         "confirmed": True,
         "ttlMinutes": 480,
     }
+    if harness_image:
+        payload["harnessImage"] = harness_image
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{url}/launch", json=payload)
@@ -203,12 +237,19 @@ async def create_agent(
     actor = _actor(request)
     agent_id = uuid.uuid4().hex
 
-    args_hash = _hash_args({"display_name": body.display_name, "skills": body.skills})
+    # Default-in the mcp-helper skill: every new agent gets it (pre-ticked in the
+    # form, and enforced server-side here even if the client omits it) so the brain
+    # can reach the real tools through the gateway out of the box.
+    effective_skills = _with_default_skill(body.skills)
+
+    args_hash = _hash_args({"display_name": body.display_name, "skills": effective_skills})
 
     # Step 2: provision sandbox (GATED — no-op if SANDBOX_LAUNCHER_URL unset in tests)
     sandbox_info: dict[str, str] = {"sandbox_name": "", "sandbox_id": ""}
     try:
-        sandbox_info = await _create_sandbox(agent_id, actor, body.skills)
+        sandbox_info = await _create_sandbox(
+            agent_id, actor, effective_skills, body.harness_image
+        )
     except HTTPException:
         raise
     except RuntimeError as exc:
@@ -247,7 +288,7 @@ async def create_agent(
         sandbox_id=sandbox_info.get("sandbox_id", ""),
         pvc_name=f"{agent_id}-workspace",
         gitea_repo=gitea_repo_url,
-        skills=body.skills,
+        skills=effective_skills,
         state=agent_models.AgentState.PROVISIONING,
     )
     agent_store.create_agent(agent)

@@ -167,7 +167,11 @@ def test_list_agents_by_owner() -> None:
 async def test_create_agent_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /api/agents returns 201 with agent_id.  No cluster/Gitea calls."""
 
-    async def _fake_sandbox(agent_id: str, owner: str, skills: list) -> dict:
+    captured: dict = {}
+
+    async def _fake_sandbox(agent_id: str, owner: str, skills: list, harness_image: str = "") -> dict:
+        captured["skills"] = skills
+        captured["harness_image"] = harness_image
         return {"sandbox_name": f"sb-{agent_id[:8]}", "sandbox_id": "uuid-1234"}
 
     async def _fake_gitea_create(agent_id: str, owner_username: str):  # type: ignore[return]
@@ -190,7 +194,43 @@ async def test_create_agent_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "agent_id" in data
     assert data["owner"] == "alice"
     assert data["skills"] == ["pfsense-firewall"]
+    # the mcp-helper skill was threaded to the launcher
+    assert "pfsense-firewall" in captured["skills"]
     # Cleanup
+    agent_store.delete_agent(data["agent_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_agent_defaults_mcp_skill_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /api/agents with no skills default-ticks the mcp-helper skill."""
+    captured: dict = {}
+
+    async def _fake_sandbox(agent_id: str, owner: str, skills: list, harness_image: str = "") -> dict:
+        captured["skills"] = skills
+        captured["harness_image"] = harness_image
+        return {"sandbox_name": f"sb-{agent_id[:8]}", "sandbox_id": "uuid-9999"}
+
+    async def _fake_gitea_create(agent_id: str, owner_username: str):  # type: ignore[return]
+        from approval_console.gitea.models import GiteaRepo
+        return GiteaRepo(html_url=f"https://gitea-mock/agents/{agent_id}", full_name=f"agents/{agent_id}")
+
+    monkeypatch.setattr("approval_console.agents.routes._create_sandbox", _fake_sandbox)
+    import approval_console.gitea.client as gc
+    monkeypatch.setattr(gc, "create_agent_repo", _fake_gitea_create)
+
+    async with _ac() as client:
+        r = await client.post(
+            "/api/agents",
+            json={"display_name": "no-skills-agent", "harness_image": "oci.example/harness:test"},
+            headers=_keycloak_headers("alice"),
+        )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    # mcp-helper default-ticked server-side even though the client sent none
+    assert data["skills"] == ["pfsense-firewall"]
+    assert captured["skills"] == ["pfsense-firewall"]
+    # harness image forwarded
+    assert captured["harness_image"] == "oci.example/harness:test"
     agent_store.delete_agent(data["agent_id"])
 
 
@@ -330,8 +370,8 @@ def test_native_brain_env_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
     import approval_console.app as app_mod
 
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-secret")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("AGENT_MODEL", "anthropic/claude-sonnet-4")
 
     # bare-hex session id must be converted to a hyphenated UUID for the claude CLI
@@ -345,10 +385,10 @@ def test_native_brain_env_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env["JIT_TARGET_NAMESPACE"] == "agentic-mcp"
     assert env["SVID_REQUIRE_PATH_SUBSTR"] == "/sandbox/"
     assert env["SVID_JWT_PATH"] == "/tmp/svid-out/mcp-gateway-svid.jwt"
-    # inference creds forwarded; both names populated from whichever is set
+    # inference creds forwarded; EXACTLY ONE name emitted (AUTH_TOKEN preferred)
     assert env["ANTHROPIC_BASE_URL"] == "http://litellm:4000"
-    assert env["ANTHROPIC_API_KEY"] == "sk-secret"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-secret"
+    assert "ANTHROPIC_API_KEY" not in env
     assert env["AGENT_MODEL"] == "anthropic/claude-sonnet-4"
 
 

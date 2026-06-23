@@ -107,9 +107,11 @@ class TestBrainEnv:
         assert env["AGENT_GOAL"] == "audit firewall"
         assert env["AGENT_ALLOWED_TOOLS"] == "Bash"
         assert env["ANTHROPIC_BASE_URL"] == "http://172.16.2.251:4000"
-        # both credential env names get populated from whichever the launcher has
-        assert env["ANTHROPIC_API_KEY"] == "sk-litellm-xyz"
+        # EXACTLY ONE credential env name is emitted (AUTH_TOKEN preferred) — setting
+        # both makes the claude CLI warn "auth may not work". API_KEY-only falls back
+        # onto AUTH_TOKEN and API_KEY itself is not re-emitted.
         assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-litellm-xyz"
+        assert "ANTHROPIC_API_KEY" not in env
         assert env["AGENT_MODEL"] == "anthropic/claude-sonnet-4"
         # the runner needs the URL-honouring system CLI, not the bundled SDK binary
         assert env["CLAUDE_CLI_PATH"] == "/usr/local/bin/claude"
@@ -129,7 +131,7 @@ class TestBrainEnv:
             env = openshell._brain_env(goal="g", allowed_tools="Bash")
         assert not any(k.startswith("OPENSHELL_") for k in env), env
 
-    def test_auth_token_only_populates_both(self):
+    def test_auth_token_only_single_emit(self):
         patch_env = _clear_brain_env()
         patch_env.update(
             {
@@ -139,8 +141,24 @@ class TestBrainEnv:
         )
         with patch.dict(os.environ, patch_env):
             env = openshell._brain_env(goal="g", allowed_tools="Bash")
-        assert env["ANTHROPIC_API_KEY"] == "auth-only"
+        # Only AUTH_TOKEN is emitted — never both.
         assert env["ANTHROPIC_AUTH_TOKEN"] == "auth-only"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_both_set_emits_only_auth_token(self):
+        """When both creds are in the launcher env, only AUTH_TOKEN is forwarded."""
+        patch_env = _clear_brain_env()
+        patch_env.update(
+            {
+                "ANTHROPIC_BASE_URL": "http://172.16.2.251:4000",
+                "ANTHROPIC_AUTH_TOKEN": "the-auth-token",
+                "ANTHROPIC_API_KEY": "the-api-key",
+            }
+        )
+        with patch.dict(os.environ, patch_env):
+            env = openshell._brain_env(goal="g", allowed_tools="Bash")
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "the-auth-token"
+        assert "ANTHROPIC_API_KEY" not in env
 
     def test_model_passthrough_optional(self):
         """Model vars are passed through only when set; absent ones are omitted."""

@@ -69,6 +69,26 @@ class LaunchRequest(BaseModel):
         min_length=1,
         description="Catalog entity names of capabilities to enable (non-empty)",
     )
+    skills: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Skill directory names to load into the sandbox. Threaded onto the "
+            "Sandbox CR podTemplate as the 'agents.x-k8s.io/skills' annotation, which "
+            "the mutate-openshell-sandbox-skills-loader Kyverno policy reads to inject "
+            "a skills-loader init-container (git-clones the selected skills into the "
+            "agent's .claude/skills emptyDir). Empty = no extra skills loaded."
+        ),
+    )
+    harness_image: str = Field(
+        default="",
+        alias="harnessImage",
+        description=(
+            "Optional OCI image for the brain-bearing agent-harness. When set, the "
+            "launcher uses this image for the Sandbox instead of the default "
+            "SANDBOX_IMAGE. Must be a known-good harness image (the caller picks from "
+            "a catalog in the launch form). Empty = use the launcher default."
+        ),
+    )
     mode: LaunchMode = Field(
         ...,
         description="'task' for a single-goal run; 'project' for a multi-step session",
@@ -119,6 +139,18 @@ class LaunchRequest(BaseModel):
         if not v:
             raise ValueError("user must not be blank")
         return v
+
+    @field_validator("skills", mode="before")
+    @classmethod
+    def validate_skills(cls, v: list[str] | None) -> list[str]:
+        if not v:
+            return []
+        if len(v) > 10:
+            raise ValueError("skills list must not exceed 10 entries")
+        cleaned = [s.strip() for s in v]
+        if any(not s for s in cleaned):
+            raise ValueError("skill names must not be blank")
+        return cleaned
 
 
 class LaunchResponse(BaseModel):

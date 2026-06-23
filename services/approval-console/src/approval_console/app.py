@@ -288,13 +288,14 @@ def _native_brain_env(goal: str, actor: str, session_id: str) -> dict[str, str]:
         or "/usr/local/bin/claude",
     }
     # Inference creds + model ids — forwarded from the console process env.
-    # Never logged. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN: populate both from
-    # whichever the console carries so the brain authenticates regardless of name.
-    api_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    # Never logged. Pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY:
+    # setting both makes the claude CLI warn "auth may not work" and can pick the
+    # wrong header. Prefer AUTH_TOKEN (the LiteLLM virtual-key shape); fall back to
+    # API_KEY only if AUTH_TOKEN is unset.
     auth_token = _os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
-    cred = api_key or auth_token
+    api_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    cred = auth_token or api_key
     if cred:
-        env["ANTHROPIC_API_KEY"] = cred
         env["ANTHROPIC_AUTH_TOKEN"] = cred
     for var in _NATIVE_BRAIN_FORWARD_ENV:
         if var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):

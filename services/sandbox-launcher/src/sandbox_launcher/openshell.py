@@ -415,14 +415,15 @@ def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
         "ANTHROPIC_BASE_URL": base_url,
     }
 
-    # Inference credential: accept either ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
-    # (the claude CLI honours both); populate BOTH in the sandbox from whichever the
-    # launcher has, so the brain authenticates regardless of which name LiteLLM wants.
-    api_key = _read_env_or_file("ANTHROPIC_API_KEY")
+    # Inference credential: pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN /
+    # ANTHROPIC_API_KEY. Setting both makes the claude CLI warn "Both
+    # ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are set; auth may not work" and
+    # can authenticate with the wrong header. Prefer AUTH_TOKEN (the LiteLLM
+    # virtual-key shape); fall back to API_KEY only if AUTH_TOKEN is unset.
     auth_token = _read_env_or_file("ANTHROPIC_AUTH_TOKEN")
-    cred = api_key or auth_token
+    api_key = _read_env_or_file("ANTHROPIC_API_KEY")
+    cred = auth_token or api_key
     if cred:
-        env["ANTHROPIC_API_KEY"] = cred
         env["ANTHROPIC_AUTH_TOKEN"] = cred
     else:
         logger.warning(
@@ -743,7 +744,7 @@ def llm_probe_command() -> list[str]:
     key = _read_env_or_file("ANTHROPIC_API_KEY") or _read_env_or_file("ANTHROPIC_AUTH_TOKEN") or ""
     # Minimal valid Anthropic-style request; the brain's CLI hits /v1/messages?beta=true.
     body = (
-        '{"model":"' + (_read_env_or_file("AGENT_MODEL") or "anthropic/claude-sonnet-4")
+        '{"model":"' + (_read_env_or_file("AGENT_MODEL") or "anthropic/claude-sonnet-4")  # noqa: E501 — only Sonnet alias this key serves
         + '","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}'
     )
     # curl honours the sandbox's HTTP(S)_PROXY env (the gateway forward proxy) exactly
@@ -912,12 +913,47 @@ def exec_agent_brain(
     return exit_code
 
 
+def harness_image_catalog() -> list[str]:
+    """Return the allowlist of selectable harness images.
+
+    Sourced from SANDBOX_IMAGE_CATALOG (comma-separated). The default SANDBOX_IMAGE
+    is always implicitly allowed (it's the fallback). An empty catalog means "no
+    restriction" — any caller-supplied image is accepted (dev convenience); set the
+    env to lock the selector down to a known-good set in prod.
+    """
+    raw = os.environ.get("SANDBOX_IMAGE_CATALOG", "").strip()
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _resolve_harness_image(requested: str, default_image: str) -> str:
+    """Pick the sandbox image: the caller's choice if allowed, else the default.
+
+    - Empty/blank request -> default.
+    - Catalog set and request not in it (and != default) -> default (fail-safe; an
+      unknown image is never silently launched).
+    - Catalog empty -> request honoured as-is (no allowlist configured).
+    """
+    requested = (requested or "").strip()
+    if not requested:
+        return default_image
+    catalog = harness_image_catalog()
+    if catalog and requested != default_image and requested not in catalog:
+        logger.warning(
+            "harness_image_not_in_catalog_using_default",
+            extra={"requested": requested, "default": default_image},
+        )
+        return default_image
+    return requested
+
+
 def create_sandbox(
     name: str,
     owner_entity_ref: str,
     owner_email: str = "",
     extra_labels: dict[str, str] | None = None,
     goal: str = "",
+    skills: list[str] | None = None,
+    harness_image: str = "",
 ) -> Any:
     """Launch an OpenShell sandbox born with the baseline floor policy.
 
@@ -932,6 +968,15 @@ def create_sandbox(
         goal: Natural-language goal threaded into the sandbox as AGENT_GOAL so the
             brain-enabled runner has work to do. Ignored when brain boot is
             disabled (SANDBOX_BOOT_AGENT=false) or no inference is configured.
+        skills: Skill directory names. Set as the 'agents.x-k8s.io/skills' annotation
+            on the Sandbox CR podTemplate (propagated to the pod by the gateway
+            controller). The mutate-openshell-sandbox-skills-loader Kyverno policy
+            reads it and injects the skills-loader init-container + claude-skills
+            emptyDir. Empty list = annotation omitted = no extra skills loaded.
+        harness_image: Optional OCI image override for the sandbox workload. When set,
+            it is used instead of SANDBOX_IMAGE. Validated against SANDBOX_IMAGE_CATALOG
+            (a comma-separated allowlist) when that env is set, so a caller can only
+            choose a known-good harness; an unknown image falls back to the default.
 
     Returns:
         SandboxResponse proto from the gateway.
@@ -947,7 +992,8 @@ def create_sandbox(
 
     baseline_doc = _load_baseline_policy()
 
-    image = os.environ.get("SANDBOX_IMAGE", "oci.arsalan.io/nvidia-ida/sandbox-agent:dev")
+    default_image = os.environ.get("SANDBOX_IMAGE", "oci.arsalan.io/nvidia-ida/sandbox-agent:dev")
+    image = _resolve_harness_image(harness_image, default_image)
     runtime_class = os.environ.get("SANDBOX_RUNTIME_CLASS", "kata")
 
     # Env vars injected into the sandbox workload template
@@ -979,7 +1025,7 @@ def create_sandbox(
                     "model": brain_env.get("AGENT_MODEL", ""),
                     # NEVER log the inference credential or base URL value.
                     "inference_key_present": bool(
-                        brain_env.get("ANTHROPIC_API_KEY")
+                        brain_env.get("ANTHROPIC_AUTH_TOKEN")
                     ),
                 },
             )
@@ -987,6 +1033,21 @@ def create_sandbox(
     tmpl = ph.SandboxTemplate(image=image, runtime_class_name=runtime_class)
     if tmpl_env:
         tmpl.environment.update(tmpl_env)
+
+    # Skills loading (C3): set the 'agents.x-k8s.io/skills' annotation on the
+    # podTemplate. The gateway controller propagates template annotations onto the
+    # pod at creation, where the mutate-openshell-sandbox-skills-loader Kyverno
+    # policy reads it and injects the skills-loader init-container + claude-skills
+    # emptyDir (git-clones the selected skills into the agent's .claude/skills).
+    # The SandboxTemplate proto has no initContainers/volumes field, so this
+    # annotation is the only lever the launcher has to drive skills loading.
+    clean_skills = [s.strip() for s in (skills or []) if s and s.strip()]
+    if clean_skills:
+        tmpl.annotations["agents.x-k8s.io/skills"] = ",".join(clean_skills)
+        logger.info(
+            "sandbox_skills_annotated",
+            extra={"sandbox_name": name, "skills": clean_skills},
+        )
 
     spec = ph.SandboxSpec(policy=_yaml_to_policy(baseline_doc), template=tmpl)
 
