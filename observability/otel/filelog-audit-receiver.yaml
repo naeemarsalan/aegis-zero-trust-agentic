@@ -1,0 +1,60 @@
+# Session-token audit — option B (interim, zero app-change): scrape the mcp-gateway
+# audit pods' stdout JSON into the EXISTING otel-collector -> Loki pipeline.
+#
+# HELD — do NOT apply yet. Apply only after: (1) the in-flight code agents finish,
+# (2) etcd is defragged (snapshot first; ~2 GB vs ~800 MB threshold). See
+# docs/plans/session-token-audit-logs-plan.md.
+#
+# This is a PATCH to the agentic-observability/otel-collector-config CM: it adds a
+# `filelog` receiver + a JSON parser that promotes the session-token correlation
+# fields to attributes, and wires it into the existing logs pipeline (which already
+# exports to Loki with the hash_tool_args + loki_hints processors).
+#
+# NOTE: a filelog receiver needs node-level access to /var/log/pods, so the collector
+# must run with a hostPath mount (or be deployed as a DaemonSet). If the current
+# collector is a single Deployment without hostPath, prefer a separate DaemonSet
+# collector that ships to this same one over OTLP. This file documents the receiver +
+# pipeline; the hostPath/DaemonSet wiring is applied at rollout time.
+#
+# ---- receiver to merge into receivers: ----
+#   filelog/audit:
+#     include:
+#       - /var/log/pods/mcp-gateway_ext-proc-delegation-*/*/*.log
+#       - /var/log/pods/mcp-gateway_jit-approver-*/*/*.log
+#       - /var/log/pods/mcp-gateway_approval-console-*/*/*.log
+#     include_file_path: true
+#     operators:
+#       # CRI-O log line -> extract the JSON payload the app wrote to stdout
+#       - type: container
+#       - type: json_parser
+#         parse_from: body
+#         parse_to: attributes
+#         on_error: send_quiet        # non-JSON app lines pass through unparsed
+#       # promote the session-token correlation keys to first-class attributes
+#       - type: copy
+#         from: attributes.jit_session_id
+#         to: resource["session.jit_id"]
+#         if: 'attributes.jit_session_id != nil'
+#       - type: copy
+#         from: attributes.session_id
+#         to: resource["session.id"]
+#         if: 'attributes.session_id != nil'
+#
+# ---- pipeline change (logs): add filelog/audit to receivers ----
+#   pipelines:
+#     logs:
+#       receivers: [otlp, filelog/audit]
+#       processors: [batch, attributes/add_cluster, attributes/hash_tool_args, resource/loki_hints, attributes/loki_hints]
+#       exporters: [loki]
+#
+# ---- loki_hints: ensure these become Loki labels (watch cardinality) ----
+#   # add to the existing resource/loki_hints + attributes/loki_hints action lists:
+#   #   loki.resource.labels:  session.jit_id, session.id
+#   #   loki.attribute.labels: grant_result, decision, mcp_tool, caller_username
+#   #   (do NOT label high-cardinality fields like nonce/tool_args_hash — keep as fields)
+#
+# Verification after apply:
+#   1. trigger one real elevation (read 403 -> approve -> write 200)
+#   2. in Loki: {namespace="mcp-gateway"} | json | jit_session_id != ""  -> see the
+#      ext-proc grant_result=valid + the console jit.approve for the same jit_session_id
+#   3. confirm the Grafana "Session-Token Lifecycle" dashboard renders the join.

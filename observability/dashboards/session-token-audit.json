@@ -1,0 +1,67 @@
+{
+  "__comment": "Session-Token Lifecycle audit dashboard. HELD — import after the audit pipeline is fed (see docs/plans/session-token-audit-logs-plan.md). Replace ${DS_LOKI}/${DS_PG} with the real datasource UIDs at import. Panels correlate the three audit sources by jit_session_id / jti.",
+  "title": "Session-Token Lifecycle (zero-trust audit)",
+  "tags": ["zero-trust", "audit", "jit", "session-token"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      { "name": "DS_LOKI", "type": "datasource", "query": "loki", "label": "Loki" },
+      { "name": "DS_PG", "type": "datasource", "query": "postgres", "label": "jit-approver-db" },
+      { "name": "jit_session_id", "type": "textbox", "label": "jit_session_id filter", "current": { "value": "" } }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Approvals — who asked / who approved / scope (WORM jit_session)",
+      "type": "table",
+      "datasource": "${DS_PG}",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "format": "table",
+          "rawSql": "SELECT created_at, id AS jit_session_id, requester_sub, approver_sub, scope_hash, state FROM jit_session WHERE ('$jit_session_id' = '' OR id = '$jit_session_id') ORDER BY created_at DESC LIMIT 200;"
+        }
+      ]
+    },
+    {
+      "title": "Tokens minted vs consumed vs denied (last 24h)",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 9 },
+      "targets": [
+        { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS minted FROM jit_session WHERE state IN ('issued','consumed') AND created_at > now() - interval '24 hours';", "format": "table" },
+        { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS consumed FROM consumed_jti WHERE consumed_at > now() - interval '24 hours';", "format": "table" },
+        { "datasource": "${DS_LOKI}", "expr": "sum(count_over_time({namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | decision=\"deny\" [24h]))" }
+      ]
+    },
+    {
+      "title": "ext-proc — token USE for this session (grant_result / decision / tool)",
+      "type": "logs",
+      "datasource": "${DS_LOKI}",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 14 },
+      "targets": [
+        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | jit_session_id =~ \"$jit_session_id.*\" | line_format \"{{.decision}} grant={{.grant_result}} injected={{.credential_injected}} tool={{.mcp_tool}} user={{.caller_username}} sid={{.jit_session_id}}\"" }
+      ]
+    },
+    {
+      "title": "console — human approval actions (jit.approve / session_created)",
+      "type": "logs",
+      "datasource": "${DS_LOKI}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+      "targets": [
+        { "expr": "{namespace=\"mcp-gateway\", app=\"approval-console\"} | json | event =~ \"jit\\\\..*|agent\\\\.session_created\"" }
+      ]
+    },
+    {
+      "title": "FAIL-OPEN CANARY — decision=allow with grant_result!=valid (MUST be empty)",
+      "type": "logs",
+      "datasource": "${DS_LOKI}",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
+      "description": "Any row here is a fail-open: the gate allowed a call whose grant did not validate. Should be impossible — alert on it.",
+      "targets": [
+        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | decision=\"allow\" | grant_result!=\"valid\"" }
+      ]
+    }
+  ]
+}
