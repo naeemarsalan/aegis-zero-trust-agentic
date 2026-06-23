@@ -6,4 +6,4 @@ metadata:
   name: spire-oidc-discovery-provider
   namespace: zero-trust-workload-identity-manager
 spec:
-  host: spire-oidc.apps.anaeem.na-launch.com
+  host: spire-oidc.apps.ocp-dev.na-launch.com

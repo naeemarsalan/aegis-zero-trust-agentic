@@ -10,7 +10,7 @@ metadata:
   name: cluster
   namespace: zero-trust-workload-identity-manager
 spec:
-  jwtIssuer: https://spire-oidc.apps.anaeem.na-launch.com
+  jwtIssuer: https://spire-oidc.apps.ocp-dev.na-launch.com
   # caSubject and datastore are REQUIRED by the CRD (spec.required).
   caSubject:
     commonName: spire-ca.anaeem.na-launch.com

@@ -71,7 +71,7 @@ type Config struct {
 	// When non-empty, ext-proc recognises inbound tokens whose iss matches
 	// SpireIssuer and routes them through the grant-read + RFC8693
 	// impersonation path instead of the legacy Keycloak user-token path.
-	SpireJWKSURL  string // e.g. https://spire-oidc.apps.anaeem.na-launch.com/keys
+	SpireJWKSURL  string // e.g. https://spire-oidc.apps.ocp-dev.na-launch.com/keys
 	SpireIssuer   string // must match spire-oidc jwtIssuer config field
 	SpireAudience string // must be "mcp-gateway"
 	// SpireTLSInsecure skips TLS verification when fetching the SPIRE OIDC JWKS.
@@ -111,15 +111,15 @@ type Config struct {
 // values are missing or invalid.
 func Load() (*Config, error) {
 	c := &Config{
-		KeycloakTokenURL:     getEnv("KEYCLOAK_TOKEN_URL", "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"),
+		KeycloakTokenURL:     getEnv("KEYCLOAK_TOKEN_URL", "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token"),
 		ExchangeMode:         ExchangeMode(getEnv("EXCHANGE_MODE", string(ModeStandard))),
 		ExchangeClientID:     getEnv("EXCHANGE_CLIENT_ID", ""),
 		ExchangeSecretFile:   getEnv("EXCHANGE_SECRET_FILE", ""),
 		DownstreamAudience:   getEnv("DOWNSTREAM_AUDIENCE", "mcp-downstream"),
-		KeycloakJWKSURL:      getEnv("KEYCLOAK_JWKS_URL", "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs"),
-		KeycloakIssuer:       getEnv("KEYCLOAK_ISSUER", "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"),
+		KeycloakJWKSURL:      getEnv("KEYCLOAK_JWKS_URL", "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/certs"),
+		KeycloakIssuer:       getEnv("KEYCLOAK_ISSUER", "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"),
 		ExpectedAudience:     getEnv("EXPECTED_AUDIENCE", "mcp-gateway"),
-		VaultAddr:            getEnv("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com"),
+		VaultAddr:            getEnv("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com"),
 		VaultJWTRole:         getEnv("VAULT_JWT_ROLE", "ext-proc-delegation"),
 		VaultJWTAudience:     getEnv("VAULT_JWT_AUDIENCE", "vault"),
 		ToolSecretPathPrefix: getEnv("TOOL_SECRET_PATH_PREFIX", "secret/data/mcp-tools/"),
@@ -135,7 +135,7 @@ func Load() (*Config, error) {
 		JITIssuer:              getEnv("JIT_ISSUER", "https://jit-approver.mcp-gateway.svc.cluster.local:8080"),
 		JITAudience:            getEnv("JIT_AUDIENCE", "kyverno-authz"),
 		SpireJWKSURL:           getEnv("SPIRE_JWKS_URL", ""),
-		SpireIssuer:            getEnv("SPIRE_ISSUER", "https://spire-oidc.apps.anaeem.na-launch.com"),
+		SpireIssuer:            getEnv("SPIRE_ISSUER", "https://spire-oidc.apps.ocp-dev.na-launch.com"),
 		SpireAudience:          getEnv("SPIRE_AUDIENCE", "mcp-gateway"),
 		SpireTLSInsecure:       getEnv("SPIRE_TLS_INSECURE", "") == "true",
 		SpireCAFile:            getEnv("SPIRE_CA_FILE", ""),

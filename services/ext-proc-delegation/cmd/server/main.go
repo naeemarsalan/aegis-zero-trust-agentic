@@ -115,7 +115,7 @@ func run() error {
 		//   2. SPIRE_CA_FILE non-empty  — pin a PEM CA bundle from disk.
 		//   3. Default (secure)         — verify against system root CAs
 		//      (RootCAs: nil). Correct for the LE-fronted reencrypt Route
-		//      (*.apps.anaeem.na-launch.com). x509Source passed for API
+		//      (*.apps.ocp-dev.na-launch.com). x509Source passed for API
 		//      compatibility; not used for TLS anchor in the default path.
 		spireHTTP, tlsErr := buildSpireHTTPClient(cfg, x509Source)
 		if tlsErr != nil {
@@ -203,7 +203,7 @@ func run() error {
 //     static image ships the Mozilla bundle). This is correct for this
 //     deployment where the spire-oidc JWKS endpoint is fronted by an OpenShift
 //     reencrypt Route serving a Let's Encrypt wildcard cert
-//     (*.apps.anaeem.na-launch.com). LE is trusted by the system bundle;
+//     (*.apps.ocp-dev.na-launch.com). LE is trusted by the system bundle;
 //     full chain + hostname verification is performed. The SPIFFE X.509 bundle
 //     is NOT used here — it would never validate an LE-issued cert and would
 //     cause TLS failures that disable the SPIRE verifier (fail-closed).

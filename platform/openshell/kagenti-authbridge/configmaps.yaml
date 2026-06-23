@@ -20,7 +20,7 @@ data:
   CLIENT_AUTH_TYPE: federated-jwt
   DEFAULT_OUTBOUND_POLICY: exchange
   EXPECTED_AUDIENCE: kagenti
-  ISSUER: https://keycloak.apps.anaeem.na-launch.com/realms/kagenti
+  ISSUER: https://keycloak.apps.ocp-dev.na-launch.com/realms/kagenti
   KEYCLOAK_NAMESPACE: keycloak
   KEYCLOAK_REALM: kagenti
   KEYCLOAK_URL: http://keycloak-service.keycloak.svc.cluster.local:8080
@@ -46,7 +46,7 @@ data:
       inbound:
         plugins:
           - name: jwt-validation
-            config: {issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/kagenti"}
+            config: {issuer: "https://keycloak.apps.ocp-dev.na-launch.com/realms/kagenti"}
       outbound:
         plugins:
           - name: token-exchange
@@ -132,7 +132,7 @@ data:
     #     so it does NOT mint the mcp-gateway audience for this pod (see the workloads CSID jwtTtl/audience
     #     guard) — and the brain shape-guard (SVID_REQUIRE_PATH_SUBSTR=/sandbox/) remains the fail-closed.
     jwt_svids = [
-      {jwt_audience="http://keycloak.apps.anaeem.na-launch.com:8080/realms/kagenti", jwt_svid_file_name="jwt_svid.token"},
+      {jwt_audience="http://keycloak.apps.ocp-dev.na-launch.com:8080/realms/kagenti", jwt_svid_file_name="jwt_svid.token"},
       {jwt_audience="mcp-gateway", jwt_svid_file_name="mcp-gateway-svid.jwt"}
     ]
 ---

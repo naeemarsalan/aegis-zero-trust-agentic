@@ -33,7 +33,7 @@ spec:
       command: ["/svid-vault-fetch"]
       env:
         - {name: SPIFFE_ENDPOINT_SOCKET, value: "unix:///run/spire/sockets/agent.sock"}
-        - {name: VAULT_ADDR, value: "https://vault.apps.anaeem.na-launch.com"}
+        - {name: VAULT_ADDR, value: "https://vault.apps.ocp-dev.na-launch.com"}
         - {name: VAULT_JWT_ROLE, value: "openshell-agent"}
         - {name: VAULT_SECRET_PATH, value: "secret/data/agent-sandbox/inference"}
         - {name: OUTPUT_DIR, value: "/vault/secrets"}
@@ -50,8 +50,8 @@ spec:
       image: oci.arsalan.io/nvidia-ida/sandbox-agent:dev
       imagePullPolicy: Always
       env:
-        - {name: KEYCLOAK_REALM_URL, value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"}
-        - {name: MCP_GATEWAY_URL, value: "https://mcp-gateway.apps.anaeem.na-launch.com"}
+        - {name: KEYCLOAK_REALM_URL, value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"}
+        - {name: MCP_GATEWAY_URL, value: "https://mcp-gateway.apps.ocp-dev.na-launch.com"}
         - {name: ECHO_PATH, value: "/echo"}
       securityContext:
         runAsUser: 1001020000

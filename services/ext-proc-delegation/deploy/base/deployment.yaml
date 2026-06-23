@@ -69,7 +69,7 @@ spec:
               # The PUBLIC route, not the in-cluster Service: the token exchange
               # validates the subject token's iss, which is the route URL. The
               # in-cluster endpoint derives a different issuer and rejects it.
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
+              value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token"
             - name: KEYCLOAK_TLS_INSECURE
               # The route serves the service-ca cert (wrong SAN); skip verify (PoC).
               value: "true"
@@ -91,11 +91,11 @@ spec:
             - name: KEYCLOAK_JWKS_URL
               value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/agentic/protocol/openid-connect/certs"
             - name: KEYCLOAK_ISSUER
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+              value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"
             - name: EXPECTED_AUDIENCE
               value: "mcp-gateway"
             - name: VAULT_ADDR
-              value: "https://vault.apps.anaeem.na-launch.com"
+              value: "https://vault.apps.ocp-dev.na-launch.com"
             - name: VAULT_SKIP_VERIFY
               # Vault route cert is not in ext-proc's trust store (PoC).
               value: "true"

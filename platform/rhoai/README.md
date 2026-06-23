@@ -179,7 +179,7 @@ oc -n agentic-mcp exec deploy/echo-mcp -- \
 
 # UC1 golden test — call echo_identity via the mcp-gateway with a real user token
 # (replace <USER_TOKEN> with a token issued by Keycloak realm agentic)
-curl -s -X POST https://mcp-gateway.apps.anaeem.na-launch.com/mcp \
+curl -s -X POST https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp \
   -H "Authorization: Bearer <USER_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo_identity","arguments":{}}}' \

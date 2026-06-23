@@ -22,7 +22,7 @@ spec:
       name: mcp-gateway
       namespace: mcp-gateway
   hostnames:
-    - "mcp-gateway.apps.anaeem.na-launch.com"
+    - "mcp-gateway.apps.ocp-dev.na-launch.com"
   rules:
     - matches:
         - path:

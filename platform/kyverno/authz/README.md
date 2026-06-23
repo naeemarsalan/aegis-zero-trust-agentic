@@ -71,7 +71,7 @@ hard-block path).
 ## Apply order
 
 1. Kyverno operator must be installed in the `kyverno` namespace (via `platform/00-operators`).
-2. Keycloak must be running and realm `agentic` initialized (JWKS reachable at `https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs`).
+2. Keycloak must be running and realm `agentic` initialized (JWKS reachable at `https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/certs`).
 3. Apply this component:
    ```bash
    kustomize build platform/kyverno/authz/overlays/anaeem | oc apply -f -
@@ -95,18 +95,18 @@ oc get validatingpolicies -n kyverno
 
 # Test: unauthenticated request should get 401 from agentgateway
 curl -s -o /dev/null -w "%{http_code}" \
-  https://mcp-gateway.apps.anaeem.na-launch.com/mcp \
+  https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp \
   -X POST -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_firewall_rules","arguments":{}}}'
 # Expected: 401
 
 # Test: mcp-users token calling allowed tool → 200
 MCP_TOKEN=$(curl -s -X POST \
-  https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token \
+  https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token \
   -d 'grant_type=password&client_id=mcp-gateway&username=<mcp-user>&password=<pw>' \
   | jq -r .access_token)
 curl -s -o /dev/null -w "%{http_code}" \
-  https://mcp-gateway.apps.anaeem.na-launch.com/mcp \
+  https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp \
   -X POST -H "Authorization: Bearer ${MCP_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_firewall_rules","arguments":{}}}'

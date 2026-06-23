@@ -50,17 +50,17 @@ spec:
     # ext-proc-delegation can run RFC 8693 token exchange against the in-cluster
     # Service without a Host-mismatch 400 ("Invalid token"). strict: true with a
     # host-only hostname rejected those backchannel calls.
-    hostname: keycloak.apps.anaeem.na-launch.com
+    hostname: keycloak.apps.ocp-dev.na-launch.com
     strict: false
 
   http:
     # tlsSecret intentionally OMITTED → RHBK operator switches the managed Route
     # from passthrough to EDGE termination. Rationale: the service-ca cert in
     # keycloak-tls only has SAN *.keycloak-serving-cert.keycloak.svc, which never
-    # matches the public route host keycloak.apps.anaeem.na-launch.com — so any
+    # matches the public route host keycloak.apps.ocp-dev.na-launch.com — so any
     # strict-TLS OIDC client (the OpenShell gateway) fails hostname verification
     # against the passthrough route. With edge termination the OpenShift router
-    # presents the ingress wildcard cert (*.apps.anaeem.na-launch.com, signed by
+    # presents the ingress wildcard cert (*.apps.ocp-dev.na-launch.com, signed by
     # the ingress-operator router-CA), which DOES match the route host. Keycloak
     # keeps receiving plain HTTP on 8080 (httpEnabled below); proxy.headers
     # xforwarded preserves the https:// iss claim. To revert to a publicly-trusted

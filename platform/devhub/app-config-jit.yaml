@@ -81,7 +81,7 @@
 # The card plugins call:
 #   fetchApi.fetch(`${proxyBase}/jit-approver/requests/${sessionId}/status`)
 # where proxyBase = discoveryApi.getBaseUrl('proxy')
-#                 = https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/proxy
+#                 = https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/proxy
 #
 # Full URL resolved browser-side:
 #   /api/proxy/jit-approver/requests/<id>/status
@@ -128,8 +128,8 @@ proxy:
 #
 # For identity verification of the inbound Backstage user token, jit-approver
 # needs:
-#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
-#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/.backstage/jwks.json
+#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.ocp-dev.na-launch.com
 #
 # The user entity ref is in the `sub` claim (e.g. user:default/arsalan) or the
 # `ent[0]` claim. The token must be discarded after identity extraction; never

@@ -99,7 +99,7 @@ USER 1000
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    MCP_GATEWAY_URL=https://mcp-gateway.apps.anaeem.na-launch.com \
+    MCP_GATEWAY_URL=https://mcp-gateway.apps.ocp-dev.na-launch.com \
     SPIFFE_ENDPOINT_SOCKET=unix:///spiffe-workload-api/spire-agent.sock \
     SVID_JWT_PATH=/var/run/secrets/svid-gateway.jwt \
     # PYTHONPATH must carry BOTH /app/src (agent_harness) AND the UBI venv

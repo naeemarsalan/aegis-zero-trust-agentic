@@ -55,6 +55,6 @@ logcli query '{namespace="mcp-gateway"} |= "credential_delegation"' --limit=5
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `KEYCLOAK_JWKS_URL` | `https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/certs` | Realm JWKS endpoint for inbound token verification |
-| `KEYCLOAK_ISSUER` | `https://keycloak.apps.anaeem.na-launch.com/realms/agentic` | Expected `iss` of the caller token |
+| `KEYCLOAK_JWKS_URL` | `https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/certs` | Realm JWKS endpoint for inbound token verification |
+| `KEYCLOAK_ISSUER` | `https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic` | Expected `iss` of the caller token |
 | `EXPECTED_AUDIENCE` | `mcp-gateway` | Audience the caller token must contain |

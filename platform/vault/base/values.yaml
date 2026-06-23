@@ -99,7 +99,7 @@ server:
   # OpenShift Route is enabled — host is set in the overlay patch.
   route:
     enabled: true
-    host: vault.apps.anaeem.na-launch.com
+    host: vault.apps.ocp-dev.na-launch.com
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect

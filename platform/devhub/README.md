@@ -74,8 +74,8 @@ RHDH will fail to start if this client does not exist when the config is applied
 - Client ID: `rhdh` — confidential (Client authentication ON in KC 19+),
   **Standard Flow ON**, **Service Accounts ON**.
 - Valid redirect URI:
-  `https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/oidc/handler/frame`
-- Web origin: `https://developer-hub-rhdh.apps.anaeem.na-launch.com`
+  `https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/oidc/handler/frame`
+- Web origin: `https://developer-hub-rhdh.apps.ocp-dev.na-launch.com`
 - Service-account roles (realm-management): `query-groups`, `query-users`,
   `view-users` — required for catalog ingestion by the keycloak plugin.
 - Copy the client secret from the client's **Credentials** tab.
@@ -278,8 +278,8 @@ Listed here for reference; no additional overlay edits are needed.
 
 | Variable | Value (as set in the overlay) |
 |---|---|
-| `RHDH_JWKS_URL` | `https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json` |
-| `RHDH_TOKEN_ISSUER` | `https://developer-hub-rhdh.apps.anaeem.na-launch.com` |
+| `RHDH_JWKS_URL` | `https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/.backstage/jwks.json` |
+| `RHDH_TOKEN_ISSUER` | `https://developer-hub-rhdh.apps.ocp-dev.na-launch.com` |
 | `LAUNCHER_OIDC_TOKEN_URL` | `http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token` |
 | `LAUNCHER_OIDC_CLIENT_ID` | `sandbox-launcher` |
 | `LAUNCHER_OIDC_CLIENT_SECRET_FILE` | `/vault/secrets/launcher-oidc-secret` |
@@ -298,7 +298,7 @@ labeling metadata only, not as an access-control input. See the inline comments 
 
 **`RHDH_JWKS_URL` / `RHDH_TOKEN_ISSUER` — in-cluster HTTP vs. public Route HTTPS.**
 The env-var table above and the inline comments in `app-config-launcher.yaml` give the
-public HTTPS Route URL (`https://developer-hub-rhdh.apps.anaeem.na-launch.com`). The
+public HTTPS Route URL (`https://developer-hub-rhdh.apps.ocp-dev.na-launch.com`). The
 launcher overlay (`services/sandbox-launcher/deploy/overlays/anaeem/deployment-patch.yaml`)
 already carries both vars set to the public HTTPS Route URL. If you switch `RHDH_JWKS_URL`
 to in-cluster HTTP (`http://developer-hub.rhdh.svc:7007/api/auth/.backstage/jwks.json`)

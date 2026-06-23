@@ -299,7 +299,7 @@ spec:
         icon: security
       - title: View sandbox in cluster
         # sandbox_name — snake_case per LaunchResponse serialisation (no alias).
-        url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandbox_name }}
+        url: https://console-openshift-console.apps.ocp-dev.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/${{ steps['launchSandbox'].output.body.sandbox_name }}
         icon: kubernetes
     text:
       - title: Sandbox details
@@ -322,7 +322,7 @@ spec:
 # 1. ENABLE THE PLUGIN
 #    Verify http:backstage:request is available on the live cluster:
 #      curl -H "Authorization: Bearer <token>" \
-#           https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/scaffolder/v2/actions \
+#           https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/scaffolder/v2/actions \
 #        | python3 -m json.tool | grep 'http:backstage'
 #
 #    If absent, patch the developer-hub-dynamic-plugins ConfigMap to add:

@@ -20,7 +20,7 @@ spec:
 ---
 # Allow ingress on :8080 from the OpenShift router.
 # RHDH (backstage-rhdh-oidc) is on the virt hub cluster; its proxy call to
-# https://sandbox-launcher.apps.anaeem.na-launch.com arrives post-DNAT from the
+# https://sandbox-launcher.apps.ocp-dev.na-launch.com arrives post-DNAT from the
 # router pods in openshift-ingress, not from an intra-cluster pod-to-pod path.
 # The same selector covers all Route-fronted ingress (admin curl, health checks).
 apiVersion: networking.k8s.io/v1
@@ -172,7 +172,7 @@ spec:
       ports:
         - port: 8200
           protocol: TCP
-    # Also allow vault FQDN via Route (vault.apps.anaeem.na-launch.com -> router :443)
+    # Also allow vault FQDN via Route (vault.apps.ocp-dev.na-launch.com -> router :443)
     - to:
         - namespaceSelector:
             matchLabels:
@@ -218,7 +218,7 @@ spec:
         - port: 6443
           protocol: TCP
 ---
-# Egress to the Keycloak Route (keycloak.apps.anaeem.na-launch.com:443).
+# Egress to the Keycloak Route (keycloak.apps.ocp-dev.na-launch.com:443).
 # The launcher MUST mint its OIDC client-credentials token via the ROUTE so the
 # token's iss == the gateway-configured issuer (https://keycloak.apps.../realms/
 # agentic). The in-cluster keycloak-service derives iss=<svc>.svc -> the gateway

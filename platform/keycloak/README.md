@@ -117,13 +117,13 @@ oc -n keycloak get pods -l app=keycloak
 oc -n keycloak get keycloakrealmimport agentic-realm
 
 # Fetch OIDC discovery document
-curl -sk https://keycloak.apps.anaeem.na-launch.com/realms/agentic/.well-known/openid-configuration | jq .
+curl -sk https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/.well-known/openid-configuration | jq .
 
 # Test token-exchange (RFC8693) — acquire a subject token first, then exchange it.
 # Step 1: get agent-runtime access token (client credentials)
 AGENT_SECRET=$(oc -n keycloak get secret agent-runtime-client-secret -o jsonpath='{.data.secret}' | base64 -d 2>/dev/null || echo "<get-from-keycloak-admin>")
 SUBJECT_TOKEN=$(curl -sk -X POST \
-  https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token \
+  https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token \
   -d "grant_type=client_credentials" \
   -d "client_id=agent-runtime" \
   -d "client_secret=${AGENT_SECRET}" | jq -r .access_token)
@@ -131,7 +131,7 @@ SUBJECT_TOKEN=$(curl -sk -X POST \
 # Step 2: exchange for a mcp-downstream-scoped token (RFC8693)
 GW_SECRET=$(oc -n keycloak get secret mcp-gateway-client-secret -o jsonpath='{.data.secret}' | base64 -d 2>/dev/null || echo "<get-from-keycloak-admin>")
 curl -sk -X POST \
-  https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token \
+  https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "client_id=mcp-gateway" \
   -d "client_secret=${GW_SECRET}" \

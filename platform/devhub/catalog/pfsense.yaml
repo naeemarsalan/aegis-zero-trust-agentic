@@ -26,7 +26,7 @@ metadata:
   annotations:
     backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/pfsense.yaml
     # MCP gateway path this capability maps to (see agentgateway httproute-mcp.yaml: /mcp -> pfsense-mcp)
-    nvidia-ida/mcp-endpoint: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+    nvidia-ida/mcp-endpoint: https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp
     nvidia-ida/mcp-gateway-path: /mcp
     nvidia-ida/mcp-backend: pfsense-mcp.agentic-mcp.svc.cluster.local:8000
     # Tool classification: which verb prefixes are read-only vs privileged (JIT).
@@ -35,7 +35,7 @@ metadata:
     # Privileged tools mutate state and require JIT approval; restricted to group:default/mcp-admins.
     nvidia-ida/tools-privileged: "create_*, update_*, delete_*, apply_*, bulk_*, control_service, reboot_system, halt_system, restore_*, move_*, manage_*, generate_*, issue_*, renew_*, register_*, export_*, disconnect_*, send_wake_on_lan"
   links:
-    - url: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+    - url: https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp
       title: Live MCP endpoint (/mcp)
       icon: web
     - url: https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/platform/agentgateway/base/backend-pfsense-mcp.yaml

@@ -12,7 +12,7 @@ metadata:
     # Full path restriction is enforced by NetworkPolicy (only router allowed on :8080
     # for /webhooks/gitea; agent-sandbox pods call Service directly).
 spec:
-  host: jit-approver.apps.anaeem.na-launch.com
+  host: jit-approver.apps.ocp-dev.na-launch.com
   path: /webhooks/gitea
   to:
     kind: Service

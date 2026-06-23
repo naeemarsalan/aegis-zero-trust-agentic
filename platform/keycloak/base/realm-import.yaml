@@ -258,7 +258,7 @@ spec:
         firstBrokerLoginFlowAlias: first broker login
         config:
           # SPIRE OIDC discovery endpoint (populated by SpireOIDCDiscoveryProvider)
-          discoveryEndpoint: "https://spire-oidc.apps.anaeem.na-launch.com/.well-known/openid-configuration"
+          discoveryEndpoint: "https://spire-oidc.apps.ocp-dev.na-launch.com/.well-known/openid-configuration"
           clientId: "keycloak"          # SPIRE audience — must match a registered SPIRE audience
           clientSecret: ""              # JWT-bearer flows do not require a client secret from the IdP
           # For jwt-bearer (RFC7523) usage the ext-proc posts to Keycloak's token endpoint

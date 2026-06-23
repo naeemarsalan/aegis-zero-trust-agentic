@@ -1,7 +1,7 @@
 // Package spire verifies SPIRE-issued JWT-SVIDs for the agent-sandbox workload.
 //
 // The SPIRE OIDC discovery provider issues RS256 or ES256 JWTs whose issuer is
-// https://spire-oidc.apps.anaeem.na-launch.com (SpireOIDCDiscoveryProvider
+// https://spire-oidc.apps.ocp-dev.na-launch.com (SpireOIDCDiscoveryProvider
 // jwtIssuer). These are a SEPARATE token class from the Keycloak user JWTs;
 // the only workload identity carried is in the standard JWT sub claim:
 //
@@ -70,7 +70,7 @@ type Verifier struct {
 
 // New constructs a SPIRE SVID verifier.
 // cfg.JWKSURL is the SPIRE OIDC discovery JWKS endpoint
-// (e.g. https://spire-oidc.apps.anaeem.na-launch.com/keys).
+// (e.g. https://spire-oidc.apps.ocp-dev.na-launch.com/keys).
 // cfg.Issuer must match the spire-oidc jwtIssuer config field.
 // cfg.ExpectedAudience must be "mcp-gateway".
 // AllowEC is forced to true (SPIRE may issue ES256).

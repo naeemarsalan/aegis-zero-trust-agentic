@@ -79,7 +79,7 @@ spec:
     # OpenShell gateway host, kube apiserver (kubernetes.default + clusterIP 172.30.0.1), loopback.
     #
     # ext-proc / pfSense plane (2026-06-21): the PUBLIC mcp-gateway route host
-    # (mcp-gateway.apps.anaeem.na-launch.com) IS now in NO_PROXY so the real-tool ext-proc call
+    # (mcp-gateway.apps.ocp-dev.na-launch.com) IS now in NO_PROXY so the real-tool ext-proc call
     # bypasses the kagenti proxy. WHY: mcp-call sends `Authorization: Bearer <agent-SVID>` to the
     # mcp-gateway; with DEFAULT_OUTBOUND_POLICY=exchange any non-NO_PROXY host falls through to
     # kagenti token-exchange, which REWRITES Authorization and replaces the SVID Bearer ->
@@ -111,9 +111,9 @@ spec:
                 path: "/spec/podTemplate/spec/containers/{{ elementIndex }}/env/-"
                 value:
                   name: NO_PROXY
-                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.anaeem.na-launch.com"
+                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.ocp-dev.na-launch.com"
               - op: add
                 path: "/spec/podTemplate/spec/containers/{{ elementIndex }}/env/-"
                 value:
                   name: no_proxy
-                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.anaeem.na-launch.com"
+                  value: "127.0.0.1,localhost,172.16.2.251,172.16.2.52,openshell.openshell.svc.cluster.local,openshell.openshell.svc,kubernetes.default.svc,kubernetes.default,172.30.0.1,mcp-gateway.apps.ocp-dev.na-launch.com"

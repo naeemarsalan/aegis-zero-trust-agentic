@@ -22,14 +22,14 @@ metadata:
   annotations:
     backstage.io/source-location: url:https://git.arsalan.io/anaeem/nvidia-ida/raw/branch/main/platform/devhub/catalog/echo.yaml
     # MCP gateway path this capability maps to (see agentgateway httproute-mcp.yaml: /echo -> echo-mcp)
-    nvidia-ida/mcp-endpoint: https://mcp-gateway.apps.anaeem.na-launch.com/echo
+    nvidia-ida/mcp-endpoint: https://mcp-gateway.apps.ocp-dev.na-launch.com/echo
     nvidia-ida/mcp-gateway-path: /echo
     nvidia-ida/mcp-backend: echo-mcp.agentic-mcp.svc.cluster.local:8000
     # Tool classification: all tools are read-only; none require JIT.
     nvidia-ida/tools-read-only: "echo (returns caller SPIFFE SVID + JWT claims)"
     nvidia-ida/tools-privileged: "none"
   links:
-    - url: https://mcp-gateway.apps.anaeem.na-launch.com/echo
+    - url: https://mcp-gateway.apps.ocp-dev.na-launch.com/echo
       title: Live echo endpoint (/echo)
       icon: web
     - url: https://git.arsalan.io/anaeem/nvidia-ida/src/branch/main/platform/agentgateway/base/backend-echo-mcp.yaml

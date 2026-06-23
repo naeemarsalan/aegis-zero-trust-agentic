@@ -56,8 +56,8 @@ func main() {
 }
 
 func run() error {
-	realm := env("KEYCLOAK_REALM_URL", "https://keycloak.apps.anaeem.na-launch.com/realms/agentic")
-	gw := strings.TrimRight(env("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com"), "/")
+	realm := env("KEYCLOAK_REALM_URL", "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic")
+	gw := strings.TrimRight(env("MCP_GATEWAY_URL", "https://mcp-gateway.apps.ocp-dev.na-launch.com"), "/")
 	echoPath := env("ECHO_PATH", "/echo")
 	clientID := env("OIDC_CLIENT_ID", readSecret("oidc_client_id"))
 	clientSecret := readSecret("oidc_client_secret")

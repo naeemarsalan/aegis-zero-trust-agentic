@@ -18,7 +18,7 @@ Design contract (frozen — see FROZEN CONTRACT in the project design brief)
 
 Environment variables
 ---------------------
-MCP_GATEWAY_URL     — Gateway base URL (default https://mcp-gateway.apps.anaeem.na-launch.com)
+MCP_GATEWAY_URL     — Gateway base URL (default https://mcp-gateway.apps.ocp-dev.na-launch.com)
 AGENT_GOAL          — Goal/prompt for the agent (overridden by argv[1] if present)
 AGENT_SESSION_ID    — Optional: stable session ID for resuming or grouping logs
 SVID_JWT_PATH       — Path to the agent SVID JWT file (see svid_bearer.py)
@@ -83,7 +83,7 @@ ALLOWED_TOOL = f"mcp__{MCP_SERVER_NAME}__search_firewall_rules"
 
 # From frozen mcpServer contract.
 MCP_GATEWAY_URL_ENV = "MCP_GATEWAY_URL"
-MCP_GATEWAY_URL_DEFAULT = "https://mcp-gateway.apps.anaeem.na-launch.com"
+MCP_GATEWAY_URL_DEFAULT = "https://mcp-gateway.apps.ocp-dev.na-launch.com"
 
 AGENT_GOAL_ENV = "AGENT_GOAL"
 AGENT_SESSION_ID_ENV = "AGENT_SESSION_ID"

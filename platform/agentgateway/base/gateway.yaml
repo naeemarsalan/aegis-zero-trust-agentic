@@ -21,7 +21,7 @@ spec:
     - name: http
       protocol: HTTP
       port: 8080
-      hostname: "mcp-gateway.apps.anaeem.na-launch.com"
+      hostname: "mcp-gateway.apps.ocp-dev.na-launch.com"
       allowedRoutes:
         namespaces:
           from: Same

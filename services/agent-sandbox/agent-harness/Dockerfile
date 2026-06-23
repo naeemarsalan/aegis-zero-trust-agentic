@@ -16,7 +16,7 @@
 #
 # Run (example — actual deployment is via the sandbox pod spec):
 #   docker run --rm \
-#     -e MCP_GATEWAY_URL=https://mcp-gateway.apps.anaeem.na-launch.com \
+#     -e MCP_GATEWAY_URL=https://mcp-gateway.apps.ocp-dev.na-launch.com \
 #     -e AGENT_GOAL="list all firewall rules" \
 #     --env-file inference.env \
 #     -v /run/spiffe/:/spiffe-workload-api/:ro \
@@ -66,7 +66,7 @@ USER 1001
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     # Default gateway URL — overridden by the pod spec environment.
-    MCP_GATEWAY_URL=https://mcp-gateway.apps.anaeem.na-launch.com \
+    MCP_GATEWAY_URL=https://mcp-gateway.apps.ocp-dev.na-launch.com \
     # SPIFFE Workload API socket path (mounted by SPIRE CSI driver).
     SPIFFE_ENDPOINT_SOCKET=unix:///spiffe-workload-api/spire-agent.sock \
     # Sidecar-written SVID JWT path (alternative to Workload API).

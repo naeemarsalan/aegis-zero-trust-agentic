@@ -41,7 +41,7 @@ written (fail-closed).
 
 Environment variables
 ---------------------
-VAULT_ADDR              — Vault address (default: https://vault.apps.anaeem.na-launch.com)
+VAULT_ADDR              — Vault address (default: https://vault.apps.ocp-dev.na-launch.com)
 VAULT_SKIP_VERIFY       — "true" to skip TLS verification (PoC/dev only)
 VAULT_CACERT            — path to CA bundle for Vault TLS
 VAULT_K8S_AUTH_PATH     — Vault kubernetes auth mount (default: kubernetes)
@@ -85,7 +85,7 @@ _PROHIBITED_GRANT_FIELDS: frozenset[str] = frozenset({
 
 
 def _vault_addr() -> str:
-    return os.environ.get("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com").rstrip("/")
+    return os.environ.get("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com").rstrip("/")
 
 
 def _http_client() -> httpx.Client:

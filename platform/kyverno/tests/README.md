@@ -57,7 +57,7 @@ For integration tests (real cluster), obtain tokens from Keycloak:
 ```bash
 # mcp-users token
 curl -s -X POST \
-  https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token \
+  https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token \
   -d 'grant_type=password&client_id=mcp-gateway&username=<user>&password=<pw>' \
   | jq -r .access_token
 ```

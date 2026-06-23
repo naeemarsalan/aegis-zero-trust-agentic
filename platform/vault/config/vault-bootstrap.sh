@@ -2,13 +2,13 @@
 # vault-bootstrap.sh — Declarative Vault configuration for nvidia-ida PoC.
 #
 # PREREQUISITES (run after `vault operator init` + `vault operator unseal`):
-#   - VAULT_ADDR exported (e.g. https://vault.apps.anaeem.na-launch.com)
+#   - VAULT_ADDR exported (e.g. https://vault.apps.ocp-dev.na-launch.com)
 #   - VAULT_TOKEN exported (initial root token — rotate after bootstrap)
 #   - environment/.env sourced for PFSENSE_API_URL and PFSENSE_API_KEY
 #
 # USAGE:
 #   source environment/.env          # provides PFSENSE_API_URL, PFSENSE_API_KEY
-#   export VAULT_ADDR=https://vault.apps.anaeem.na-launch.com
+#   export VAULT_ADDR=https://vault.apps.ocp-dev.na-launch.com
 #   export VAULT_TOKEN=<root-token>  # from `vault operator init` output
 #   bash platform/vault/config/vault-bootstrap.sh
 #
@@ -91,11 +91,11 @@ log "Configuring JWT auth (SPIRE OIDC issuer)..."
 # router CA chain PEM> (e.g. from `openssl s_client -showcerts`).
 if [ -n "${OIDC_DISCOVERY_CA_PEM:-}" ]; then
   vault write auth/jwt/config \
-    oidc_discovery_url="https://spire-oidc.apps.anaeem.na-launch.com" \
+    oidc_discovery_url="https://spire-oidc.apps.ocp-dev.na-launch.com" \
     oidc_discovery_ca_pem=@"${OIDC_DISCOVERY_CA_PEM}"
 else
   vault write auth/jwt/config \
-    oidc_discovery_url="https://spire-oidc.apps.anaeem.na-launch.com"
+    oidc_discovery_url="https://spire-oidc.apps.ocp-dev.na-launch.com"
 fi
 
 # Role: ext-proc-delegation
@@ -149,7 +149,7 @@ log "Configuring Kubernetes secrets engine..."
 SA_JWT="${VAULT_K8S_SA_JWT:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)}"
 SA_CA="${VAULT_K8S_CA_CERT:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)}"
 vault write kubernetes/config \
-  kubernetes_host="https://api.anaeem.na-launch.com:6443" \
+  kubernetes_host="https://api.ocp-dev.na-launch.com:6443" \
   service_account_jwt="${SA_JWT}" \
   kubernetes_ca_cert="${SA_CA}"
 
@@ -287,7 +287,7 @@ done
 # Fetched live from the Keycloak admin API so the bootstrap is self-contained.
 log "Fetching mcp-gateway client secret from Keycloak and storing in Vault..."
 OC="${OC:-oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify}"
-KC_URL="${KEYCLOAK_URL:-https://keycloak.apps.anaeem.na-launch.com}"
+KC_URL="${KEYCLOAK_URL:-https://keycloak.apps.ocp-dev.na-launch.com}"
 if KC_ADMIN_PW="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)" && [ -n "$KC_ADMIN_PW" ]; then
   KC_ADMIN_USER="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.username}' | base64 -d)"
   KC_TOK="$(curl -sk -d client_id=admin-cli -d "username=${KC_ADMIN_USER}" --data-urlencode "password=${KC_ADMIN_PW}" -d grant_type=password "${KC_URL}/realms/master/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"

@@ -35,7 +35,7 @@ spec:
         - name: PATH
           value: "/opt/ztp/bin:/opt/app-root/src/.local/bin/:/opt/app-root/src/bin:/opt/app-root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         - name: MCP_GATEWAY_URL
-          value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+          value: "https://mcp-gateway.apps.ocp-dev.na-launch.com"
       envFrom:
         - secretRef:
             name: agent-harness-inference

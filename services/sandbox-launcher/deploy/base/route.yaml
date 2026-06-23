@@ -5,7 +5,7 @@
 # Because cross-cluster pod-to-pod is not configured, the proxy target MUST be this
 # Route URL, not the in-cluster Service URL.
 #
-# RHDH app-config proxy target: https://sandbox-launcher.apps.anaeem.na-launch.com
+# RHDH app-config proxy target: https://sandbox-launcher.apps.ocp-dev.na-launch.com
 # (update the RHDH proxy entry from the placeholder to this URL when configuring
 # the virt hub backstage-rhdh-oidc deployment).
 apiVersion: route.openshift.io/v1
@@ -18,7 +18,7 @@ metadata:
     app.kubernetes.io/name: sandbox-launcher
     app.kubernetes.io/part-of: nvidia-ida
 spec:
-  host: sandbox-launcher.apps.anaeem.na-launch.com
+  host: sandbox-launcher.apps.ocp-dev.na-launch.com
   to:
     kind: Service
     name: sandbox-launcher

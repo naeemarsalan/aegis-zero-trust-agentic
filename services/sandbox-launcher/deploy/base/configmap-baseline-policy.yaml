@@ -41,7 +41,7 @@ data:
       mcp_gateway:
         name: platform-mcp-gateway
         endpoints:
-          - host: mcp-gateway.apps.anaeem.na-launch.com
+          - host: mcp-gateway.apps.ocp-dev.na-launch.com
             port: 443
             protocol: rest
             tls: terminate
@@ -57,7 +57,7 @@ data:
       keycloak:
         name: platform-keycloak
         endpoints:
-          - host: keycloak.apps.anaeem.na-launch.com
+          - host: keycloak.apps.ocp-dev.na-launch.com
             port: 443
             protocol: rest
             tls: terminate
@@ -73,7 +73,7 @@ data:
       vault:
         name: platform-vault
         endpoints:
-          - host: vault.apps.anaeem.na-launch.com
+          - host: vault.apps.ocp-dev.na-launch.com
             port: 443
             protocol: rest
             tls: terminate

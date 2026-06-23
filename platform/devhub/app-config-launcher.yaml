@@ -114,8 +114,8 @@ proxy:
       # credentials: forward — RHDH requires the caller to be authenticated
       # and forwards the Backstage user JWT as Authorization: Bearer <token>
       # to the launcher. The launcher MUST verify this token against:
-      #   RHDH_JWKS_URL: https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
-      #   RHDH_TOKEN_ISSUER: https://developer-hub-rhdh.apps.anaeem.na-launch.com
+      #   RHDH_JWKS_URL: https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/.backstage/jwks.json
+      #   RHDH_TOKEN_ISSUER: https://developer-hub-rhdh.apps.ocp-dev.na-launch.com
       # The user entity ref is in the `sub` claim (e.g. user:default/arsalan)
       # or the `ent[0]` claim. Cross-check against body.user (LaunchRequest.user); reject 403
       # if they conflict. Reject 401 if the token is absent or fails
@@ -146,8 +146,8 @@ proxy:
 # reference for what each var does; no additional edits to that file are
 # required for this wiring.
 #
-#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json
-#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#   RHDH_JWKS_URL=https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/.backstage/jwks.json
+#   RHDH_TOKEN_ISSUER=https://developer-hub-rhdh.apps.ocp-dev.na-launch.com
 #   LAUNCHER_OIDC_TOKEN_URL=http://keycloak.keycloak.svc:8080/realms/agentic/protocol/openid-connect/token
 #   LAUNCHER_OIDC_CLIENT_ID=sandbox-launcher
 #   LAUNCHER_OIDC_CLIENT_SECRET_FILE=/vault/secrets/launcher-oidc-secret

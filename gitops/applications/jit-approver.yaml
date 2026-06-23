@@ -11,11 +11,11 @@ spec:
 
   source:
     repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
-    targetRevision: main
+    targetRevision: fix/jit-approver-mint-route
     path: services/jit-approver/deploy/overlays/anaeem
 
   destination:
-    server: https://api.anaeem.na-launch.com:6443
+    server: https://kubernetes.default.svc
     namespace: mcp-gateway
 
   syncPolicy:

@@ -1,6 +1,6 @@
 # RHOAI Models-as-a-Service (MaaS) install — status + resume runbook
 
-Cluster: anaeem-sno (SNO) · domain `apps.anaeem.na-launch.com` · RHOAI `rhods-operator.3.4.0-ea.2` (early-access/Tech-Preview).
+Cluster: anaeem-sno (SNO) · domain `apps.ocp-dev.na-launch.com` · RHOAI `rhods-operator.3.4.0-ea.2` (early-access/Tech-Preview).
 
 ---
 ## ⚠️ INCIDENT 2026-06-23 ~16:43–17:13 — Stage 3 patch triggered an etcd write-latency meltdown. HUMAN NODE-LEVEL ACTION NEEDED.
@@ -140,7 +140,7 @@ The rhods-operator then deploys (from `/opt/manifests/maas/` inside the operator
   secret named **`maas-db-config`** (see DB note),
 - the `maas-controller` (env `GATEWAY_NAME=maas-default-gateway`, `GATEWAY_NAMESPACE=openshift-ingress`,
   `MAAS_SUBSCRIPTION_NAMESPACE=models-as-a-service`),
-- Gateway **`maas-default-gateway`** in `openshift-ingress` (hostname `maas.apps.anaeem.na-launch.com`,
+- Gateway **`maas-default-gateway`** in `openshift-ingress` (hostname `maas.apps.ocp-dev.na-launch.com`,
   ports 80/443) — **GOTCHA:** its template uses `gatewayClassName: openshift-default`, which does
   **NOT exist** on this cluster (only `data-science-gateway-class` + `agentgateway` exist). If the
   Gateway never goes Programmed, either create an `openshift-default` GatewayClass or patch the Gateway
@@ -188,7 +188,7 @@ Create (verify field names against the LIVE CRDs once present —
 
 ### Stage 5 — mint a per-agent key + prove inference
 ```
-HOST=https://maas.apps.anaeem.na-launch.com
+HOST=https://maas.apps.ocp-dev.na-launch.com
 # mint
 curl -sS -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
   -X POST -d '{"name":"agent-key","expiresIn":"1h","subscription":"<sub-name>","ephemeral":true}' \
@@ -205,7 +205,7 @@ At agent-creation the launcher should:
    `{"name":"agent-<uuid>","expiresIn":"<sandbox-ttl>","subscription":"agent-sub","ephemeral":true}`,
    capture `key` (`sk-oai-*`).
 2. Inject into the brain's env/secret instead of the static LiteLLM key:
-   `ANTHROPIC_BASE_URL=https://maas.apps.anaeem.na-launch.com/llm/<model>` (OpenAI-compat base) and
+   `ANTHROPIC_BASE_URL=https://maas.apps.ocp-dev.na-launch.com/llm/<model>` (OpenAI-compat base) and
    `ANTHROPIC_API_KEY=<sk-oai-key>` (or the OpenAI env the harness uses).
 3. The key is short-lived (ephemeral max 1h) + per-agent + token-rate-limited + revocable -> aligns with
    the credential-less / JIT zero-trust invariant: the agent holds only a scoped, expiring inference key,

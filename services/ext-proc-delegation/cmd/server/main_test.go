@@ -163,7 +163,7 @@ func TestBuildSpireHTTPClient_CAFile_InvalidPEM(t *testing.T) {
 // SPIRE_TLS_INSECURE nor SPIRE_CA_FILE is set, the returned client uses
 // system root CAs (RootCAs == nil) with InsecureSkipVerify == false and
 // MinVersion == TLS 1.2. This is the correct configuration for the LE-fronted
-// OpenShift reencrypt Route (*.apps.anaeem.na-launch.com). No workload API
+// OpenShift reencrypt Route (*.apps.ocp-dev.na-launch.com). No workload API
 // socket is required; src may be nil.
 func TestBuildSpireHTTPClient_Default_SystemRoots(t *testing.T) {
 	cfg := &config.Config{} // neither SpireTLSInsecure nor SpireCAFile set

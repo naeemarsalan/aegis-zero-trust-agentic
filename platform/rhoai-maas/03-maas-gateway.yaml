@@ -25,14 +25,14 @@ spec:
   gatewayClassName: data-science-gateway-class
   listeners:
     - name: http
-      hostname: maas.apps.anaeem.na-launch.com
+      hostname: maas.apps.ocp-dev.na-launch.com
       port: 80
       protocol: HTTP
       allowedRoutes:
         namespaces:
           from: All
     - name: https
-      hostname: maas.apps.anaeem.na-launch.com
+      hostname: maas.apps.ocp-dev.na-launch.com
       port: 443
       protocol: HTTPS
       allowedRoutes:

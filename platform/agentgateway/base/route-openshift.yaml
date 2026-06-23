@@ -16,7 +16,7 @@ metadata:
     haproxy.router.openshift.io/timeout: 300s
     # Sticky sessions not required — agentgateway handles MCP session routing internally
 spec:
-  host: mcp-gateway.apps.anaeem.na-launch.com
+  host: mcp-gateway.apps.ocp-dev.na-launch.com
   port:
     targetPort: listener-8080  # the controller names the provisioned Service port listener-<port>
   to:

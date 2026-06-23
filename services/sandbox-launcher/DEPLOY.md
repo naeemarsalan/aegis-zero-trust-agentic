@@ -72,7 +72,7 @@ vault policy write ext-proc-delegation platform/vault/policies/ext-proc-delegati
 - Writer: sandbox-launcher SA via Vault k8s auth role `sandbox-launcher`
 - Reader: ext-proc-delegation SA via Vault k8s auth role `ext-proc-delegation`
 - Grant document is a CONSENT RECORD (not a credential): `{version, sandbox_uid, user, scope, ttl, nonce, created}`
-- `VAULT_ADDR` env var on the sandbox-launcher pod must be set (e.g. `https://vault.apps.anaeem.na-launch.com`)
+- `VAULT_ADDR` env var on the sandbox-launcher pod must be set (e.g. `https://vault.apps.ocp-dev.na-launch.com`)
 - `VAULT_SKIP_VERIFY=true` for PoC (self-signed ingress cert); use `VAULT_CACERT` in production
 - Launcher authenticates via in-cluster SA token (k8s auth, same mechanism as Vault Agent Injector)
 - To use SPIFFE SVID auth instead: set `VAULT_JWT_AUTH_PATH=jwt` + ensure `SVID_JWT_PATH` is populated by the workload API helper

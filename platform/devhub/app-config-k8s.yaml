@@ -55,7 +55,7 @@ kubernetes:
     - type: config
       clusters:
         - name: anaeem
-          url: https://api.anaeem.na-launch.com:6443
+          url: https://api.ocp-dev.na-launch.com:6443
           authProvider: serviceAccount
           # Token for the ServiceAccount whose ClusterRoleBinding grants
           # get/list/watch on sandboxes.agents.x-k8s.io (see k8s-plugin.md § 2).

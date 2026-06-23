@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	testSpireIssuer = "https://spire-oidc.apps.anaeem.na-launch.com"
+	testSpireIssuer = "https://spire-oidc.apps.ocp-dev.na-launch.com"
 	testSpireAud    = "mcp-gateway"
 	testTrustDomain = "spiffe://anaeem.na-launch.com/"
 )
@@ -347,7 +347,7 @@ func TestIsSPIRESVID_TrueForSpireToken(t *testing.T) {
 func TestIsSPIRESVID_FalseForKeycloakToken(t *testing.T) {
 	priv, _ := newRSASigner(t, "k1")
 	claims := jwt.Claims{
-		Issuer:    "https://keycloak.apps.anaeem.na-launch.com/realms/agentic",
+		Issuer:    "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic",
 		Subject:   "user-alice",
 		Audience:  jwt.Audience{testSpireAud},
 		Expiry:    jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),

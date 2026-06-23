@@ -53,7 +53,7 @@ os.environ.setdefault("GITEA_WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("GITEA_REPO", "anaeem/nvidia-ida")
 os.environ.setdefault("GITEA_BASE_URL", "https://git.arsalan.io")
 os.environ.setdefault("GITEA_DEFAULT_BRANCH", "main")
-os.environ.setdefault("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com")
+os.environ.setdefault("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com")
 # Drive the reaper via reap_once() in tests; don't start the background loop
 # (which would try a real Vault login on TestClient startup).
 os.environ.setdefault("JIT_DISABLE_REAPER", "1")
@@ -165,7 +165,7 @@ def _insert_session(session_id: str, pr_number: int, req: Any) -> None:
 
 def _mock_vault_issue(session_id: str, role_name: str | None = None) -> None:
     """Mock Vault login, ephemeral role create, creds read, and KV store."""
-    vault_addr = "https://vault.apps.anaeem.na-launch.com"
+    vault_addr = "https://vault.apps.ocp-dev.na-launch.com"
     role = role_name or f"jit-{session_id}"
     respx.post(f"{vault_addr}/v1/auth/jwt/login").mock(
         return_value=httpx.Response(
@@ -629,7 +629,7 @@ class TestIssueFromReviewedArtifact:
         _mock_merged_grant(session_id, narrowed)
 
         role_create = respx.post(
-            "https://vault.apps.anaeem.na-launch.com/v1/kubernetes/roles/jit-"
+            "https://vault.apps.ocp-dev.na-launch.com/v1/kubernetes/roles/jit-"
             + session_id
         ).mock(return_value=httpx.Response(200, json={}))
         _mock_vault_issue(session_id)
@@ -755,7 +755,7 @@ class TestReplayProtection:
         _mock_merged_grant(session_id, _grant_yaml(session_id))
 
         creds = respx.post(
-            f"https://vault.apps.anaeem.na-launch.com/v1/kubernetes/creds/jit-{session_id}"
+            f"https://vault.apps.ocp-dev.na-launch.com/v1/kubernetes/creds/jit-{session_id}"
         ).mock(
             return_value=httpx.Response(
                 200,
@@ -794,7 +794,7 @@ class TestReplayProtection:
         _insert_session(session_id, pr_number, EscalationRequest(**_base_request()))
         _mock_merged_grant(session_id, _grant_yaml(session_id))
         creds = respx.post(
-            f"https://vault.apps.anaeem.na-launch.com/v1/kubernetes/creds/jit-{session_id}"
+            f"https://vault.apps.ocp-dev.na-launch.com/v1/kubernetes/creds/jit-{session_id}"
         ).mock(
             return_value=httpx.Response(
                 200,
@@ -1300,7 +1300,7 @@ class TestReaper:
 
         from jit_approver.reaper import reap_once
 
-        vault_addr = "https://vault.apps.anaeem.na-launch.com"
+        vault_addr = "https://vault.apps.ocp-dev.na-launch.com"
         sid = str(uuid.uuid4())
         role = f"jit-{sid}"
         past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
@@ -1341,7 +1341,7 @@ class TestReaper:
 
         from jit_approver.reaper import reap_once
 
-        vault_addr = "https://vault.apps.anaeem.na-launch.com"
+        vault_addr = "https://vault.apps.ocp-dev.na-launch.com"
         sid = str(uuid.uuid4())
         role = f"jit-{sid}"
         future = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
@@ -1377,7 +1377,7 @@ class TestReaper:
 
         from jit_approver.reaper import reap_once
 
-        vault_addr = "https://vault.apps.anaeem.na-launch.com"
+        vault_addr = "https://vault.apps.ocp-dev.na-launch.com"
         now = datetime.now(timezone.utc)
         expired_id = str(uuid.uuid4())
         future_id = str(uuid.uuid4())
@@ -1421,7 +1421,7 @@ class TestReaper:
 
         from jit_approver.reaper import reap_once
 
-        vault_addr = "https://vault.apps.anaeem.na-launch.com"
+        vault_addr = "https://vault.apps.ocp-dev.na-launch.com"
         sid = str(uuid.uuid4())
         role = f"jit-{sid}"
         session_store[sid] = {

@@ -76,7 +76,7 @@ data:
     JIT_APPROVER_URL = os.environ.get(
         "JIT_APPROVER_URL", "http://jit-approver.mcp-gateway.svc.cluster.local:8080").rstrip("/")
     APPROVAL_CONSOLE_URL = os.environ.get(
-        "APPROVAL_CONSOLE_URL", "https://approval-console.apps.anaeem.na-launch.com")
+        "APPROVAL_CONSOLE_URL", "https://approval-console.apps.ocp-dev.na-launch.com")
     # Target namespace for the JIT escalation request. pfSense default 'agentic-mcp';
     # the OpenShift-troubleshoot session sets JIT_TARGET_NAMESPACE=mcp-demo.
     JIT_TARGET_NAMESPACE = os.environ.get("JIT_TARGET_NAMESPACE", "agentic-mcp")
@@ -254,7 +254,7 @@ data:
         args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
         # Read tools go to the read endpoint (e.g. k8s view-SA MCP), write tools to the
         # write/gate endpoint (JIT-gated). pfSense uses one gateway for both (defaults).
-        _gw = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.anaeem.na-launch.com")
+        _gw = os.environ.get("MCP_GATEWAY_URL", "https://mcp-gateway.apps.ocp-dev.na-launch.com")
         read_url = os.environ.get("MCP_READ_URL", _gw).rstrip("/") + "/mcp"
         write_url = os.environ.get("MCP_WRITE_URL", _gw).rstrip("/") + "/mcp"
         url = write_url if tool in _WRITE_TOOL_RESOURCES else read_url

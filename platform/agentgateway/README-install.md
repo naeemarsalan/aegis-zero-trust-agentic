@@ -62,12 +62,12 @@ curl -sL "${BASE}/crds.yaml" -o crds/agentgateway-crds.yaml
 
 ```bash
 # OIDC discovery reachable through gateway
-curl -k https://mcp-gateway.apps.anaeem.na-launch.com/.well-known/openid-configuration
+curl -k https://mcp-gateway.apps.ocp-dev.na-launch.com/.well-known/openid-configuration
 
 # MCP inspector (install once: npm i -g @modelcontextprotocol/inspector)
 MCP_BEARER=<token>
 npx @modelcontextprotocol/inspector \
-  --url https://mcp-gateway.apps.anaeem.na-launch.com/mcp \
+  --url https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp \
   --header "Authorization: Bearer ${MCP_BEARER}"
 
 # Check CRD status

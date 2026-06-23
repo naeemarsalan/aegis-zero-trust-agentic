@@ -17,7 +17,7 @@ spec:
             - name: GITEA_DEFAULT_BRANCH
               value: "main"
             - name: VAULT_ADDR
-              value: "https://vault.apps.anaeem.na-launch.com"
+              value: "https://vault.apps.ocp-dev.na-launch.com"
             - name: JIT_ALLOWED_NAMESPACES
               value: "agent-sandbox,agentic-mcp"
             # LANE A threat-model decision: the control is human-gates-and-logs

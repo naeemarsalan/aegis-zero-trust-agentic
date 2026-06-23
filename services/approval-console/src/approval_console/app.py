@@ -275,7 +275,7 @@ def _native_brain_env(goal: str, actor: str, session_id: str) -> dict[str, str]:
         "AGENT_MAX_TURNS": Config.agent_max_turns(),
         # ext-proc routing plane (real pfSense via the mcp-gateway ext-proc).
         "MCP_GATEWAY_URL": _os.environ.get("MCP_GATEWAY_URL", "").strip()
-        or "https://mcp-gateway.apps.anaeem.na-launch.com",
+        or "https://mcp-gateway.apps.ocp-dev.na-launch.com",
         "MCP_SEND_SVID": _os.environ.get("MCP_SEND_SVID", "").strip() or "true",
         "JIT_TARGET_NAMESPACE": _os.environ.get("JIT_TARGET_NAMESPACE", "").strip()
         or "agentic-mcp",

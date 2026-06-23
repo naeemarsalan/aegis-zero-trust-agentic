@@ -11,7 +11,7 @@ already installed by `platform/00-operators`).
   - `ZeroTrustWorkloadIdentityManager` — top-level operator config; sets
     `trustDomain: anaeem.na-launch.com`.
   - `SpireServer` — SPIRE server with JWT issuer
-    `https://spire-oidc.apps.anaeem.na-launch.com` and persistent storage on
+    `https://spire-oidc.apps.ocp-dev.na-launch.com` and persistent storage on
     `nfs-csi`.
   - `SpireAgent` — DaemonSet agent for node/workload attestation.
   - `SpiffeCSIDriver` — CSI driver that mounts workload API sockets into pods.
@@ -51,7 +51,7 @@ automatically.  **Before applying, run:**
 oc get route -n zero-trust-workload-identity-manager
 ```
 
-If a route for `spire-oidc.apps.anaeem.na-launch.com` already exists (created
+If a route for `spire-oidc.apps.ocp-dev.na-launch.com` already exists (created
 by the operator), remove `oidc-route.yaml` from
 `base/kustomization.yaml` (or comment it out) to avoid a conflict.  The
 fallback Route uses `reencrypt` TLS termination; adjust `targetPort` if the
@@ -105,9 +105,9 @@ oc get spireoidcdiscoveryprovider cluster -n zero-trust-workload-identity-manage
 oc get pods -n zero-trust-workload-identity-manager
 
 # 3. OIDC discovery document is reachable and contains the correct issuer
-curl -s https://spire-oidc.apps.anaeem.na-launch.com/.well-known/openid-configuration | python3 -m json.tool
+curl -s https://spire-oidc.apps.ocp-dev.na-launch.com/.well-known/openid-configuration | python3 -m json.tool
 
-# Expected: "issuer": "https://spire-oidc.apps.anaeem.na-launch.com"
+# Expected: "issuer": "https://spire-oidc.apps.ocp-dev.na-launch.com"
 
 # 4. ClusterSPIFFEIDs are registered
 oc get clusterspiffeids

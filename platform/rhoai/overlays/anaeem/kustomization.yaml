@@ -8,7 +8,7 @@ resources:
 
 # anaeem-specific patches.
 # The base is fully parameterized for anaeem (SNO, nfs-csi, Vault at
-# vault.apps.anaeem.na-launch.com, registry oci.arsalan.io).
+# vault.apps.ocp-dev.na-launch.com, registry oci.arsalan.io).
 # Add patches here when a second overlay requires different values.
 
 # Example (uncomment when needed):

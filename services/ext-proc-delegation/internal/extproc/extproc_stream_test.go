@@ -604,7 +604,7 @@ func (s *stubOnBehalfExchanger) ExchangeOnBehalf(_ context.Context, _, _ string)
 func testConfigWithSpire() *config.Config {
 	cfg := testConfig()
 	cfg.SpireJWKSURL = "http://spire-oidc/keys"
-	cfg.SpireIssuer = "https://spire-oidc.apps.anaeem.na-launch.com"
+	cfg.SpireIssuer = "https://spire-oidc.apps.ocp-dev.na-launch.com"
 	cfg.SpireAudience = "mcp-gateway"
 	cfg.SandboxGrantPathPrefix = "secret/data/sandbox-grants/"
 	// Static-auth path config required for the /mcp -> static token injection.

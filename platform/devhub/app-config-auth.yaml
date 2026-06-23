@@ -25,7 +25,7 @@
 # WHY
 #   Makes the zero-trust platform consumable: users sign in to Developer Hub as
 #   THEMSELVES via the Keycloak realm "agentic"
-#   (https://keycloak.apps.anaeem.na-launch.com/realms/agentic), and their
+#   (https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic), and their
 #   Keycloak users/groups (arsalan, mcp-admins, mcp-users) are ingested into the
 #   Backstage catalog so identity/governance flows downstream to launched agents.
 #
@@ -41,8 +41,8 @@
 #     - Access Type:        confidential  (Keycloak 19+: Client authentication ON)
 #     - Standard Flow:      ON
 #     - Service Accounts:   ON  (required for catalog ingestion)
-#     - Valid redirect URI: https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/oidc/handler/frame
-#     - Web origin:         https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#     - Valid redirect URI: https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/oidc/handler/frame
+#     - Web origin:         https://developer-hub-rhdh.apps.ocp-dev.na-launch.com
 #     - Service-account roles (realm-management): query-groups, query-users, view-users
 #       (These three roles allow the keycloakOrg plugin to enumerate users/groups.)
 #
@@ -72,15 +72,15 @@
 #
 #   AUTH_SESSION_SECRET    Random 32+ char string (openssl rand -hex 32)
 #                          Required for OIDC session cookies.
-#   KEYCLOAK_METADATA_URL  https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+#   KEYCLOAK_METADATA_URL  https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic
 #                          RHDH auto-appends /.well-known/openid-configuration — do
 #                          NOT append it manually.
-#   KEYCLOAK_BASE_URL      https://keycloak.apps.anaeem.na-launch.com
+#   KEYCLOAK_BASE_URL      https://keycloak.apps.ocp-dev.na-launch.com
 #   KEYCLOAK_REALM         agentic  (realm whose users/groups are ingested)
 #   KEYCLOAK_LOGIN_REALM   agentic  (realm the rhdh service account authenticates to)
 #   KEYCLOAK_CLIENT_ID     rhdh     (the confidential OIDC client — see PREREQUISITE)
 #   KEYCLOAK_CLIENT_SECRET <value from Keycloak client "Credentials" tab>
-#   RHDH_BASE_URL          https://developer-hub-rhdh.apps.anaeem.na-launch.com
+#   RHDH_BASE_URL          https://developer-hub-rhdh.apps.ocp-dev.na-launch.com
 #
 # ============================================================================
 # SHARED-INSTANCE SAFETY — TWO-STEP APPLY
@@ -152,7 +152,7 @@ auth:
 
         # callbackUrl must exactly match the Valid Redirect URI in the Keycloak
         # client config (see PREREQUISITE above). Must be https — the EDGE-terminated
-        # ingress on *.apps.anaeem.na-launch.com provides TLS.
+        # ingress on *.apps.ocp-dev.na-launch.com provides TLS.
         callbackUrl: ${RHDH_BASE_URL}/api/auth/oidc/handler/frame
 
         # NOTE: do NOT set `scope:` here — the OIDC provider rejects it.

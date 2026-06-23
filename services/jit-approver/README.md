@@ -87,7 +87,7 @@ vault kv put secret/data/jit-approver/webhook-secret secret=<random-32-bytes>
 
 # 2. Configure Vault JWT auth role for jit-approver:
 vault write auth/jwt/role/jit-approver \
-  bound_audiences="https://vault.apps.anaeem.na-launch.com" \
+  bound_audiences="https://vault.apps.ocp-dev.na-launch.com" \
   bound_subject="spiffe://anaeem.na-launch.com/ns/mcp-gateway/sa/jit-approver" \
   user_claim="sub" \
   policies="jit-approver" \
@@ -147,7 +147,7 @@ kubectl exec -n mcp-gateway deploy/jit-approver -- \
   curl -s http://localhost:8080/healthz
 
 # Check route is accessible
-curl -sk https://jit-approver.apps.anaeem.na-launch.com/webhooks/gitea \
+curl -sk https://jit-approver.apps.ocp-dev.na-launch.com/webhooks/gitea \
   -X POST -H "X-Gitea-Event: ping" -d '{}' 2>&1
 # Expected: 401 (missing signature) — confirms route reaches the service
 ```
@@ -155,7 +155,7 @@ curl -sk https://jit-approver.apps.anaeem.na-launch.com/webhooks/gitea \
 ## Gitea Webhook Setup
 
 1. In Gitea, navigate to **Repository Settings > Webhooks > Add Webhook > Gitea**.
-2. Target URL: `https://jit-approver.apps.anaeem.na-launch.com/webhooks/gitea`
+2. Target URL: `https://jit-approver.apps.ocp-dev.na-launch.com/webhooks/gitea`
 3. Content type: `application/json`
 4. Secret: the value stored in `vault kv get secret/data/jit-approver/webhook-secret`
 5. Trigger: **Pull Request** events only (closed/merged is what matters)
@@ -177,7 +177,7 @@ Use [py-spiffe](https://github.com/HewlettPackard/py-spiffe) with the workload s
 from spiffe import SpiffeWorkloadApiClient
 
 async with SpiffeWorkloadApiClient() as client:
-    svid = await client.fetch_jwt_svid(audiences=["https://vault.apps.anaeem.na-launch.com"])
+    svid = await client.fetch_jwt_svid(audiences=["https://vault.apps.ocp-dev.na-launch.com"])
     jwt = svid.token
 ```
 
@@ -201,4 +201,4 @@ is set automatically.
   uses this CIDR. To lock it down further, resolve the IP and replace with `/32`.
   Run `nslookup git.arsalan.io` from within the cluster to confirm.
 - **Vault**: allowed via both direct service (`vault:8200`) and the OCP Route
-  (`vault.apps.anaeem.na-launch.com` via router :443).
+  (`vault.apps.ocp-dev.na-launch.com` via router :443).

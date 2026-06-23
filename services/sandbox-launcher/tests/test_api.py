@@ -153,7 +153,7 @@ def mock_keycloak_jwt_ok():
     """Mock Keycloak JWT verification returning preferred_username-based entity ref."""
     claims = {
         "sub": "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",  # UUID — not usable as entity ref
-        "iss": "https://keycloak.apps.anaeem.na-launch.com/realms/agentic",
+        "iss": "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic",
         "exp": 9_999_999_999,
         "preferred_username": "arsalan",
         "email": "arsalan@example.com",
@@ -559,14 +559,14 @@ class TestKeycloakJwksParams:
         from sandbox_launcher.auth import _jwks_params
 
         env = {
-            "KEYCLOAK_ISSUER": "https://keycloak.apps.anaeem.na-launch.com/realms/agentic",
+            "KEYCLOAK_ISSUER": "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic",
             "KEYCLOAK_JWKS_URL": "",
             "KEYCLOAK_JWKS_CA": "",
         }
         with patch.dict(os.environ, env):
             url, _ = _jwks_params("keycloak")
         assert url == (
-            "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+            "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"
             "/protocol/openid-connect/certs"
         )
 
@@ -574,13 +574,13 @@ class TestKeycloakJwksParams:
         from sandbox_launcher.auth import _jwks_params
 
         env = {
-            "KEYCLOAK_ISSUER": "https://keycloak.apps.anaeem.na-launch.com/realms/agentic",
-            "KEYCLOAK_JWKS_URL": "https://keycloak.apps.anaeem.na-launch.com/custom/certs",
+            "KEYCLOAK_ISSUER": "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic",
+            "KEYCLOAK_JWKS_URL": "https://keycloak.apps.ocp-dev.na-launch.com/custom/certs",
             "KEYCLOAK_JWKS_CA": "",
         }
         with patch.dict(os.environ, env):
             url, _ = _jwks_params("keycloak")
-        assert url == "https://keycloak.apps.anaeem.na-launch.com/custom/certs"
+        assert url == "https://keycloak.apps.ocp-dev.na-launch.com/custom/certs"
 
     def test_keycloak_ca_path_used_when_file_exists(self, tmp_path):
         from sandbox_launcher.auth import _jwks_params
@@ -1478,7 +1478,7 @@ def mock_vault_write_ok():
 @pytest.fixture
 def mock_vault_env():
     """Set VAULT_ADDR so _write_grant does not hit the skip-if-disabled branch."""
-    with patch.dict(os.environ, {"VAULT_ADDR": "https://vault.apps.anaeem.na-launch.com"}):
+    with patch.dict(os.environ, {"VAULT_ADDR": "https://vault.apps.ocp-dev.na-launch.com"}):
         yield
 
 

@@ -460,7 +460,7 @@ def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
     #                       non-deterministic and may present the SA-shaped one -> 401.
     # Sourced from launcher pod env (read_env_or_file) with mcp-call's own defaults so a
     # missing literal still produces the correct pfSense recipe; secrets are never here.
-    mcp_gw = _read_env_or_file("MCP_GATEWAY_URL") or "https://mcp-gateway.apps.anaeem.na-launch.com"
+    mcp_gw = _read_env_or_file("MCP_GATEWAY_URL") or "https://mcp-gateway.apps.ocp-dev.na-launch.com"
     env["MCP_GATEWAY_URL"] = mcp_gw
     # MCP_READ_URL / MCP_WRITE_URL default to MCP_GATEWAY_URL in mcp-call; set them
     # explicitly only if the launcher overrides (kept unset otherwise so the helper's

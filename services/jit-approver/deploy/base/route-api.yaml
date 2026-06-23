@@ -10,7 +10,7 @@
 # anyone who can reach this host. Acceptable only because this homelab is not
 # internet-exposed. HARDEN before any real exposure (mTLS / oauth-proxy / IP allow).
 #
-# ida-cli config: jit_url: https://jit-approver-api.apps.anaeem.na-launch.com
+# ida-cli config: jit_url: https://jit-approver-api.apps.ocp-dev.na-launch.com
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -23,7 +23,7 @@ metadata:
   annotations:
     nvidia-ida/security: "poc-unauthenticated-read-api — harden before real exposure"
 spec:
-  host: jit-approver-api.apps.anaeem.na-launch.com
+  host: jit-approver-api.apps.ocp-dev.na-launch.com
   to:
     kind: Service
     name: jit-approver

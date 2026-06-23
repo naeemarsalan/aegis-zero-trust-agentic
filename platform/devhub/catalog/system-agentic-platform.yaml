@@ -11,10 +11,10 @@ metadata:
     and enforces Keycloak JWT authn, ext_authz (Kyverno), identity delegation,
     and CEL RBAC so downstream servers see the user identity, never the agent.
   links:
-    - url: https://mcp-gateway.apps.anaeem.na-launch.com/mcp
+    - url: https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp
       title: MCP Gateway endpoint
       icon: web
-    - url: https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+    - url: https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic
       title: Keycloak agentic realm
       icon: dashboard
   annotations:

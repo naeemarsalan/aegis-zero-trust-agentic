@@ -46,7 +46,7 @@ platform/vault/
    (no operator dependency for Vault itself, but the `vault` namespace is
    created by `base/namespace.yaml`).
 2. **SPIRE** — `platform/spire` must be running and the OIDC issuer must be
-   reachable at `https://spire-oidc.apps.anaeem.na-launch.com` before
+   reachable at `https://spire-oidc.apps.ocp-dev.na-launch.com` before
    running vault-bootstrap.sh (JWT auth config pulls the JWKS from there).
 3. **Deploy Vault:**
    ```bash
@@ -56,7 +56,7 @@ platform/vault/
 5. **Bootstrap config:**
    ```bash
    source environment/.env          # PFSENSE_API_URL, PFSENSE_API_KEY, unseal keys
-   export VAULT_ADDR=https://vault.apps.anaeem.na-launch.com
+   export VAULT_ADDR=https://vault.apps.ocp-dev.na-launch.com
    export VAULT_TOKEN=<root-token>
    bash platform/vault/config/vault-bootstrap.sh
    ```
@@ -65,7 +65,7 @@ platform/vault/
 
 ```bash
 # 1. Port-forward or use the Route
-export VAULT_ADDR=https://vault.apps.anaeem.na-launch.com
+export VAULT_ADDR=https://vault.apps.ocp-dev.na-launch.com
 
 # 2. Initialize (5 key shares, 3 threshold — adjust for PoC if desired)
 vault operator init -key-shares=5 -key-threshold=3 \

@@ -79,7 +79,7 @@ kubernetes:
     - type: config
       clusters:
         - name: anaeem
-          url: https://api.anaeem.na-launch.com:6443
+          url: https://api.ocp-dev.na-launch.com:6443
           authProvider: serviceAccount
           serviceAccountToken: ${K8S_ANAEEM_TOKEN}
           skipTLSVerify: true
@@ -283,7 +283,7 @@ spec:
       icon: github
       type: jit-pr-list
     # Direct link to the running sandbox in the OpenShift console.
-    - url: https://console-openshift-console.apps.anaeem.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/<sandbox-name>
+    - url: https://console-openshift-console.apps.ocp-dev.na-launch.com/k8s/ns/agent-sandboxes/agents.x-k8s.io~v1alpha1~Sandbox/<sandbox-name>
       title: Sandbox in OpenShift console
       icon: dashboard
 ```

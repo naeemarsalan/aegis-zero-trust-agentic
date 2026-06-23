@@ -10,7 +10,7 @@ spec:
 
   source:
     repoURL: https://git.arsalan.io/anaeem/nvidia-ida.git
-    targetRevision: main
+    targetRevision: fix/jit-approver-mint-route
     path: gitops/applications
 
   destination:

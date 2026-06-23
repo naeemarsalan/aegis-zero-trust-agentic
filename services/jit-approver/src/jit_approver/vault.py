@@ -61,7 +61,7 @@ _SVID_JWT_FILE = "/var/run/secrets/svid.jwt"
 
 
 def _vault_addr() -> str:
-    return os.environ.get("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com")
+    return os.environ.get("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com")
 
 
 def _vault_jwt_role() -> str:

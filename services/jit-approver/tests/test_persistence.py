@@ -56,7 +56,7 @@ os.environ.setdefault("GITEA_WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("GITEA_REPO", "anaeem/nvidia-ida")
 os.environ.setdefault("GITEA_BASE_URL", "https://git.arsalan.io")
 os.environ.setdefault("GITEA_DEFAULT_BRANCH", "main")
-os.environ.setdefault("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com")
+os.environ.setdefault("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com")
 os.environ.setdefault("JIT_DISABLE_REAPER", "1")
 
 # ---------------------------------------------------------------------------

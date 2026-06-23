@@ -30,7 +30,7 @@ RHDH_JWKS_CA        — Path to CA bundle for RHDH JWKS fetch (default:
 RHDH_JWKS_INSECURE  — "true" to skip TLS verification (development only)
 
 KEYCLOAK_ISSUER     — Keycloak realm URL, e.g.
-                       https://keycloak.apps.anaeem.na-launch.com/realms/agentic
+                       https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic
                        (enables the Keycloak issuer)
 KEYCLOAK_JWKS_URL   — JWKS endpoint (default: KEYCLOAK_ISSUER +
                        /protocol/openid-connect/certs)

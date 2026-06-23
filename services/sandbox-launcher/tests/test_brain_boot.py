@@ -183,7 +183,7 @@ class TestBrainEnv:
         )
         with patch.dict(os.environ, patch_env):
             env = openshell._brain_env(goal="g", allowed_tools="Bash")
-        assert env["MCP_GATEWAY_URL"] == "https://mcp-gateway.apps.anaeem.na-launch.com"
+        assert env["MCP_GATEWAY_URL"] == "https://mcp-gateway.apps.ocp-dev.na-launch.com"
         assert env["MCP_SEND_SVID"] == "true"
         assert env["JIT_TARGET_NAMESPACE"] == "agentic-mcp"
         assert env["SVID_REQUIRE_PATH_SUBSTR"] == "/sandbox/"

@@ -22,7 +22,7 @@ sandbox:
 # OIDC issuer = the Keycloak `agentic` realm on its PUBLIC route. That route is
 # EDGE-terminated (see platform/keycloak/base/keycloak-cr.yaml — tlsSecret is
 # omitted on purpose), so the OpenShift router presents the ingress wildcard
-# cert (*.apps.anaeem.na-launch.com) which the gateway can verify. The gateway
+# cert (*.apps.ocp-dev.na-launch.com) which the gateway can verify. The gateway
 # validates the issuer's TLS against caConfigMapName (openshell-oidc-ca), which
 # MUST contain the ingress-operator router-CA — populate it from
 # openshift-config-managed/default-ingress-cert (key ca-bundle.crt). The chart
@@ -36,7 +36,7 @@ server:
   auth:
     allowUnauthenticatedUsers: false
   oidc:
-    issuer: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+    issuer: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"
     audience: openshell-gateway
     caConfigMapName: openshell-oidc-ca
     rolesClaim: realm_access.roles

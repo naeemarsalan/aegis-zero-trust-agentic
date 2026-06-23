@@ -19,7 +19,7 @@ metadata:
     haproxy.router.openshift.io/timeout: 1h
     nvidia-ida/security: "keycloak-oidc-protected — oauth2-proxy sidecar enforces auth"
 spec:
-  host: approval-console.apps.anaeem.na-launch.com
+  host: approval-console.apps.ocp-dev.na-launch.com
   to:
     kind: Service
     name: approval-console

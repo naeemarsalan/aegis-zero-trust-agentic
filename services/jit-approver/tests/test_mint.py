@@ -35,7 +35,7 @@ os.environ.setdefault("GITEA_WEBHOOK_SECRET", "test-webhook-secret")
 os.environ.setdefault("GITEA_REPO", "anaeem/nvidia-ida")
 os.environ.setdefault("GITEA_BASE_URL", "https://git.arsalan.io")
 os.environ.setdefault("GITEA_DEFAULT_BRANCH", "main")
-os.environ.setdefault("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com")
+os.environ.setdefault("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com")
 os.environ.setdefault("JIT_DISABLE_REAPER", "1")
 # Use synthetic token override so /mint auth works in unit tests without k8s.
 os.environ.setdefault("JIT_MINT_CONSOLE_TOKEN_OVERRIDE", "test-console-token")
@@ -49,7 +49,7 @@ from jit_approver.store import seen_deliveries, session_store
 # Fixtures
 # ---------------------------------------------------------------------------
 
-VAULT_ADDR = "https://vault.apps.anaeem.na-launch.com"
+VAULT_ADDR = "https://vault.apps.ocp-dev.na-launch.com"
 GITEA_BASE = "https://git.arsalan.io"
 SESSION_ID = "deadbeef-0001-0002-0003-000000000001"
 PR_NUMBER = 42

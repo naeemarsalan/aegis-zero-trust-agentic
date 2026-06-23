@@ -18,7 +18,7 @@ spec:
             # Launcher's OWN OIDC client-credentials for the OpenShell gateway.
             # NEVER the caller's/user's token — see no-credential-passing invariant.
             - name: LAUNCHER_OIDC_TOKEN_URL
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic/protocol/openid-connect/token"
+              value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic/protocol/openid-connect/token"
             - name: LAUNCHER_OIDC_CLIENT_ID
               value: "sandbox-launcher"
             # Route uses the ingress wildcard cert; skip verify (PoC, matches ext-proc KEYCLOAK_TLS_INSECURE).
@@ -35,9 +35,9 @@ spec:
             # Requires the RHDH proxy to be configured with credentials: forward.
             # In-cluster HTTP to avoid TLS cert issues (RHDH is on virt hub — use Route URL).
             - name: RHDH_JWKS_URL
-              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com/api/auth/.backstage/jwks.json"
+              value: "https://developer-hub-rhdh.apps.ocp-dev.na-launch.com/api/auth/.backstage/jwks.json"
             - name: RHDH_TOKEN_ISSUER
-              value: "https://developer-hub-rhdh.apps.anaeem.na-launch.com"
+              value: "https://developer-hub-rhdh.apps.ocp-dev.na-launch.com"
             # Sandbox workload configuration.
             # NATIVE-BRAIN image: agent-harness runtime (python + agent_harness +
             # claude CLI + .claude/skills + mcp-call) PLUS the OpenShell supervisor
@@ -143,17 +143,17 @@ spec:
             - name: SANDBOX_NAMESPACE
               value: "openshell"
             - name: KEYCLOAK_REALM_URL
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+              value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"
             # Component A: accept Keycloak-issued user tokens (e.g. from ida-cli)
             # in addition to RHDH Backstage tokens. iss must match the route URL the
             # CLI mints tokens against. JWKS fetched from the same self-signed route,
             # so skip verify (PoC, mirrors LAUNCHER_OIDC_INSECURE above).
             - name: KEYCLOAK_ISSUER
-              value: "https://keycloak.apps.anaeem.na-launch.com/realms/agentic"
+              value: "https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic"
             - name: KEYCLOAK_JWKS_INSECURE
               value: "true"
             - name: MCP_GATEWAY_URL
-              value: "https://mcp-gateway.apps.anaeem.na-launch.com"
+              value: "https://mcp-gateway.apps.ocp-dev.na-launch.com"
             # File-SVID handoff (2026-06-22, round 2 — GitOps-durable; previously oc-set drift).
             # The unattended brain reads its mcp-gateway JWT-SVID from a FILE because the gateway
             # ExecSandbox masks /spiffe-workload-api in the confined ns. The AuthBridge spiffe-helper

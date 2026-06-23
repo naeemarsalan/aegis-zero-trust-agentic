@@ -54,7 +54,7 @@ func getenv(k, def string) string {
 func run() error {
 	var (
 		socket    = getenv("SPIFFE_ENDPOINT_SOCKET", "unix:///spiffe-workload-api/spire-agent.sock")
-		vaultAddr = strings.TrimRight(getenv("VAULT_ADDR", "https://vault.apps.anaeem.na-launch.com"), "/")
+		vaultAddr = strings.TrimRight(getenv("VAULT_ADDR", "https://vault.apps.ocp-dev.na-launch.com"), "/")
 		vaultRole = getenv("VAULT_JWT_ROLE", "openshell-agent")
 		audience  = getenv("VAULT_JWT_AUDIENCE", "vault")
 		secretAPI = getenv("VAULT_SECRET_PATH", "secret/data/agent-sandbox/inference")

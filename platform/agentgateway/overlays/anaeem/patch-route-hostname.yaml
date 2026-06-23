@@ -8,7 +8,7 @@ metadata:
   name: mcp-gateway
   namespace: mcp-gateway
 spec:
-  host: mcp-gateway.apps.anaeem.na-launch.com
+  host: mcp-gateway.apps.ocp-dev.na-launch.com
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
