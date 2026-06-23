@@ -981,3 +981,26 @@ async def test_approve_approver_anonymous_without_header(monkeypatch):
     approve_records = [r for r in audit_records if r["event"] == "jit.approve" and r["outcome"] == "allow"]
     assert approve_records
     assert approve_records[-1]["actor"] == "anonymous"
+
+
+# ---------------------------------------------------------------------------
+# Lifespan wiring — the reaper MUST be started at app startup (C1 fix).
+# Without this the agent state stays PROVISIONING forever and the webshell
+# button (state-gated on READY) is greyed out.
+# ---------------------------------------------------------------------------
+
+
+async def test_lifespan_starts_reaper(monkeypatch):
+    """Entering the app lifespan must call reaper.start_reaper exactly once."""
+    from approval_console.agents import reaper as _reaper
+
+    called = {"n": 0}
+
+    def _fake_start() -> None:
+        called["n"] += 1
+
+    monkeypatch.setattr(_reaper, "start_reaper", _fake_start)
+
+    # Drive the FastAPI lifespan context manager directly.
+    async with _app_module._lifespan(app):
+        assert called["n"] == 1

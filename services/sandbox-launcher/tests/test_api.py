@@ -777,6 +777,67 @@ def test_healthz(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
+# GET /sandboxes/{name} — phase lookup consumed by the console reaper (C1 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_get_sandbox_ready_returns_phase(client: TestClient):
+    """A Ready sandbox returns 200 {"phase":"READY", ...} — the reaper's trigger."""
+    with patch("sandbox_launcher.openshell.get_sandbox_phase", return_value="READY"):
+        resp = client.get("/sandboxes/agent-arsalan-d9e8e9")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["phase"] == "READY"
+    assert data["sandboxName"] == "agent-arsalan-d9e8e9"
+
+
+def test_get_sandbox_provisioning_returns_phase(client: TestClient):
+    with patch("sandbox_launcher.openshell.get_sandbox_phase", return_value="PROVISIONING"):
+        resp = client.get("/sandboxes/agent-arsalan-006b37")
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "PROVISIONING"
+
+
+def test_get_sandbox_not_found_returns_404():
+    """A genuine gRPC NOT_FOUND maps to HTTP 404 (the reaper marks it ERROR)."""
+    import grpc
+
+    class _NotFound(grpc.RpcError):
+        def code(self):  # noqa: D401
+            return grpc.StatusCode.NOT_FOUND
+
+        def details(self):
+            return "sandbox not found"
+
+    with patch(
+        "sandbox_launcher.openshell.get_sandbox_phase", side_effect=_NotFound()
+    ):
+        with TestClient(app) as c:
+            resp = c.get("/sandboxes/does-not-exist")
+    assert resp.status_code == 404
+
+
+def test_get_sandbox_transient_error_returns_502():
+    """A non-NOT_FOUND gateway error maps to 502, NOT 404 — the reaper must not
+    misread a transient flap as a missing sandbox and wrongly mark agent ERROR."""
+    import grpc
+
+    class _Unavailable(grpc.RpcError):
+        def code(self):  # noqa: D401
+            return grpc.StatusCode.UNAVAILABLE
+
+        def details(self):
+            return "gateway flap"
+
+    with patch(
+        "sandbox_launcher.openshell.get_sandbox_phase", side_effect=_Unavailable()
+    ):
+        with TestClient(app) as c:
+            resp = c.get("/sandboxes/flapping")
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
 # Sandbox name derivation
 # ---------------------------------------------------------------------------
 

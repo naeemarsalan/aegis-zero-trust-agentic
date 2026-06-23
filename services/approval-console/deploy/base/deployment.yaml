@@ -28,7 +28,7 @@ spec:
             - "git.arsalan.io"
       containers:
         - name: approval-console
-          image: oci.arsalan.io/nvidia-ida/approval-console:dev
+          image: oci.arsalan.io/nvidia-ida/approval-console:reaper-fix-20260623
           imagePullPolicy: Always
           ports:
             - containerPort: 8090

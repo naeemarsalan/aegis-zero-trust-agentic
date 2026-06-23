@@ -839,6 +839,53 @@ def _list_sandboxes() -> list[dict[str, Any]]:
     return resp.json().get("items", [])
 
 
+@app.get("/sandboxes/{sandbox_name}")
+async def get_sandbox(sandbox_name: str) -> JSONResponse:
+    """Return the live phase of a single OpenShell sandbox by NAME.
+
+    Consumed by the approval-console reaper to flip a persistent agent
+    PROVISIONING -> READY once its sandbox is Ready (the webshell button is
+    state-gated on READY). Cluster-internal read, unauthenticated — consistent
+    with the other launcher GETs (/catalog, /healthz, /metrics); the reaper
+    sends no auth token.
+
+    Returns 200 {"phase": "<READY|PROVISIONING|...>", "sandboxName": <name>}.
+    Returns 404 only when the sandbox genuinely does not exist (GetSandbox
+    NOT_FOUND). A transient gateway error surfaces as 502 so the reaper does
+    NOT misread a flap as a missing sandbox and wrongly mark the agent ERROR.
+    """
+    from sandbox_launcher import openshell
+
+    try:
+        phase = openshell.get_sandbox_phase(sandbox_name)
+    except Exception as exc:  # noqa: BLE001
+        # Distinguish a genuine NOT_FOUND (-> 404) from a transient gateway/RPC
+        # error (-> 502). grpc.RpcError exposes .code(); only NOT_FOUND means
+        # the sandbox is really gone.
+        try:
+            import grpc  # type: ignore[import-untyped]
+
+            if isinstance(exc, grpc.RpcError) and exc.code() == grpc.StatusCode.NOT_FOUND:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": "sandbox not found", "sandboxName": sandbox_name},
+                )
+        except ImportError:
+            pass
+        logger.warning(
+            "get_sandbox_phase_error",
+            extra={"sandbox_name": sandbox_name, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=502, detail=f"gateway error reading sandbox phase: {exc}"
+        ) from exc
+
+    return JSONResponse(
+        status_code=200,
+        content={"phase": phase, "sandboxName": sandbox_name},
+    )
+
+
 @app.get("/catalog")
 async def catalog() -> Response:
     """Backstage catalog entities for the current sandboxes (multi-doc YAML)."""

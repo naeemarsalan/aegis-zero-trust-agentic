@@ -31,6 +31,9 @@ import time
 import uuid
 from typing import Any
 
+import contextlib
+from collections.abc import AsyncIterator
+
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -39,10 +42,29 @@ from approval_console.config import Config
 
 logger = logging.getLogger("approval_console.app")
 
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """App lifespan: start the background agent reaper at startup.
+
+    The reaper (approval_console.agents.reaper) polls sandbox-launcher for each
+    PROVISIONING/READY agent's sandbox phase and flips PROVISIONING -> READY (the
+    state the webshell button is gated on) once the sandbox is Ready, and -> ERROR
+    if the sandbox is gone/failed. start_reaper() spawns a daemon thread and is
+    idempotent, so this is safe across reloads. It reads SANDBOX_LAUNCHER_URL from
+    the environment (same env the console already carries) lazily on each poll.
+    """
+    from approval_console.agents.reaper import start_reaper
+
+    start_reaper()
+    yield
+
+
 app = FastAPI(
     title="JIT Approval Console",
     description="Operator web console for JIT write-approval requests",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 # ---------------------------------------------------------------------------

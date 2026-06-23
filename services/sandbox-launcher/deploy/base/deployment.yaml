@@ -99,7 +99,7 @@ spec:
           # Rollback: sandbox-launcher:sysinterp-brain-20260621-213258 (boot-cmd fix only, no env PYTHONPATH).
           # Rollback: sandbox-launcher:detach-brain-20260621-201858 (detached but bare-python crash).
           # Rollback: sandbox-launcher:extproc-routing-20260621-194237 (foreground-exec boot).
-          image: oci.arsalan.io/nvidia-ida/sandbox-launcher:llmgate-20260622-153517
+          image: oci.arsalan.io/nvidia-ida/sandbox-launcher:reaper-ep-20260623
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
