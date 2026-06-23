@@ -215,7 +215,7 @@ data:
           "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
           "targets": [
             {
-              "expr": "{app=\"ext-proc-delegation\", cluster=\"${cluster}\"} | json | namespace=~\"${namespace}\" | user=~\"${user}\"",
+              "expr": "{app=\"ext-proc-delegation\", cluster=\"${cluster}\", namespace=~\"${namespace}\"} | json | body_caller_username=~\"${user}\"",
               "legendFormat": ""
             }
           ],
@@ -235,7 +235,7 @@ data:
           "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
           "targets": [
             {
-              "expr": "{app=\"jit-approver\", cluster=\"${cluster}\"} | json | namespace=~\"${namespace}\" | user=~\"${user}\"",
+              "expr": "{app=\"jit-approver\", cluster=\"${cluster}\", namespace=~\"${namespace}\"} | json",
               "legendFormat": ""
             }
           ],
@@ -255,7 +255,7 @@ data:
           "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
           "targets": [
             {
-              "expr": "{app=\"ext-proc-delegation\", cluster=\"${cluster}\"} | json | decision=\"deny\" | namespace=~\"${namespace}\" | user=~\"${user}\"",
+              "expr": "{app=\"ext-proc-delegation\", cluster=\"${cluster}\", namespace=~\"${namespace}\", decision=\"deny\"} | json | body_caller_username=~\"${user}\"",
               "legendFormat": ""
             }
           ],

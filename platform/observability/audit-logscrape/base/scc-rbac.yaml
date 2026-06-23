@@ -1,0 +1,18 @@
+# The DaemonSet must read root-owned files under /var/log/pods (host log dir),
+# which requires running as a host-privileged uid. Grant the `privileged` SCC to
+# the audit-logscrape ServiceAccount (the standard posture for node-level log
+# collectors). The pod still mounts /var/log/pods READ-ONLY and drops into a
+# read-only rootfs; it performs no host writes outside its own checkpoint dir.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: audit-logscrape-scc-privileged
+  namespace: agentic-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+  - kind: ServiceAccount
+    name: audit-logscrape
+    namespace: agentic-observability

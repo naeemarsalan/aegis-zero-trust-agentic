@@ -1,5 +1,5 @@
 {
-  "__comment": "Session-Token Lifecycle audit dashboard. HELD — import after the audit pipeline is fed (see docs/plans/session-token-audit-logs-plan.md). Replace ${DS_LOKI}/${DS_PG} with the real datasource UIDs at import. Panels correlate the three audit sources by jit_session_id / jti.",
+  "__comment": "Session-Token Lifecycle audit dashboard. The audit pipeline is FED by the audit-logscrape DaemonSet (option B, platform/observability/audit-logscrape). It ships {namespace=mcp-gateway, app=ext-proc-delegation|jit-approver|approval-console} streams to Loki with the log line shaped as {\"body\":{...audit json...}}, so Loki `| json` exposes each field with a body_ prefix (body_event, body_grant_result, body_decision, body_jit_session_id, ...). jit_session_id/session_id/decision/grant_result are ALSO Loki labels for fast selection. Replace ${DS_LOKI}/${DS_PG} with the real datasource UIDs at import. Panels correlate the audit sources by jit_session_id / jti.",
   "title": "Session-Token Lifecycle (zero-trust audit)",
   "tags": ["zero-trust", "audit", "jit", "session-token"],
   "timezone": "utc",
@@ -32,7 +32,7 @@
       "targets": [
         { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS minted FROM jit_session WHERE state IN ('issued','consumed') AND created_at > now() - interval '24 hours';", "format": "table" },
         { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS consumed FROM consumed_jti WHERE consumed_at > now() - interval '24 hours';", "format": "table" },
-        { "datasource": "${DS_LOKI}", "expr": "sum(count_over_time({namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | decision=\"deny\" [24h]))" }
+        { "datasource": "${DS_LOKI}", "expr": "sum(count_over_time({namespace=\"mcp-gateway\", app=\"ext-proc-delegation\", decision=\"deny\"} [24h]))" }
       ]
     },
     {
@@ -41,7 +41,7 @@
       "datasource": "${DS_LOKI}",
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 14 },
       "targets": [
-        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | jit_session_id =~ \"$jit_session_id.*\" | line_format \"{{.decision}} grant={{.grant_result}} injected={{.credential_injected}} tool={{.mcp_tool}} user={{.caller_username}} sid={{.jit_session_id}}\"" }
+        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | body_jit_session_id =~ \"$jit_session_id.*\" | line_format \"{{.body_decision}} grant={{.body_grant_result}} injected={{.body_credential_injected}} tool={{.body_mcp_tool}} user={{.body_caller_username}} sid={{.body_jit_session_id}}\"" }
       ]
     },
     {
@@ -50,7 +50,7 @@
       "datasource": "${DS_LOKI}",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
       "targets": [
-        { "expr": "{namespace=\"mcp-gateway\", app=\"approval-console\"} | json | event =~ \"jit\\\\..*|agent\\\\.session_created\"" }
+        { "expr": "{namespace=\"mcp-gateway\", app=\"approval-console\"} | json | body_event =~ \"jit\\\\..*|agent\\\\.session_created\"" }
       ]
     },
     {
@@ -60,7 +60,7 @@
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
       "description": "Any row here is a fail-open: the gate allowed a call whose grant did not validate. Should be impossible — alert on it.",
       "targets": [
-        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | decision=\"allow\" | grant_result!=\"valid\"" }
+        { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\", decision=\"allow\"} | json | body_grant_result!=\"valid\"" }
       ]
     }
   ]

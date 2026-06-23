@@ -1,0 +1,86 @@
+# Session-token audit log-scrape collector (option B). DaemonSet so it lands on
+# every node and reads that node's /var/log/pods. On this SNO that is one pod.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: audit-logscrape
+  namespace: agentic-observability
+spec:
+  selector:
+    matchLabels:
+      app: audit-logscrape
+  template:
+    metadata:
+      labels:
+        app: audit-logscrape
+    spec:
+      serviceAccountName: audit-logscrape
+      # Tolerate control-plane taint so the scraper runs on the SNO master node.
+      tolerations:
+        - operator: Exists
+      securityContext:
+        # Root is required to read root-owned /var/log/pods files.
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.102.0
+          args:
+            - "--config=/conf/otelcol.yaml"
+          env:
+            - name: LOKI_PUSH_URL
+              value: "http://172.16.2.252:3100"
+          ports:
+            - name: healthcheck
+              containerPort: 13133
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/otelcol/storage
+          livenessProbe:
+            httpGet:
+              path: /
+              port: healthcheck
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: healthcheck
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          securityContext:
+            # privileged -> SELinux spc_t so the collector can traverse the host
+            # /var/log/pods tree (var_log_t); container_t is denied even as uid 0.
+            # This is the standard posture for node-level log collectors. The
+            # /var/log/pods mount stays read-only and the rootfs read-only.
+            privileged: true
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: config
+          configMap:
+            name: audit-logscrape-config
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        # emptyDir (not hostPath): the read-offset checkpoint need not survive
+        # pod recreation — start_at:end just re-tails on a fresh pod. Avoids the
+        # SELinux denial writing a host var_lib path from container_t.
+        - name: storage
+          emptyDir: {}

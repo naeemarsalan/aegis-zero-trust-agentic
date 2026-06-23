@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: audit-logscrape
+spec:
+  template:
+    spec:
+      containers:
+        - name: collector
+          env:
+            - name: LOKI_PUSH_URL
+              value: "http://172.16.2.252:3100"

@@ -61,7 +61,21 @@ and a dashboard panel that joins it to the Loki log stream by `session_id`/`jti`
    - Logs panel: ext-proc `grant_result`/`decision`/`credential_injected` filtered by `jit_session_id`.
    - Stat: tokens minted vs consumed (consumed_jti) vs denied (grant_result!=valid).
    - Alert: any `decision=allow` with `grant_result!=valid` (should be impossible — fail-open canary).
-2. **otel filelog patch** (`observability/otel/filelog-audit-receiver.yaml`) — option B, held.
+2. **otel filelog scrape** — option B, **IMPLEMENTED + APPLIED 2026-06-23** as a
+   dedicated DaemonSet collector at `platform/observability/audit-logscrape/`
+   (privileged, SELinux spc_t, reads `/var/log/pods` read-only, ships DIRECT to
+   Loki). Shipped Loki streams: `{namespace="mcp-gateway", app=ext-proc-delegation|
+   jit-approver|approval-console}` with the line shaped `{"body":{...audit json...}}`
+   so Grafana `| json` exposes fields with a `body_` prefix; namespace/app/decision/
+   grant_result/jit_session_id/session_id are also Loki labels. Verified end-to-end
+   (real ext-proc read 200 + console event). The session-token dashboard is packaged
+   as a Grafana-sidecar CM (`grafana-dashboards/base/session-token-audit-dashboard-cm.yaml`)
+   and the existing jit-audit dashboard's Loki panels were updated to the same
+   `body_` prefix. Notes: `observability/otel/filelog-audit-receiver.yaml`.
+   NOTE: Grafana datasource wiring (DS_LOKI -> 172.16.2.252:3100, DS_PG ->
+   jit-approver-db) may need a manual/out-of-band step at the Grafana at
+   172.16.2.252:3000 if the dashboard sidecar / postgres datasource is not already
+   provisioned there.
 3. **App-OTLP rollout** (option A) — sequenced AFTER the sub-agents free jit-approver/console.
 
 ## Rollout sequencing (deliberate, given fragility)

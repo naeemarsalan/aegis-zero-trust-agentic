@@ -7,5 +7,6 @@ kind: Kustomization
 resources:
   - ../../user-workload-monitoring/overlays/anaeem
   - ../../otel-collector/overlays/anaeem
+  - ../../audit-logscrape/overlays/anaeem
   - ../../alerts/overlays/anaeem
   - ../../grafana-dashboards/overlays/anaeem

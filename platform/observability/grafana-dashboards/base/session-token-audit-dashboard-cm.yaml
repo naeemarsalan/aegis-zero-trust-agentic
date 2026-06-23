@@ -1,0 +1,89 @@
+# Session-Token Lifecycle audit dashboard, packaged as a Grafana-sidecar
+# ConfigMap (label grafana_dashboard=1) for the Grafana at
+# http://172.16.2.252:3000.
+#
+# Datasources required (resolve the ${DS_LOKI}/${DS_PG} template vars at import):
+#   - DS_LOKI: Loki  http://172.16.2.252:3100  (ext-proc + console audit streams)
+#   - DS_PG:   Postgres  jit-approver-db (mcp-gateway)  -> WORM jit_session/consumed_jti
+# The Loki streams are produced by the audit-logscrape DaemonSet (option B,
+# platform/observability/audit-logscrape). Log lines are {"body":{...}} so the
+# `| json` stage exposes fields with a body_ prefix (body_event, body_decision,
+# body_grant_result, ...); namespace/app/decision/grant_result/jit_session_id/
+# session_id are also Loki labels. If the Grafana sidecar is not deployed, import
+# observability/dashboards/session-token-audit.json manually.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-session-token-audit
+  namespace: agentic-observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  session-token-audit.json: |
+    {
+      "__comment": "Session-Token Lifecycle audit dashboard. The audit pipeline is FED by the audit-logscrape DaemonSet (option B, platform/observability/audit-logscrape). It ships {namespace=mcp-gateway, app=ext-proc-delegation|jit-approver|approval-console} streams to Loki with the log line shaped as {\"body\":{...audit json...}}, so Loki `| json` exposes each field with a body_ prefix (body_event, body_grant_result, body_decision, body_jit_session_id, ...). jit_session_id/session_id/decision/grant_result are ALSO Loki labels for fast selection. Replace ${DS_LOKI}/${DS_PG} with the real datasource UIDs at import. Panels correlate the audit sources by jit_session_id / jti.",
+      "title": "Session-Token Lifecycle (zero-trust audit)",
+      "tags": ["zero-trust", "audit", "jit", "session-token"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          { "name": "DS_LOKI", "type": "datasource", "query": "loki", "label": "Loki" },
+          { "name": "DS_PG", "type": "datasource", "query": "postgres", "label": "jit-approver-db" },
+          { "name": "jit_session_id", "type": "textbox", "label": "jit_session_id filter", "current": { "value": "" } }
+        ]
+      },
+      "panels": [
+        {
+          "title": "Approvals — who asked / who approved / scope (WORM jit_session)",
+          "type": "table",
+          "datasource": "${DS_PG}",
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "format": "table",
+              "rawSql": "SELECT created_at, id AS jit_session_id, requester_sub, approver_sub, scope_hash, state FROM jit_session WHERE ('$jit_session_id' = '' OR id = '$jit_session_id') ORDER BY created_at DESC LIMIT 200;"
+            }
+          ]
+        },
+        {
+          "title": "Tokens minted vs consumed vs denied (last 24h)",
+          "type": "stat",
+          "gridPos": { "h": 5, "w": 24, "x": 0, "y": 9 },
+          "targets": [
+            { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS minted FROM jit_session WHERE state IN ('issued','consumed') AND created_at > now() - interval '24 hours';", "format": "table" },
+            { "datasource": "${DS_PG}", "rawSql": "SELECT count(*) AS consumed FROM consumed_jti WHERE consumed_at > now() - interval '24 hours';", "format": "table" },
+            { "datasource": "${DS_LOKI}", "expr": "sum(count_over_time({namespace=\"mcp-gateway\", app=\"ext-proc-delegation\", decision=\"deny\"} [24h]))" }
+          ]
+        },
+        {
+          "title": "ext-proc — token USE for this session (grant_result / decision / tool)",
+          "type": "logs",
+          "datasource": "${DS_LOKI}",
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 14 },
+          "targets": [
+            { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\"} | json | body_jit_session_id =~ \"$jit_session_id.*\" | line_format \"{{.body_decision}} grant={{.body_grant_result}} injected={{.body_credential_injected}} tool={{.body_mcp_tool}} user={{.body_caller_username}} sid={{.body_jit_session_id}}\"" }
+          ]
+        },
+        {
+          "title": "console — human approval actions (jit.approve / session_created)",
+          "type": "logs",
+          "datasource": "${DS_LOKI}",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+          "targets": [
+            { "expr": "{namespace=\"mcp-gateway\", app=\"approval-console\"} | json | body_event =~ \"jit\\\\..*|agent\\\\.session_created\"" }
+          ]
+        },
+        {
+          "title": "FAIL-OPEN CANARY — decision=allow with grant_result!=valid (MUST be empty)",
+          "type": "logs",
+          "datasource": "${DS_LOKI}",
+          "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
+          "description": "Any row here is a fail-open: the gate allowed a call whose grant did not validate. Should be impossible — alert on it.",
+          "targets": [
+            { "expr": "{namespace=\"mcp-gateway\", app=\"ext-proc-delegation\", decision=\"allow\"} | json | body_grant_result!=\"valid\"" }
+          ]
+        }
+      ]
+    }

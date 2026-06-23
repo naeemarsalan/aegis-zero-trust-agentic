@@ -1,0 +1,162 @@
+# Session-token audit log-scrape collector (option B — interim, zero app-change).
+#
+# A small OTel-collector-contrib config run as a DaemonSet. It scrapes the
+# mcp-gateway audit pods' stdout/stderr from /var/log/pods, JSON-parses the
+# payload, promotes the session-token correlation fields, and ships directly to
+# the existing Loki at ${LOKI_PUSH_URL} with the SAME labels the
+# session-token-audit + jit-audit dashboards query: namespace="mcp-gateway" and
+# app="ext-proc-delegation"|"jit-approver"|"approval-console".
+#
+# Why direct-to-Loki (not via the main otel-collector): the dashboards filter on
+# Loki labels `namespace`/`app` and rely on the log LINE being JSON so their
+# `| json` stage exposes grant_result/decision/event/jit_session_id at query
+# time. The main collector's loki_hints map different label keys and would not
+# produce those streams. Self-contained guarantees the dashboard renders and
+# does not perturb the existing OTLP->Loki pipeline. (Option A, app-level OTLP,
+# remains the durable end-state per docs/plans/session-token-audit-logs-plan.md.)
+#
+# Log shapes handled:
+#   ext-proc-delegation: top-level JSON (session_id, jit_session_id, grant_result,
+#     decision, mcp_tool, caller_username, ...) at body root.
+#   approval-console / jit-approver: outer JSON whose audit record is nested under
+#     `msg` as an OBJECT (event, outcome, tool_args_hash, ...). Non-audit lines
+#     (uvicorn/httpx access) have `msg` as a STRING and are dropped.
+#
+# Design note: all body-field reshaping is done in OTTL processors (transform +
+# filter, error_mode:ignore) which are TYPE-SAFE on heterogeneous bodies. The
+# stanza receiver only does CRI-O framing + JSON auto-parse + k8s metadata; it
+# does NOT probe body fields (stanza expr-lang throws when indexing a string
+# body), keeping the pipeline robust against non-JSON log lines.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-logscrape-config
+  namespace: agentic-observability
+data:
+  otelcol.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      file_storage/checkpoints:
+        directory: /var/lib/otelcol/storage
+        timeout: 10s
+
+    receivers:
+      filelog/audit:
+        include:
+          - /var/log/pods/mcp-gateway_ext-proc-delegation-*/ext-proc-delegation/*.log
+          - /var/log/pods/mcp-gateway_jit-approver-*/jit-approver/*.log
+          - /var/log/pods/mcp-gateway_approval-console-*/approval-console/*.log
+        start_at: end
+        include_file_path: true
+        storage: file_storage/checkpoints
+        retry_on_failure:
+          enabled: true
+        operators:
+          # CRI-O framing strip (does NOT parse JSON); sets k8s.* into record
+          # attributes from the file path.
+          - type: container
+            add_metadata_from_filepath: true
+
+          # Parse the app's stdout JSON payload into body (a MAP), in place.
+          # The loki exporter serializes a map body to the line as
+          # {"body":{...}}, so the dashboards' `| json` exposes each field with a
+          # `body_` prefix (e.g. body_event, body_grant_result) — the dashboards
+          # are written to match. Non-JSON lines (uvicorn/httpx access logs write
+          # an UNQUOTED value after "msg:", e.g. "msg":127.0.0.1... -> invalid
+          # JSON) fail the parse and are dropped here, removing the bulk of the
+          # non-audit noise before it enters the pipeline.
+          - type: json_parser
+            parse_from: body
+            parse_to: body
+            on_error: drop_quiet
+
+    processors:
+      # 1. Type-safe reshape (error_mode:ignore -> a non-map/string body that
+      #    cannot be indexed just skips the statement instead of erroring).
+      transform/audit:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              # k8s metadata -> resource (Loki labels namespace/app).
+              - set(resource.attributes["namespace"], attributes["k8s.namespace.name"]) where attributes["k8s.namespace.name"] != nil
+              - set(resource.attributes["app"], attributes["k8s.container.name"]) where attributes["k8s.container.name"] != nil
+              - set(resource.attributes["cluster"], "anaeem")
+              # console/jit-approver: the audit record is nested under body.msg as
+              # a MAP. Flatten it up to the body root so event/outcome/etc. sit
+              # alongside ext-proc's flat fields (one uniform `| json | body_*`).
+              - merge_maps(body, body["msg"], "upsert") where IsMap(body) and IsMap(body["msg"]) and body["msg"]["event"] != nil
+              - delete_key(body, "msg") where IsMap(body) and body["event"] != nil
+              # Correlation IDs + decision/grant_result -> resource (Loki labels).
+              - set(resource.attributes["jit_session_id"], body["jit_session_id"]) where IsMap(body) and body["jit_session_id"] != nil and body["jit_session_id"] != ""
+              - set(resource.attributes["session_id"], body["session_id"]) where IsMap(body) and body["session_id"] != nil and body["session_id"] != ""
+              - set(resource.attributes["decision"], body["decision"]) where IsMap(body) and body["decision"] != nil
+              - set(resource.attributes["grant_result"], body["grant_result"]) where IsMap(body) and body["grant_result"] != nil
+              # Mark audit lines (session-token signal present) for the filter.
+              - set(attributes["is_audit"], "1") where IsMap(body) and (body["grant_result"] != nil or body["decision"] != nil or body["event"] != nil)
+              # Drop the bulky k8s/file attributes (already lifted what we need to
+              # resource). is_audit is kept here and removed post-filter so the
+              # final record has ZERO log-record attributes.
+              - delete_key(attributes, "k8s.namespace.name")
+              - delete_key(attributes, "k8s.container.name")
+              - delete_key(attributes, "k8s.pod.name")
+              - delete_key(attributes, "k8s.pod.uid")
+              - delete_key(attributes, "k8s.container.restart_count")
+              - delete_key(attributes, "log.file.name")
+              - delete_key(attributes, "log.file.path")
+              - delete_key(attributes, "log.iostream")
+              - delete_key(attributes, "logtag")
+              - delete_key(attributes, "time")
+
+      # 2. Keep only AUDIT lines (is_audit marker set above). Drops any non-audit
+      #    JSON line (e.g. structured info logs without a session-token signal).
+      filter/audit:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'attributes["is_audit"] != "1"'
+
+      # 3. After filtering, strip the marker so NO log-record attributes remain
+      #    (keeps the emitted line a clean {"body":{...}} -> `| json` -> body_*).
+      transform/strip:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - delete_key(attributes, "is_audit")
+
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+      # Low-cardinality fields -> Loki labels for fast stream selection (all on
+      # resource). nonce / tool_args_hash / mcp_args_hash stay JSON fields only
+      # in the body (high cardinality -> never labels).
+      resource/loki_hints:
+        attributes:
+          - key: loki.resource.labels
+            value: cluster, namespace, app, jit_session_id, session_id, decision, grant_result
+            action: insert
+
+    exporters:
+      loki:
+        endpoint: "${env:LOKI_PUSH_URL}/loki/api/v1/push"
+        tls:
+          insecure: true
+        default_labels_enabled:
+          exporter: false
+          job: false
+          instance: false
+          level: true
+
+      debug:
+        verbosity: basic
+
+    service:
+      extensions: [health_check, file_storage/checkpoints]
+      pipelines:
+        logs:
+          receivers: [filelog/audit]
+          processors: [transform/audit, filter/audit, transform/strip, batch, resource/loki_hints]
+          exporters: [loki]

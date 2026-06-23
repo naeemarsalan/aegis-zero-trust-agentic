@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: patch-loki-url.yaml
+    target:
+      group: apps
+      version: v1
+      kind: DaemonSet
+      name: audit-logscrape

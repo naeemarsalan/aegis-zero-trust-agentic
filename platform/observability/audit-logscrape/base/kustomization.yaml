@@ -4,13 +4,13 @@ kind: Kustomization
 namespace: agentic-observability
 
 resources:
-  - agentic-platform-dashboard-cm.yaml
-  - jit-audit-dashboard-cm.yaml
-  - session-token-audit-dashboard-cm.yaml
+  - serviceaccount.yaml
+  - scc-rbac.yaml
+  - configmap.yaml
+  - daemonset.yaml
 
 labels:
   - pairs:
       app.kubernetes.io/managed-by: kustomize
       app.kubernetes.io/part-of: nvidia-ida
-      app.kubernetes.io/component: grafana-dashboards
-      grafana_dashboard: "1"
+      app.kubernetes.io/component: audit-logscrape
