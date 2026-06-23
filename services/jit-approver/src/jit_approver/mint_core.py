@@ -37,6 +37,7 @@ Security invariants
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import HTTPException
@@ -59,13 +60,26 @@ _TERMINAL_STATES = frozenset(
 # ---------------------------------------------------------------------------
 
 
+def _self_approval_allowed() -> bool:
+    """True when JIT_ALLOW_SELF_APPROVAL opts out of the approver!=requester gate.
+
+    Deliberate threat-model decision (LANE A): the control is that a human
+    gates-and-logs *every* elevation, not two-human 4-eyes. Self/personal
+    approval is acceptable. This flag ONLY relaxes the approver==requester
+    rejection — the empty-identity fail-closed checks are NEVER skipped.
+    """
+    return os.environ.get("JIT_ALLOW_SELF_APPROVAL", "").strip().lower() == "true"
+
+
 def _enforce_dual_control(approver_sub: str, requester_sub: str) -> None:
     """Raise HTTPException(403) if SoD is violated.
 
     Violations:
       - approver_sub is empty or whitespace (cannot establish identity -> deny)
       - requester_sub is empty or whitespace (session data corrupt -> deny)
-      - approver_sub == requester_sub (self-approval -> M5 gap closed)
+      - approver_sub == requester_sub (self-approval -> M5 gap closed),
+        UNLESS JIT_ALLOW_SELF_APPROVAL=true (the empty-identity checks above
+        still fail closed regardless of the flag).
 
     MUST be called before any state change or Vault call (fail-closed).
     """
@@ -95,6 +109,20 @@ def _enforce_dual_control(approver_sub: str, requester_sub: str) -> None:
         )
 
     if approver_clean == requester_clean:
+        if _self_approval_allowed():
+            # LANE A opt-in: human-gates-and-logs every elevation; self-approval
+            # is permitted. Still AUDIT it so the WORM ledger shows the approver
+            # == requester decision was made knowingly (do not weaken logging).
+            logger.warning(
+                "mint.self_approval_permitted",
+                extra={
+                    "reason": "self_approval_allowed",
+                    "approver_sub": approver_clean,
+                    "requester_sub": requester_clean,
+                    "flag": "JIT_ALLOW_SELF_APPROVAL=true",
+                },
+            )
+            return
         logger.warning(
             "mint.sod_violation",
             extra={

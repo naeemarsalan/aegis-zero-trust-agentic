@@ -227,6 +227,29 @@ class TestDualControlUnit:
         assert exc_info.value.status_code == 403
         assert "self-approval" in exc_info.value.detail.lower()
 
+    def test_self_approval_allowed_when_flag_set(self, monkeypatch):
+        """JIT_ALLOW_SELF_APPROVAL=true permits approver==requester (LANE A)."""
+        monkeypatch.setenv("JIT_ALLOW_SELF_APPROVAL", "true")
+        _enforce_dual_control("alice@example.com", "alice@example.com")  # no exception
+
+    def test_self_approval_flag_does_not_relax_empty_approver(self, monkeypatch):
+        """The flag must NEVER relax the empty-identity fail-closed checks."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("JIT_ALLOW_SELF_APPROVAL", "true")
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_dual_control("", "")
+        assert exc_info.value.status_code == 403
+
+    def test_self_approval_flag_false_still_denies(self, monkeypatch):
+        """Flag set to anything other than 'true' keeps the self-approval denial."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("JIT_ALLOW_SELF_APPROVAL", "false")
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_dual_control("alice@example.com", "alice@example.com")
+        assert exc_info.value.status_code == 403
+
     def test_empty_approver_sub_raises_403(self):
         """Empty approver_sub must raise 403 (fail-closed — cannot establish identity)."""
         from fastapi import HTTPException
@@ -554,6 +577,30 @@ class TestMintSoD:
         assert not vault_creds.called, "Vault creds must NOT be called on SoD violation"
         # jit_denied must have been emitted.
         assert denied_events, "emit_denied must be called on M5 self-approval"
+
+    @respx.mock
+    def test_self_approval_issues_when_flag_set(self, client: TestClient, monkeypatch):
+        """LANE A: with JIT_ALLOW_SELF_APPROVAL=true, approver==requester -> 200 issued.
+
+        Mirrors the live deployment behaviour (the threat-model decision is
+        human-gates-and-logs every elevation, not 4-eyes). The request is still
+        filed + approved + minted (full issuance path runs).
+        """
+        monkeypatch.setenv("JIT_ALLOW_SELF_APPROVAL", "true")
+        req = _base_req(requester_sub="alice@example.com")
+        _insert_session(SESSION_ID, PR_NUMBER, req)
+        _mock_vault_issue(SESSION_ID)
+
+        with patch("jit_approver.vault._svid_jwt", return_value="fake.svid.jwt"):
+            resp = client.post(
+                f"/requests/{SESSION_ID}/mint",
+                json=_mint_body(approver_sub="alice@example.com", req=req),  # self-approval
+                headers=_mint_headers(),
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "issued"
+        assert session_store[SESSION_ID]["state"] == "issued"
 
     @respx.mock
     def test_empty_approver_sub_403(self, client: TestClient):

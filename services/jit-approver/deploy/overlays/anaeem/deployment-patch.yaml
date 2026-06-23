@@ -20,6 +20,11 @@ spec:
               value: "https://vault.apps.anaeem.na-launch.com"
             - name: JIT_ALLOWED_NAMESPACES
               value: "agent-sandbox,agentic-mcp"
+            # LANE A threat-model decision: the control is human-gates-and-logs
+            # every elevation, NOT two-human 4-eyes. Self/personal approval is
+            # permitted (still filed + approved + recorded in the WORM ledger).
+            - name: JIT_ALLOW_SELF_APPROVAL
+              value: "true"
             - name: SVID_JWT_PATH
               value: "/svid/svid.jwt"
             - name: OPENSHELL_GATEWAY_ADDR
