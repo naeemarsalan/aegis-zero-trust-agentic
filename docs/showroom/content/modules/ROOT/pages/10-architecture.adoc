@@ -2,159 +2,81 @@
 :navtitle: Architecture
 
 [.lead]
-Every component, which cluster it runs on, and the primary communication paths for the Aegis zero-trust agentic platform.
+The components, what they do, and the paths a request takes. One custom service;
+everything else is a supported product or established open source.
 
-== High-level component diagram
-
-The diagram below shows every component, which cluster it runs on, and the primary communication paths.
+== Component view
 
 [mermaid,target=platform-architecture,format=svg]
 ....
 flowchart TB
-  subgraph anaeem["anaeem — SNO platform target (OCP 4.20.11)"]
-    direction TB
+  classDef agent fill:#2e7d32,color:#fff
+  classDef gate fill:#f57f17,color:#000
+  classDef human fill:#1565c0,color:#fff
+  classDef tool fill:#546e7a,color:#fff
+  classDef id fill:#00695c,color:#fff
+  classDef audit fill:#6a1b9a,color:#fff
 
-    subgraph sandbox["ns: agent-sandbox (Kata runtimeClass)"]
-      AGENT["agent pod\nJWT-SVID via SPIRE Workload API\nno SA-token automount"]
-    end
-
-    subgraph ztwim["ns: zero-trust-workload-identity-manager"]
-      SPIRE["SPIRE server + agent\ntrust domain anaeem.na-launch.com"]
-      OIDC["SPIRE OIDC discovery\nspire-oidc.apps.anaeem.na-launch.com"]
-    end
-
-    subgraph gw["ns: mcp-gateway"]
-      AGW["agentgateway\nJWT authn (Keycloak JWKS)"]
-      EXTPROC["ext-proc-delegation (Go)\n:9000 gRPC\nTHE custom component"]
-      JIT["jit-approver\n:8080 HTTP"]
-    end
-
-    subgraph kv["ns: kyverno"]
-      KAUTHZ["kyverno-authz-server\n:9081 gRPC ext_authz\ntool RBAC (Envoy ValidatingPolicy)"]
-      KADM["Kyverno admission\nguardrails + cleanup backstop"]
-    end
-
-    subgraph kc["ns: keycloak"]
-      KEYCLOAK["RHBK (realm: agentic)\nRFC 7523 jwt-bearer + RFC 8693 exchange\nfederated user tokens"]
-      CNPG[("CNPG Postgres")]
-    end
-
-    subgraph vlt["ns: vault"]
-      VAULT["Vault (raft, single-replica SNO)\nauth/jwt ↔ SPIRE OIDC\nkv per-tool secrets\nkubernetes engine: creds/jit-scoped"]
-      INJ["Vault Agent Injector\ntmpfs delivery"]
-    end
-
-    subgraph mcp["ns: agentic-mcp (Data Science Project)"]
-      PFSENSE["pfsense-mcp :8000\nStreamableHTTP /mcp\nsees USER identity"]
-    end
-
-    subgraph obs["ns: agentic-observability"]
-      OTEL["OTel collector"]
-      AMRULES["UWM AlertManager denial rule"]
-    end
+  subgraph SB["Agent sandbox — OpenShell (Kata / Confidential Containers = roadmap)"]
+    AGENT["AI agent<br/>SPIFFE SVID only"]:::agent
   end
 
-  subgraph virt["virt — ACM hub (OCP 4.19.19)"]
-    ARGO["ArgoCD openshift-gitops\napp-of-apps drives platform/"]
-    ACM["ACM 2.14 GitOpsCluster"]
+  subgraph ID["Identity & trust"]
+    SPIRE["SPIRE / ZTWIM<br/>issues SVIDs"]:::id
+    KC["Keycloak (RHBK)<br/>token exchange (RFC 8693)"]:::id
+    VAULT["Vault<br/>per-agent consent grant + secrets"]:::id
   end
 
-  subgraph hammer["hammer — AAP host (OCP 4.20.x)"]
-    AAP["AAP 2.6 gateway\nEDA + Event Streams (HMAC)\njob templates"]
+  subgraph GATE["Policy & elevation"]
+    GW["Gateway + ext-proc-delegation<br/>identity swap + inject<br/>(the one custom Go service)"]:::gate
+    JIT["JIT gate<br/>capability JWT"]:::gate
+    CON["Approval console<br/>four-eyes · WORM audit"]:::human
   end
 
-  GITEA["Gitea 13 — git.arsalan.io\nrepo anaeem/nvidia-ida\nPR-merge = JIT approval"]
-  LOKI["Loki push 172.16.2.252:3100\nGrafana 172.16.2.252:3000"]
+  subgraph TOOLS["Real tools — any MCP"]
+    PF["pfSense"]:::tool
+    K8S["Kubernetes"]:::tool
+  end
 
-  AGENT -->|"JWT-SVID + MCP JSON-RPC"| AGW
-  SPIRE --- OIDC
-  AGENT -.->|Workload API| SPIRE
-  AGW -->|ext_authz allow/deny| KAUTHZ
-  AGW -->|ext_proc mutate| EXTPROC
-  EXTPROC -->|"RFC 7523 then RFC 8693"| KEYCLOAK
-  EXTPROC -->|"JWT-SVID login + per-tool secret"| VAULT
-  EXTPROC -->|"inject Authorization (user token)"| PFSENSE
-  KEYCLOAK --- CNPG
-  VAULT -.->|OIDC trust| OIDC
-  INJ -.->|tmpfs| EXTPROC
-  EXTPROC -->|audit args-hashed + OTel| OTEL
-  PFSENSE -->|denial metric| AMRULES
-  AMRULES -->|webhook HMAC| AAP
-  AAP -->|remediation PR| GITEA
-  JIT -->|open PR| GITEA
-  GITEA -->|merge webhook HMAC| JIT
-  JIT -->|creds/jit-scoped| VAULT
-  OTEL --> LOKI
-  ARGO -->|GitOps| anaeem
-  ACM --- ARGO
-  ARGO -.->|source| GITEA
+  AUD[("Audit → Loki / Grafana")]:::audit
+  ARGO["GitOps — ArgoCD app-of-apps"]:::id
+
+  AGENT -->|"SVID + MCP call"| GW
+  AGENT -.->|"Workload API"| SPIRE
+  GW -->|"verify SVID"| SPIRE
+  GW -->|"read consent grant"| VAULT
+  GW -->|"exchange identity"| KC
+  GW -->|"as the user"| PF
+  GW -->|"as the user"| K8S
+  GW -->|"on 403"| JIT
+  CON -->|"approve → mint"| JIT
+  JIT -->|"scoped capability"| GW
+  GW --> AUD
+  CON --> AUD
+  ARGO -.->|"deploys everything"| GATE
 ....
 
-== Design rationale
+== Design principles
 
-=== One custom component
+* *One custom component.* The whole credential path rides on a single small Go binary (`ext-proc-delegation`) -- one thing to audit and maintain. Everything else is vendor-supported or established OSS.
+* *Authorize, then mutate -- separately.* A policy gate decides allow/deny; a separate step injects the credential. A bug in the mutation layer can never become an access-granting path.
+* *Fail closed.* Both gate steps are required filters. Any error returns a denial, never a pass-through.
+* *Structural auto-revoke.* Grants are short-lived capabilities and Vault-leased identities; expiry deletes them. No cron, no reconciler, no human in the revoke path.
+* *Human approval is a console, not a side channel.* Approvals happen in the approval console, enforcing approver ≠ requester, with a tamper-evident (WORM) record.
 
-The entire credential-delegation critical path rides on a single custom Go binary (`ext-proc-delegation`). Everything else — SPIRE, Keycloak, Vault, agentgateway, Kyverno, Kata — is a vendor-supported component. This is the core supportability argument for a regulated environment: one binary to audit, one binary to maintain.
+== Identity, two ways
 
-=== extAuthz / extProc split (ADR 0004)
+The platform issues the agent two identities so it can use both planes:
 
-Authorization (allow/deny) and mutation (credential injection) are handled by **separate** filters in the gateway pipeline, enforced in a fixed order:
+* a *workload-shaped* identity for the AuthBridge/Keycloak path, and
+* a *per-sandbox* identity that carries the user's consent grant for the real-tool (ext-proc) path.
 
-. **Kyverno ext_authz** decides allow/deny — it cannot mutate.
-. **ext-proc-delegation** mutates headers — it cannot grant access.
-
-This means a bug in the mutation layer cannot become an access-granting path, and a Kyverno DENY short-circuits before any credential is minted.
-
-=== Fail closed everywhere
-
-Both filters are marked **required**. An unreachable or erroring filter produces a `503` to the agent, never a pass-through. Vault Agent Injector blocking an init container means the workload never starts without valid credentials.
-
-=== Structural auto-revoke
-
-JIT grants are Vault lease objects. When the lease TTL expires, Vault deletes the SA, Role, and RoleBinding — the token becomes invalid and the identity disappears. There is no cron, reconciler, or human step in the revocation path. Kyverno cleanup is a backstop for orphaned leases only.
-
-== Namespace map
-
-[cols="1,2,2",options="header"]
-|===
-| Namespace | Components | NetworkPolicy posture
-
-| `zero-trust-workload-identity-manager`
-| SPIRE server, SPIRE agent, SPIFFE CSI Driver, OIDC discovery
-| Default deny; SPIRE agent egress to server:8081; OIDC Route ingress from router
-
-| `keycloak`
-| RHBK, CNPG Postgres
-| Default deny; ingress 8443 from router; egress CNPG:5432, SPIRE OIDC:443
-
-| `vault`
-| Vault (raft), Vault Agent Injector
-| Default deny; ingress 8200 from `mcp-gateway`, `keycloak`, `agentic-mcp`, `agent-sandbox`; Route ingress for CLI
-
-| `kyverno`
-| Kyverno admission, kyverno-authz-server
-| Default deny; ingress 9081 from `mcp-gateway`; admission webhook from API server
-
-| `mcp-gateway`
-| agentgateway, ext-proc-delegation, jit-approver
-| Default deny; ingress 443 from router; ext-proc:9000 from agentgateway; jit:8080 from ext-proc; webhook Route for Gitea
-
-| `agentic-mcp`
-| pfsense-mcp
-| Default deny; ingress 8000 from `mcp-gateway` only
-
-| `agent-sandbox`
-| agent pods (Kata)
-| Default deny; egress to `mcp-gateway.apps.anaeem.na-launch.com:443` only
-
-| `agentic-observability`
-| OTel collector, AlertManager
-| Default deny; ingress OTLP from platform namespaces; egress to Loki:3100, EDA:443
-|===
+This is what lets one agent both prove "what it is" and act "on behalf of whom"
+without ever holding a stored secret.
 
 == Cross-references
 
-* xref:04-uc1-credential-delegation.adoc[UC1 sequence diagram] — delegated tool call, step by step
-* xref:05-uc2-jit-sub-identity.adoc[UC2 sequence diagram] — JIT approval flow, step by step
-* xref:11-security-model.adoc[Security model & trust boundaries] — STRIDE per hop
-* xref:20-components.adoc[Component pages] — per-component placement, interfaces, and verify commands
+* xref:04-uc1-credential-delegation.adoc[UC1] -- delegated read, step by step
+* xref:05-uc2-jit-sub-identity.adoc[UC2] -- approval + JIT grant, step by step
+* xref:11-security-model.adoc[Security model] -- trust boundaries
+* xref:20-components.adoc[Component pages] -- per-component detail

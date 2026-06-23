@@ -11,7 +11,7 @@ Strengths, weaknesses, opportunities, and threats for the Aegis PoC, followed by
 * Exactly **one custom component** (`ext_proc` service); everything else is a supported vendor stack (Red Hat operators, HashiCorp, Linux Foundation agentgateway) — strong supportability story for a regulated bank context.
 * Attribution everywhere: SPIFFE ID per workload, user identity downstream, ephemeral `jit-<agent>-<session>` SA in Kube audit, structured audit events in Loki, OTel trace tying request → approval → action.
 * Auto-revoke is **structural** (Vault lease TTL deletes SA+RoleBinding+token), not procedural — no cron in the revocation path; Kyverno cleanup is only a backstop.
-* Defense in depth: identity (SPIRE) → policy (Kyverno authz + admission) → isolation (Kata → CoCo roadmap) → network (default-deny) → human gate (Gitea PR merge).
+* Defense in depth: identity (SPIRE) → policy (Kyverno authz + admission) → isolation (Kata → CoCo roadmap) → network (default-deny) → human gate (Approval Console: four-eyes, WORM audit).
 * No credentials in etcd, git, or agent pods at any point.
 
 === Weaknesses
@@ -38,7 +38,7 @@ Strengths, weaknesses, opportunities, and threats for the Aegis PoC, followed by
 
 [NOTE]
 ====
-*Note on scope drift:* The approved plan predates the decision to drop Slack. Wherever the SWOT above says "Slack/PR" or "Slack", the realized design uses **Gitea PR merge** as the sole approval channel with a mandatory HMAC-verified webhook (ADR 0005). The threat and its mitigation carry over unchanged.
+*Note on scope drift:* The approved plan predates the decision to drop Slack. The realized approval channel is the **Approval Console (mint-gate)**: four-eyes (approver ≠ requester), CNPG WORM audit, short-lived capability JWT (write=5 min single-use, exec=30 min), structural auto-revoke (supersedes the Gitea-PR-merge gate of ADR 0005). Threats and mitigations carry over unchanged.
 ====
 
 == PoC sign-off gate
@@ -70,7 +70,7 @@ Strengths, weaknesses, opportunities, and threats for the Aegis PoC, followed by
 | 4
 | Every privileged action **attributable to session + approval**
 | Designed; not yet provable
-| Proof needs full UC2 chain (Gitea PR → webhook → Vault → Kube audit) running.
+| Proof needs full UC2 chain (request → Approval Console approval → mint capability → Vault issuance → Kube audit) running.
 
 | 5
 | Guardrails enforced (**Kata, default-deny, no SA-token automount**)

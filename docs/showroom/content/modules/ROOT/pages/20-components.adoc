@@ -45,7 +45,7 @@ This page summarises each; click through to the per-component page for placement
 | anaeem
 | `mcp-gateway`
 | Yes — Python
-| JIT PR orchestration + HMAC webhook + Vault issuance
+| Approval Console (mint-gate): four-eyes review, approver≠requester enforced, WORM audit, Vault issuance
 
 | xref:27-kyverno.adoc[Kyverno]
 | anaeem
@@ -59,11 +59,11 @@ This page summarises each; click through to the per-component page for placement
 | Yes — Python
 | Demo downstream MCP server; sees user identity
 
-| xref:29-agent-sandbox.adoc[Agent Sandbox (Kata)]
+| xref:29-agent-sandbox.adoc[Agent Sandbox (OpenShell)]
 | anaeem
-| `agent-sandbox`
-| No — OSC operator
-| Kata-isolated agent workload namespace
+| `agent-sandbox` / `openshell`
+| No — OpenShell operator
+| Native OpenShell sandbox for agent workloads (Kata/CoCo = hardening roadmap)
 
 | xref:30-observability.adoc[Observability]
 | anaeem
@@ -90,7 +90,7 @@ The components must be available in this order; the ArgoCD sync waves enforce it
 
 [source]
 ----
-wave 0 — OLM operators (ZTWIM, RHBK, CNPG, sandboxed-containers)
+wave 0 — OLM operators (ZTWIM, RHBK, CNPG, OpenShell)
 wave 1 — SPIRE / ZTWIM  ← identity root; everything depends on it
 wave 2 — Keycloak + Vault  ← Vault needs SPIRE OIDC; Keycloak needs CNPG
 wave 3 — Kyverno  ← needs to be running before any admission request

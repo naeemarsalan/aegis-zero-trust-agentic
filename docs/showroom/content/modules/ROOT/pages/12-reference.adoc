@@ -169,7 +169,7 @@ Identity contract, SPIFFE IDs, internal service endpoints, external endpoints, a
 
 | `secret/data/gitea/jit-approver-token`
 | KV v2
-| jit-approver (via Vault Agent Injector)
+| jit-approver (via Vault Agent Injector) — *legacy*: jit-approver no longer opens Gitea PRs; approval is via the Approval Console (mint-gate). This secret is retained for potential audit-webhook use only.
 
 | `secret/data/jit/<session>`
 | KV v2

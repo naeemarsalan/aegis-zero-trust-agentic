@@ -62,9 +62,9 @@ This is verifiable by querying Loki and confirming all `tool_args` values begin 
 == EDA denial loop
 
 When a Kyverno ext_authz decision or a pfsense-mcp response triggers a denial metric, the UWM AlertManager rule fires a webhook to the AAP EDA Event Stream on `hammer`.
-This is the automated half of the self-healing loop — the EDA rulebook matches the alert and triggers a remediation job template which opens a Gitea PR for human review.
+This is the automated half of the self-healing loop — the EDA rulebook matches the alert and triggers a remediation job template which opens a scoped JIT request surfaced in the Approval Console for human approval.
 
-The alert → EDA → PR path is the automated trigger for UC2: the remediation itself cannot proceed without a human merge.
+The alert → EDA → Approval Console path is the automated trigger for UC2: the remediation itself cannot proceed without a human approval (approver ≠ requester).
 
 == Security posture
 

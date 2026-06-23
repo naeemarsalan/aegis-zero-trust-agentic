@@ -44,21 +44,24 @@ All critical filters in Aegis are configured fail-closed.
 | *HITL*
 | Human-in-the-loop — requiring explicit human approval before a privileged action
 proceeds.
-In Aegis, the HITL gate is a Gitea PR merge.
+In Aegis, the HITL gate is an approval in the Approval Console (mint-gate), where
+the approver must be a different person from the requester (four-eyes).
 
 | *JIT*
 | Just-in-time — access granted only for the duration it is needed, only after
 approval, and automatically revoked when the window closes.
 
 | *jit-approver*
-| The Python service that orchestrates the UC2 JIT approval flow: opens a Gitea PR,
-verifies the merge webhook, calls Vault to mint the ephemeral identity, and delivers
-credentials to the agent.
+| The Python service that orchestrates the UC2 JIT approval flow: receives the scoped
+request, records it in a CNPG WORM audit table, surfaces it in the Approval Console
+for a human (who must not be the requester) to approve, then mints the short-lived
+capability JWT and the Vault-issued ephemeral identity, and delivers credentials to
+the agent.
 
 | *Kata Containers*
 | A container runtime that runs each pod inside a lightweight KVM micro-VM, isolating
 it from the host kernel.
-Used in `agent-sandbox` via the `kata-qemu` runtime class.
+Roadmap hardening tier for `agent-sandbox` (`kata-qemu`); the current runtime is the native OpenShell sandbox.
 
 | *Keycloak / RHBK*
 | Red Hat Build of Keycloak — the OIDC/OAuth2 identity broker for the `agentic`

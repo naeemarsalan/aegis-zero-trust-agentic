@@ -1,12 +1,11 @@
-= Agent Sandbox — Kata Containers Isolation
+= Agent Sandbox — Native OpenShell Isolation
 :navtitle: Agent Sandbox
 
 [.lead]
-The `agent-sandbox` namespace is the isolated execution environment for all AI agent workloads.
-Every agent pod runs under the **Kata Containers** runtime (`kata-qemu`), which places the pod inside a lightweight KVM micro-VM rather than sharing the host kernel with other workloads.
+The agent sandbox is the isolated execution environment for all AI agent workloads.
+Today the platform uses **native OpenShell sandboxes** — each agent boots inside a confined pod managed by the OpenShell operator, carrying its own SPIFFE SVID, no SA-token automount, and a default-deny NetworkPolicy that restricts egress to the MCP gateway only.
 
-This isolation limits the blast radius of a compromised or malicious agent: the worst-case escape is from the VM, not from a shared kernel namespace.
-Combined with no SA-token automount, Kyverno guardrails, and a default-deny NetworkPolicy that permits egress only to the MCP gateway, the agent pod has no path to the host, to other namespaces, or to credential stores.
+This is the proven runtime: a credential-less LLM agent in a native OpenShell sandbox performs the full zero-trust journey — read-delegated, write-denied, human-approved, JIT-elevated write, capability-expired.
 
 == Placement
 
@@ -15,22 +14,22 @@ Combined with no SA-token automount, Kyverno guardrails, and a default-deny Netw
 | Property | Value
 
 | Cluster
-| `anaeem` (SNO, OCP 4.20.11, nested virt confirmed)
+| `anaeem` (SNO, OCP 4.20.11)
 
 | Agent namespace
-| `agent-sandbox`
+| `openshell` (sandbox CRs) / `agent-sandbox` (legacy)
 
 | Operator namespace
 | `openshift-sandboxed-containers-operator`
 
-| Runtime class
-| `kata-qemu` (nested virt; not `kata-remote` which requires peer-pods infrastructure)
+| Runtime
+| Native OpenShell (runc + MCS confined); `provider_spiffe` enabled
 
-| OSC operator channel
+| OpenShell channel
 | `stable`
 
-| Nested virt status
-| Confirmed — `vmx` flag in `/proc/cpuinfo`, `/dev/kvm` present on `anaeem-sno`
+| SVID delivery
+| SPIFFE CSI Driver tmpfs mount + `spiffe-helper` sidecar
 |===
 
 == Isolation properties
@@ -40,31 +39,49 @@ Combined with no SA-token automount, Kyverno guardrails, and a default-deny Netw
 | Property | Value
 
 | Kernel isolation
-| Separate KVM micro-VM per pod; host kernel not shared
+| MCS label confinement + setns namespace (native OpenShell); host kernel not shared with other tenants
 
 | Privileged containers
-| Not allowed — enforced by Kyverno ClusterPolicy
+| Not allowed — Kyverno ClusterPolicy enforced
 
 | `hostPID` / `hostNetwork`
-| Not allowed — enforced by Kyverno ClusterPolicy
+| Not allowed — Kyverno ClusterPolicy enforced
 
 | SA-token automount
 | `automountServiceAccountToken: false` on all agent pods
 
 | Credential delivery
-| SPIFFE CSI Driver tmpfs only; no Vault Secret volumes
+| SPIFFE CSI Driver tmpfs only; Vault Agent Injector for consent grant
 
 | NetworkPolicy egress
 | `mcp-gateway.apps.anaeem.na-launch.com:443` only
 |===
 
+== SVID topology
+
+Each OpenShell sandbox carries **two SVIDs** via two ClusterSPIFFEIDs:
+
+[source]
+----
+openshell-sandbox-workloads  →  SA-shaped SVID
+  spiffe://anaeem.na-launch.com/ns/openshell/sa/openshell-sandbox
+  Used by: Kagenti AuthBridge → Keycloak federated-jwt → jit-gate → echo-mcp
+
+openshell-sandbox-extproc    →  UUID-shaped SVID
+  spiffe://anaeem.na-launch.com/ns/openshell/sandbox/<uuid>
+  Used by: ext-proc-delegation → Vault consent grant → real tools (pfSense, k8s)
+----
+
+The agent's `svid_bearer` selects the UUID SVID for ext-proc via `SVID_REQUIRE_PATH_SUBSTR=/sandbox/`.
+
 == Security posture
 
-* **SPIFFE ID per agent:** each agent gets its own ServiceAccount and therefore its own SVID (`spiffe://anaeem.na-launch.com/ns/agent-sandbox/sa/<agent-sa>`)
-* **No standing credentials:** agents hold only their JWT-SVID; no API keys, no SA tokens, no pfSense credentials
-* **Fail-mode:** if Kata runtime is not installed or the VM fails to start, the pod enters an error state — it does not fall back to `runc`; the `runtimeClassName` field is immutable post-creation
+* **No standing credentials:** agents hold only their JWT-SVIDs; no API keys, no SA tokens, no pfSense credentials
+* **Vault consent grant:** the sandbox launcher writes a per-sandbox grant at `secret/data/sandbox-grants/<uuid>` before the agent boots; ext-proc-delegation reads it at request time
+* **Fail-mode:** if the SPIRE Workload-API is unavailable, SVID fetch fails and the agent cannot authenticate — no fallback to static credentials
+* **setns fix (ADR-0017):** `CAP_SYS_CHROOT` is added via Kyverno mutation (`mutate-openshell-sandbox-syschroot`); sandbox remains container_t + MCS confined
 
-*NetworkPolicy:* default-deny in `agent-sandbox`; explicit egress allow to `mcp-gateway.apps.anaeem.na-launch.com:443` only; no direct egress to the internet or to other namespaces.
+*NetworkPolicy:* default-deny in `openshell`; explicit egress to `mcp-gateway.apps.anaeem.na-launch.com:443` only; no direct egress to the internet or to other namespaces.
 
 == Interfaces
 
@@ -80,40 +97,62 @@ Combined with no SA-token automount, Kyverno guardrails, and a default-deny Netw
 | SPIRE Agent (CSI)
 | inbound (node-level)
 | Unix socket
-| SVID delivery to agent VM
+| SVID delivery to agent pod
+
+| Vault Agent Injector
+| inbound (init container)
+| 8200 HTTPS
+| Consent grant delivery at launch
 |===
 
 == Verify
 
 [source,bash]
 ----
-# 1. Confirm KataConfig is reconciled and Kata runtime is installed
-oc get kataconfig -o jsonpath='{.items[0].status.installationStatus}'
+# 1. Confirm an OpenShell sandbox is Running
+oc get sandbox -n openshell
 
-# 2. Check agent pods use the kata runtime class
-oc get pod -n agent-sandbox -o jsonpath='{.items[*].spec.runtimeClassName}'
-# Expected: kata-qemu (or kata)
+# 2. Confirm the UUID SVID is issued to the sandbox pod
+oc exec -n openshell <sandbox-pod> -- \
+  /opt/spire/bin/spire-agent api fetch jwt \
+  -socketPath /run/spire/sockets/agent.sock -audience test | grep "sandbox/"
 
-# 3. Confirm a different kernel version in the agent pod (Kata VM kernel vs host)
-oc exec -n agent-sandbox <agent-pod> -- uname -r
-
-# 4. Confirm no SA-token volume is mounted on an agent pod
-oc get pod -n agent-sandbox <pod> -o json \
+# 3. Confirm no SA-token volume is mounted on an agent pod
+oc get pod -n openshell <pod> -o json \
   | jq '.spec.automountServiceAccountToken'
 # Expected: false
+
+# 4. Confirm the Vault consent grant was written for this sandbox
+SANDBOX_UUID=$(oc get pod -n openshell <pod> -o jsonpath='{.metadata.annotations.openshell\.io/sandbox-id}')
+oc exec -n vault vault-0 -- vault kv get secret/sandbox-grants/$SANDBOX_UUID
 ----
 
-== Production path — Confidential Containers
+== Hardening roadmap — Kata and Confidential Containers
 
-In production, the isolation target is **Confidential Containers** (CoCo) with peer-pods and hardware TEE attestation (Intel TDX or AMD SEV-SNP).
-This provides hardware-rooted attestation in addition to VM isolation — even the hypervisor operator cannot inspect agent memory.
+Native OpenShell (runc + MCS) is the current runtime.
+The hardening roadmap adds two further isolation tiers when hardware is available:
 
-CoCo requires hardware TEE support that is not available on the `anaeem` SNO node (a nested VM).
-It is documented separately in xref:32-confidential-containers.adoc[Confidential Containers] as a future production target.
+[cols="1,2,1",options="header"]
+|===
+| Tier | Mechanism | Status
+
+| Native OpenShell
+| runc + MCS confined; no host-kernel sharing with other tenants
+| **Live (current)**
+
+| Kata Containers
+| Lightweight KVM micro-VM per pod (`kata-qemu`); separate kernel
+| Roadmap — requires `nested virt` or bare-metal; no identity or policy redesign needed
+
+| Confidential Containers (CoCo)
+| Kata peer-pods + hardware TEE attestation (Intel TDX / AMD SEV-SNP); encrypted VM memory
+| Roadmap — requires TEE-capable hardware; see xref:32-confidential-containers.adoc[Confidential Containers]
+|===
+
+Moving from native OpenShell to Kata or CoCo requires only a `runtimeClassName` change and (for CoCo) Trustee KBS deployment — the SPIRE trust domain, Keycloak realm, Vault policies, and Kyverno rules are unchanged.
 
 == Maturity flags
 
-* OSC / Kata Containers `stable` channel is GA on OCP 4.20
-* Nested-virt Kata is supported but carries a performance overhead vs. bare-metal Kata
-* `kata-qemu` is the correct runtime class for nested virt — not `kata-remote`
-* SNO single-node topology means a `KataConfig` daemon rollout that fails to drain the node would render the only node unschedulable — apply during a maintenance window
+* Native OpenShell sandboxes are the proven PoC runtime; Kagenti + ext-proc dual-SVID topology is validated end-to-end
+* `provider_spiffe` is enabled live (ADR-0017 setns fix applied)
+* Kata `stable` channel is GA on OCP 4.20 but is a roadmap item for this platform — not the current runtime

@@ -2,69 +2,54 @@
 :navtitle: The solution
 
 [.lead]
-Aegis is a zero-trust identity fabric for agentic AI on OpenShift. Agents
-authenticate with a *workload identity that cannot be exfiltrated as a
-credential*; a gateway swaps that identity for user-scoped, short-lived
-access *outside* the agent's reach; and privileged actions require a human
-approval that materializes as a *self-destructing Kubernetes identity*.
+Aegis is a zero-trust control plane that sits between any AI agent and the real
+tools it calls. The agent authenticates with a *workload identity that cannot be
+stolen as a credential*; reads run *as the user*; and every change is gated by a
+*human approval* that mints a *self-expiring, scoped grant*.
 
-== The shape of a tool call
+== The two-speed model
 
-Every MCP tool call from an agent crosses the same pipeline:
+Read freely, change only with a human in the loop.
 
-[mermaid,target=aegis-pipeline,format=svg]
+[mermaid,target=read-vs-write,format=svg]
 ....
 flowchart LR
-    classDef step fill:#1565c0,color:#fff
-    classDef art fill:#2e7d32,color:#fff
-    classDef gate fill:#f57f17,color:#000
+  classDef agent fill:#2e7d32,color:#fff
+  classDef gate fill:#f57f17,color:#000
+  classDef human fill:#1565c0,color:#fff
+  classDef tool fill:#546e7a,color:#fff
 
-    A[Agent pod\nKata-isolated\nSPIFFE SVID only]:::art --> G[agentgateway\nJWT authn]:::step
-    G --> K{Kyverno ext_authz\nis THIS tool allowed?}:::gate
-    K --> X[ext-proc-delegation\nidentity swap]:::step
-    X --> V[(Vault\nper-tool secret)]:::art
-    X --> KC[(Keycloak\nRFC 8693 exchange)]:::art
-    X --> D[downstream MCP server\nsees the USER]:::step
+  A["AI agent<br/>identity only"]:::agent
+
+  subgraph READ["READ — delegated, instant"]
+    direction LR
+    R{"swap identity<br/>agent → user"}:::gate --> RT["tool sees the USER"]:::tool
+  end
+
+  subgraph WRITE["WRITE — gated, four-eyes"]
+    direction LR
+    W{"blocked by default"}:::gate --> AP["human approves<br/>in console"]:::human --> GR["short-lived<br/>scoped grant"]:::human --> WT["change applied<br/>then expires"]:::tool
+  end
+
+  A --> READ
+  A --> WRITE
 ....
 
-. *Authenticate the workload, not a secret.* SPIRE issues every agent pod a
-  SPIFFE JWT-SVID based on what it _is_ (namespace, service account, node) --
-  there is no API key to provision, leak, or rotate.
-. *Authorize the specific tool.* Kyverno's ext_authz policy decides per-call
-  whether this agent may invoke this tool. Deny is the default.
-. *Swap the identity.* The `ext-proc-delegation` service exchanges the
-  agent's SVID for the *user's* federated token (Keycloak, RFC 8693 + RFC
-  7523), scoped to the downstream audience, and fetches any per-tool secret
-  from Vault -- in memory, for one request, never written to the pod.
-. *Forward as the user.* The downstream MCP server receives the user's
-  identity. Its logs, RBAC, and rate limits all apply to the human the agent
-  is working for.
+== How a request flows
 
-If any step in that chain errors, the request is *denied* -- both filters are
-required; there is no degrade-gracefully path on the credential chain.
+. *Authenticate the workload, not a secret.* SPIRE issues each agent a SPIFFE identity based on what it _is_ -- no API key to provision, leak, or rotate.
+. *Read as the user.* The gateway swaps the agent's identity for the user's scoped token (Keycloak RFC 8693). The downstream tool sees the human.
+. *Block writes by default.* A privileged action returns `403` until approved -- there is no degrade-to-allow path.
+. *Approve in a console.* A human -- *not the requester* -- approves a scoped, time-boxed request. The act of approving mints the grant.
+. *Use it once, then it's gone.* The grant is short-lived (write = 5 min, single-use; exec = 30 min) and auto-expires. No standing privilege, no manual revoke.
 
-== When the agent needs more: JIT escalation
+== Why it is supportable
 
-A denied operation does not end in a dead 403. The agent files a scoped,
-time-boxed access request, which becomes a *Gitea pull request*. A human
-merging that PR is the approval -- no parallel approval system, no chatops
-bot with admin rights. The merge webhook drives `jit-approver` to mint an
-ephemeral Kubernetes identity (ServiceAccount + Role + RoleBinding) through
-Vault's Kubernetes secrets engine, with the Vault *lease TTL equal to the
-approval window*. When the lease expires, Vault deletes the identity. Nothing
-needs to remember to revoke it.
+Exactly *one* component is custom code: `ext-proc-delegation`, a small Go service
+that swaps identity and injects the downstream token. Everything else is a
+supported product or established open source -- SPIRE (Red Hat ZTWIM), Keycloak
+(RHBK), HashiCorp Vault, Kyverno, agentgateway, OpenShift GitOps. Any
+MCP-speaking agent gets these guarantees with *zero agent-side changes*.
 
-== Why this is supportable
-
-Exactly *one* component in the chain is custom code: `ext-proc-delegation`,
-a small Go service implementing Envoy's ext_proc protocol. Everything else is
-a supported product or an established open-source project: SPIRE (Red Hat
-Zero Trust Workload Identity Manager), Keycloak (RHBK), HashiCorp Vault,
-Kyverno, agentgateway (Linux Foundation), Kata Containers, OpenShift GitOps.
-The pattern -- gateway-mediated identity exchange -- is not bespoke to one
-agent framework; any MCP-speaking agent gets the same guarantees with zero
-agent-side changes.
-
-Continue to xref:02-business-outcomes.adoc[Business outcomes], or go deeper
-with the xref:04-uc1-credential-delegation.adoc[UC1 walkthrough] and
+Continue to xref:02-business-outcomes.adoc[Business outcomes] or the
 xref:10-architecture.adoc[architecture].

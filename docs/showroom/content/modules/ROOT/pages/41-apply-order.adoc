@@ -18,7 +18,7 @@ flowchart TD
   VT["wave 2b\nVault (Helm)"]
   KV["wave 3\nKyverno\n(admission + authz server)"]
   GW["wave 4\nagentgateway + ext-proc-delegation + jit-approver"]
-  ISO["wave 5a\nKata sandbox"]
+  ISO["wave 5a\nOpenShell sandbox"]
   RHOAI["wave 5b\nRHOAI / agentic-mcp"]
   OBS["wave 5c\nOTel + AlertManager"]
   NP["wave 5d\nNetworkPolicies (default-deny)"]

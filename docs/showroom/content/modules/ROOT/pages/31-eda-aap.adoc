@@ -5,9 +5,8 @@
 Event-Driven Ansible (EDA) with Ansible Automation Platform (AAP) 2.6 provides the automated remediation backbone.
 EDA Rulebooks listen to alert events from the observability stack, match conditions (GPU health degradation, policy violations, anomalous agent behavior), and trigger AAP Job Templates that execute remediation playbooks — creating a closed-loop, human-in-the-loop response pipeline.
 
-The key property: **remediation lands as a Gitea PR, not as a direct privileged change**.
-A human must merge the PR before any destructive remediation executes.
-This is the same HITL gate as UC2.
+The key property: **remediation requires human approval before any destructive change executes**.
+EDA triggers the same JIT approval gate as UC2 — the human approves in the Approval Console (mint-gate); no direct privileged change is made without a four-eyes review.
 
 == Deployment model
 
@@ -53,9 +52,9 @@ EDA triggers AAP Job Template
     ↓
 Job Template runs remediation playbook
     ↓
-Playbook opens a Gitea PR carrying the remediation patch
-    ↓ human reviews and merges
-Merge webhook → jit-approver (if elevated access required)
+Playbook submits JIT approval request to jit-approver (if elevated access required)
+    ↓ human approves in Approval Console (approver ≠ requester enforced)
+jit-approver mints short-lived capability JWT
     ↓ OR → direct application via ArgoCD if the change is GitOps-managed
 Remediation applied
 ----
@@ -68,7 +67,7 @@ The PR is the boundary.
 * **AAP API credentials:** stored in Vault (`kv-v2/aap/controller-token`); injected into the EDA webhook sender component via Vault Agent Injector; no hardcoded credentials in rulebook YAML
 * **EDA Rulebook Activations:** use Credentials of type `Red Hat Ansible Automation Platform` pointing at the Controller
 * **AlertManager → EDA:** HMAC-authenticated Event Stream; TLS transport
-* **Gitea PR-merge is the approval gate** for destructive remediations — same HITL as UC2
+* **Approval Console (mint-gate) is the approval gate** for destructive remediations — same HITL as UC2; approver ≠ requester enforced, WORM audit record written
 * **Fail-mode:** if EDA cannot reach AAP Controller, Rulebook Activations enter `failed` state and alert; no silent failure
 
 == Interfaces
@@ -87,15 +86,10 @@ The PR is the boundary.
 | 443 HTTPS
 | Job Template launch requests
 
-| Gitea (`git.arsalan.io`)
-| outbound from EDA
-| 443 HTTPS
-| PR creation for remediation patches
-
 | jit-approver (anaeem)
 | outbound
 | 443 HTTPS
-| Pre-flight approval check before remediation
+| JIT approval request for privileged remediation steps
 |===
 
 == Verify
@@ -117,5 +111,5 @@ oc exec -n agentic-observability deploy/alertmanager -- \
 == Maturity flags
 
 * AAP 2.6 with gateway API is GA; EDA Event Streams (replacing legacy webhook receivers) is GA in AAP 2.6
-* The Gitea PR-merge-as-approval pattern is a custom integration — no upstream AAP feature
+* The Approval Console (mint-gate) integration with EDA is a custom pattern — no upstream AAP feature
 * AAP Controller 4.7.12 — check Red Hat errata for any CVEs before connecting to the platform network

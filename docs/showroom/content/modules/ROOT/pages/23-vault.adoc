@@ -151,7 +151,8 @@ curl -s \
 
 == Maturity flags
 
-* Vault Helm chart 0.32.0 is GA; single-replica Raft is a supported topology
+* Vault is deployed via the HashiCorp Helm chart (v0.32.0) — no certified operator manages the Vault server itself; single-replica Raft is a supported topology
 * Vault Agent Injector annotation-based injection is stable
 * `auth/jwt` with OIDC discovery is a GA Vault feature (OSS)
 * OSS Vault has no namespaces and no native SPIFFE auth — `auth/jwt` bound to SPIRE OIDC + per-path policy isolation is the OSS-compatible design (noted in SWOT)
+* GitOps-declarative Vault configuration (auth methods, policies, secret engines) is managed via the `redhat-cop/vault-config-operator`, keeping Vault config as code without running a Vault server operator

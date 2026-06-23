@@ -31,7 +31,7 @@ The security review addendum graded the dangerous-tools gate *PARTIAL*:
 The Vault Agent Injector annotation is part of the pod spec, which is fixed at
 pod-start time.
 The Vault Kubernetes role `kubernetes/roles/jit-<session>` does not exist until
-jit-approver creates it after the Gitea PR is merged.
+jit-approver creates it after a human approves the request in the Approval Console.
 There is no session-specific Vault path to reference in a static pod annotation.
 This is a structural chicken-and-egg: the pod that needs the credentials has already
 started before the approval creates the Vault role.

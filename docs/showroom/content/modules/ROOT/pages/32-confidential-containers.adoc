@@ -2,7 +2,8 @@
 :navtitle: Confidential Containers
 
 WARNING: Confidential Containers (CoCo) is the **production-grade isolation target** described here for planning purposes.
-In the PoC, Kata Containers with `runtimeClassName: kata-qemu` (nested virt, no TEE) is the active isolation tier — see xref:29-agent-sandbox.adoc[Agent Sandbox].
+In the PoC, **native OpenShell sandboxes** are the active isolation tier — see xref:29-agent-sandbox.adoc[Agent Sandbox].
+Kata Containers (VM isolation) and CoCo (hardware TEE) are both on the hardening roadmap; neither requires identity or policy redesign.
 CoCo requires hardware TEE support that is not available on the `anaeem` SNO node (a nested VM on the `virt` hub).
 
 [.lead]

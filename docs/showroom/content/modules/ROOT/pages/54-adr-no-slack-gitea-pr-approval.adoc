@@ -1,8 +1,16 @@
 = ADR 0005 — No Slack; Gitea PR Merge is the Approval Gate
 :navtitle: ADR 0005: Gitea PR Approval Gate
 
+[NOTE]
+====
+*Historical ADR — the Gitea PR gate described here has been superseded.*
+The current approval mechanism is the **Approval Console (mint-gate)**: a real-time four-eyes UI where a human reviewer approves or denies pending requests.
+The console supersedes the Gitea-PR-merge gate for three reasons: (1) real-time UX — no round-trip to a git PR; (2) approver ≠ requester is enforced structurally at mint time, not by convention; (3) every approval decision is written to a CNPG WORM audit log — tamper-evident and durable.
+The security principles in this ADR (single approval channel, HMAC integrity, scope-from-committed-record, ceiling re-check) carry forward unchanged in the Approval Console design.
+====
+
 [.lead]
-*Status: Accepted.* Supersedes the "Slack/PR" language in the approved plan's SWOT
+*Status: Accepted (superseded by Approval Console).* Supersedes the "Slack/PR" language in the approved plan's SWOT
 and JIT sections.
 
 == Context

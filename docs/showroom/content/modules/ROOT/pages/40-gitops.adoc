@@ -127,7 +127,7 @@ make render      # render all overlays to rendered/<component>.yaml for inspecti
 
 | 5
 | `isolation.yaml`, `rhoai.yaml`, `observability.yaml`, `networkpolicies.yaml`
-| Parallel — Kata sandbox, RHOAI project, OTel/AlertManager, default-deny
+| Parallel — OpenShell sandbox, RHOAI project, OTel/AlertManager, default-deny
 NetworkPolicies
 |===
 

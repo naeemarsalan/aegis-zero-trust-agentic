@@ -2,51 +2,61 @@
 :navtitle: Who uses what
 
 [.lead]
-Five roles touch the platform. Each sees a different surface, and none of
-them ever handles a downstream credential.
+Five roles touch the platform. Each sees a different surface; none of them ever handles a downstream credential directly.
 
-== Agent developer
+== Persona map
 
-Builds agents that run in the Kata-isolated `agent-sandbox` namespace. Their
-agent speaks plain MCP to the gateway and presents the SPIFFE SVID the
-platform injects -- no auth code, no secrets handling. When a call is denied,
-the SDK surfaces the JIT request flow instead of a dead end.
+[mermaid,target=persona-flow,format=svg]
+....
+flowchart LR
+  classDef agent fill:#2e7d32,color:#fff
+  classDef gate fill:#f57f17,color:#000
+  classDef human fill:#1565c0,color:#fff
+  classDef tool fill:#546e7a,color:#fff
+  classDef audit fill:#6a1b9a,color:#fff
 
-*Touches:* agent code, MCP client config. *Never touches:* tokens, Vault,
-Keycloak.
+  ENG["Requesting engineer<br/>plain language ask"]:::human
+  AGT["AI agent<br/>SVID only · reads / requests"]:::agent
+  GW{"Zero-trust gate<br/>block or delegate"}:::gate
+  APR["Approver<br/>console · ≠ requester"]:::human
+  TOOL["Real tool<br/>pfSense · Kubernetes"]:::tool
+  AUD[("WORM audit<br/>security reviewer reads")]:::audit
 
-== Platform engineer
+  ENG -->|"1 task"| AGT
+  AGT -->|"2 read (as user)"| GW
+  GW -->|"3 delegated 200"| TOOL
+  AGT -->|"4 write attempt"| GW
+  GW -->|"5 403 · request approval"| APR
+  APR -->|"6 approve in console"| GW
+  GW -->|"7 scoped · short-lived"| TOOL
+  GW -.->|"every step"| AUD
+....
 
-Owns the GitOps repo. Deploys and upgrades the identity core (SPIRE,
-Keycloak, Vault, Kyverno, agentgateway) through ArgoCD sync waves, writes the
-NetworkPolicies, and curates which tools exist behind the gateway.
+== What each persona does
 
-*Touches:* this Git repository, ArgoCD, operator CRs.
-See xref:40-gitops.adoc[GitOps & bootstrap].
+[cols="2,3,3", options="header"]
+|===
+|Persona |What they do |What they see
 
-== Approver / team lead
+|Requesting engineer
+|Gives the agent a task in plain language; monitors progress.
+|Chat interface or CLI. Never handles credentials or approvals.
 
-Reviews JIT escalation requests as *Gitea pull requests*: the diff shows
-exactly which verbs, resources, namespace, and TTL the agent asked for.
-Merging is approving; closing is denying. No new console to learn.
+|AI agent
+|Executes reads immediately (delegated as the user); requests human approval before any write.
+|Only its own SPIFFE workload identity. No stored tokens, keys, or passwords.
 
-*Touches:* Gitea. See xref:05-uc2-jit-sub-identity.adoc[UC2 walkthrough].
+|Approver
+|Reviews a scoped write request in the Approval Console and clicks approve or deny. Must be a different person than the requester.
+|Approval Console: the verb, resource, scope, and TTL being requested. One click to approve; one to deny.
 
-== Security / auditor
+|Security / compliance reviewer
+|Verifies that every privileged action has a human behind it; traces requests from audit log back to user identity and approval record.
+|WORM audit trail (Loki / Grafana): who asked, who approved, what ran, when the grant expired.
 
-Verifies invariants instead of trusting intentions: inspects agent pods for
-the absence of credentials, follows a downstream log entry back to a user,
-follows a `jit-*` ServiceAccount in Kube audit back to a merged PR and a
-Vault lease, and watches the lease expiry delete the identity.
+|Platform team
+|Deploys and upgrades the identity stack via GitOps; defines which tools are reachable and what policies apply.
+|ArgoCD, operator CRs, this Git repository. See xref:40-gitops.adoc[GitOps & bootstrap].
+|===
 
-*Touches:* Kube audit, Vault lease history, Loki/Grafana, Gitea history.
-See xref:11-security-model.adoc[Security model].
-
-== Downstream tool owner
-
-Runs an MCP server (the PoC ships `pfsense-mcp`) and sees ordinary
-authenticated requests from *users* -- not from a shared agent identity.
-Existing per-user RBAC, quotas, and logging keep working unchanged.
-
-*Touches:* their own service. *Never sees:* the agent.
-See xref:28-pfsense-mcp.adoc[pfsense-mcp].
+Continue to xref:04-uc1-credential-delegation.adoc[UC1 -- delegated read walkthrough] or xref:05-uc2-jit-sub-identity.adoc[UC2 -- approval flow walkthrough].

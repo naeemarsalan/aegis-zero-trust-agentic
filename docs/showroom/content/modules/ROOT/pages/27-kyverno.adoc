@@ -4,7 +4,7 @@
 [.lead]
 Kyverno serves two distinct roles in the Aegis platform:
 
-. **Kubernetes admission controller** — enforces baseline security invariants cluster-wide: no privileged containers, required SPIFFE labels, mandatory Kata runtimeClass in `agent-sandbox`, no `automountServiceAccountToken` on agent pods. `failurePolicy: Fail` on all webhooks — if Kyverno is down, new resource creation is blocked.
+. **Kubernetes admission controller** — enforces baseline security invariants cluster-wide: no privileged containers, required SPIFFE labels, no `automountServiceAccountToken` on agent pods, and OpenShell sandbox admission guardrails. `failurePolicy: Fail` on all webhooks — if Kyverno is down, new resource creation is blocked.
 . **gRPC Authorization Server (ext_authz)** — provides real-time per-tool-call policy decisions to agentgateway via the Envoy ext_authz protocol. The `kyverno-authz-server` evaluates `ValidatingPolicy` CEL rules that say which tools a given agent SVID (or user) may call. This is the **allow/deny** layer in the gateway pipeline (xref:53-adr-extproc-vs-extauthz-split.adoc[ADR 0004]).
 
 A third role — Kyverno `ClusterCleanupPolicy` — serves as the **backstop** for JIT grant revocation: if Vault fails to delete a `jit-<session>` SA/Role/RoleBinding, Kyverno will catch and delete it.
