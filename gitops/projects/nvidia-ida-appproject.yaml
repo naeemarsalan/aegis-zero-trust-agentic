@@ -14,44 +14,11 @@ spec:
     - https://git.arsalan.io/anaeem/nvidia-ida.git
 
   destinations:
-    # --- anaeem platform-target cluster ---
-    # Default destination of the 00-operators Application (Subscriptions land in
-    # their own namespaces below; this is only the app-level destination tuple).
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: openshift-operators
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: zero-trust-workload-identity-manager
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: keycloak
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: vault
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: mcp-gateway
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: kyverno
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: agentic-mcp
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: agent-sandbox
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: agentic-observability
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: openshift-sandboxed-containers-operator
-    # Cluster monitoring config (observability app writes both ConfigMaps)
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: openshift-monitoring
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: openshift-user-workload-monitoring
-    # Allow cluster-scoped resources on anaeem (e.g. KataConfig, ClusterRole)
-    - server: https://api.anaeem.na-launch.com:6443
-      namespace: ""
-
-    # --- virt hub cluster: ArgoCD self-management ---
+    # ocp-dev: self-managed GitOps — all platform components deploy in-cluster.
+    # Namespace-wildcard is acceptable for this PoC; the resource whitelists
+    # below already permit all cluster- and namespace-scoped kinds.
     - server: https://kubernetes.default.svc
-      namespace: openshift-gitops
-    # showroom docs site runs on the hub in the rhoai-agentic project
-    - server: https://kubernetes.default.svc
-      namespace: rhoai-agentic
+      namespace: '*'
 
   clusterResourceWhitelist:
     - group: "*"
