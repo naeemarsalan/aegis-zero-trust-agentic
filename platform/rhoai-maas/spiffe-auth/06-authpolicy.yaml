@@ -1,11 +1,28 @@
 # AuthPolicy (Kuadrant/Authorino) — THE keystone. The agent's SPIFFE JWT-SVID is
-# the ONLY model credential. No per-agent model bearer token to mint/store/rotate.
+# the ONLY model credential for the STANDARD tier. No per-agent model bearer
+# token to mint/store/rotate.
 #
-# authentication: validate a JWT whose issuer is the SPIRE OIDC discovery endpoint
-#   (signature checked against its JWKS). Audience is NOT required — the agent's
-#   existing aud="mcp-gateway" SVID is accepted; a model-scoped aud is optional later.
-# authorization: OPA/Rego allows ONLY subjects whose SPIFFE ID is an openshell or
-#   agent-sandbox sandbox workload. Any other (or no) identity is denied.
+# TWO TIERS, ONE AuthConfig (Authorino indexes one AuthConfig per host; a second
+# route-level policy on the same host collides — "host already taken" — so both
+# tiers live here and are discriminated in OPA on the request path):
+#
+#   STANDARD  (any path, e.g. /v2/models/...):  valid JWT-SVID only.
+#   PREMIUM   (path /premium/...):              valid JWT-SVID AND a valid
+#             jit-approver JIT *capability* JWT (approve-to-elevate) in the
+#             `X-JIT-Capability` header.
+#
+# authentication: validate a JWT whose issuer is the SPIRE OIDC discovery
+#   endpoint (signature checked against its JWKS). The agent's existing
+#   aud="mcp-gateway" SVID is accepted.
+# authorization (OPA/Rego):
+#   * always require the SVID sub to be an openshell/agent-sandbox sandbox
+#     workload (regex);
+#   * for /premium requests ALSO require a jit-approver capability JWT that
+#     verifies (RS256, kid jit-approver-key-1) against the embedded jit-approver
+#     JWKS, with the expected issuer and not expired. The capability JWT issuer
+#     (https://jit-approver.mcp-gateway.svc.cluster.local:8080) is NOT OIDC-
+#     discoverable, so it is verified in OPA via io.jwt.decode_verify rather than
+#     an Authorino jwt authentication entry.
 #
 # Kuadrant compiles this into an Authorino AuthConfig automatically
 # (authconfig/ap-maas-maas-spiffe-auth) — that derived object is NOT committed.
@@ -32,7 +49,41 @@ spec:
       allowed-sub:
         opa:
           rego: |
+            import future.keywords.if
+
             sub := input.auth.identity.sub
-            allow {
+            path := input.context.request.http.path
+
+            # SVID identity: must be an openshell/agent-sandbox sandbox workload.
+            svid_ok if {
               regex.match(`^spiffe://anaeem\.na-launch\.com/ns/(openshell|agent-sandbox)/sandbox/.+$`, sub)
+            }
+
+            is_premium if { startswith(path, "/premium") }
+
+            # jit-approver capability JWT (premium only), from X-JIT-Capability.
+            cap_token := input.context.request.http.headers["x-jit-capability"]
+
+            jwks := `{"keys":[{"kty":"RSA","key_ops":["verify"],"n":"xbitSO_VPr8Wm2xMmaLFtl0yVzaY9O6sxPJcuyFUAfuXt5RqFm2RNsuT9mc3UISmkZLTpE9Tx-6RdjPM1itaTUD3lUNIBLZpIsTuemfCErWsAhu_4BxpsQyrC9q0Da8EMQcmI-zFdQOi7Y88Va1c-i0z210qoeHP3tBWzWkFTEolKjbmpBw1F838cmUBrQXX3mEx13nAiUgpiJWJ446N0aXJT3hkz1pvk0kXLF7ZuZg1z8vKf-9eteh14_TZ2Dr0nIdyTIo-Dgnfaamp63iux5zHfkCayqWIcFa7XT-PwEQ1ifdpGhk5yBa4L4Qi0i80FOg_26zU0WVK5iaYQtkobQ","e":"AQAB","use":"sig","alg":"RS256","kid":"jit-approver-key-1"}]}`
+
+            cap_ok if {
+              v := io.jwt.decode_verify(cap_token, {
+                "cert": jwks,
+                "iss": "https://jit-approver.mcp-gateway.svc.cluster.local:8080",
+                "aud": "kyverno-authz",
+              })
+              v[0] == true
+            }
+
+            # STANDARD: SVID is sufficient.
+            allow if {
+              not is_premium
+              svid_ok
+            }
+
+            # PREMIUM: SVID AND a valid capability.
+            allow if {
+              is_premium
+              svid_ok
+              cap_ok
             }

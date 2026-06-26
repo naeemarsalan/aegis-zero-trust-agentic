@@ -1,12 +1,14 @@
-# HTTPRoute — routes all paths on the MaaS gateway to the mock model Service.
-# The AuthPolicy targets the parent Gateway, so every route under it is protected.
+# HTTPRoute (STANDARD tier) — routes all paths on the MaaS gateway to the REAL
+# model backend (KServe InferenceService style-onnx-predictor, see 09-real-model
+# .yaml). The AuthPolicy (06) targets the parent Gateway, so every route under it
+# is protected; the standard tier requires only a valid SPIFFE JWT-SVID.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: maas-model-route
   namespace: maas
   labels:
-    app: mock-model
+    app: style-onnx
 spec:
   parentRefs:
     - name: maas-gateway
@@ -17,5 +19,5 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: mock-model
+        - name: style-onnx-predictor
           port: 80

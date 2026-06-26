@@ -1,0 +1,38 @@
+# PREMIUM tier route — same MaaS gateway, path /premium/*. Routes to the SAME
+# real model backend (style-onnx-predictor) as the standard path, but a
+# route-level AuthPolicy (08-premium-authpolicy.yaml) layers a SECOND requirement
+# on top of the SPIFFE SVID: a valid jit-approver JIT *capability* JWT
+# (approve-to-elevate). The standard path stays SVID-only.
+#
+# URLRewrite strips the /premium prefix so the model sees its native paths
+# (/v2/models/style-onnx, /v2/models/style-onnx/infer). The route-level
+# AuthPolicy attaches to THIS HTTPRoute and, being more specific than the
+# gateway-level maas-spiffe-auth, governs these requests.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-premium-route
+  namespace: maas
+  labels:
+    app: style-onnx
+    tier: premium
+spec:
+  parentRefs:
+    - name: maas-gateway
+      namespace: maas
+  hostnames:
+    - maas.apps.ocp-dev.na-launch.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /premium
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: style-onnx-predictor
+          port: 80

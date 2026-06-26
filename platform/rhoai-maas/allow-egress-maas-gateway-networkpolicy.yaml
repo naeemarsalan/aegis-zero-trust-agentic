@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-maas-gateway
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    nvidia-ida/purpose: maas-spiffe-auth
+spec:
+  podSelector:
+    matchLabels:
+      nvidia-ida/e2e-harness: "true"
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: maas
+    ports:
+    - port: 80
+      protocol: TCP
+    - port: 8080
+      protocol: TCP

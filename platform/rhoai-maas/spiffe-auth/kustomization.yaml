@@ -3,10 +3,14 @@
 # Gateway -> HTTPRoute -> AuthPolicy. The maas namespace itself is created by the
 # parent platform/rhoai-maas overlay; these manifests carry explicit namespaces.
 #
-# e2e proof (from the agent-sandbox e2e-harness, in-cluster):
-#   no token        -> 401
-#   garbage JWT     -> 401
-#   valid JWT-SVID  -> 200  (sub=spiffe://.../ns/agent-sandbox/sandbox/..., model responds)
+# e2e proof — REAL model (KServe OVMS/ONNX style-onnx), from the agent-sandbox
+# e2e-harness pod, in-cluster, presenting ONLY its SPIFFE JWT-SVID:
+#   STANDARD  no token              -> 401
+#   STANDARD  valid JWT-SVID        -> 200  (real model: /v2/models/style-onnx,
+#                                            platform=OpenVINO, FP32 [1,3,224,224])
+#   PREMIUM   SVID only             -> 403  (no JIT capability)
+#   PREMIUM   SVID + capability JWT -> 200  (approve-to-elevate; real model)
+#   PREMIUM   SVID + garbage cap    -> 403
 #
 # Design: docs/design/maas-spiffe-auth.md
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -14,7 +18,18 @@ kind: Kustomization
 resources:
   - 01-istio.yaml
   - 02-kuadrant.yaml
+  # 03-mock-model.yaml is the CPU mock stand-in (kept for reference / fallback);
+  # the live backend is now the REAL KServe model in 09-real-model.yaml. Leave the
+  # mock deployed (harmless) but route both tiers at the real predictor.
   - 03-mock-model.yaml
   - 04-gateway.yaml
   - 05-httproute.yaml
   - 06-authpolicy.yaml
+  # Premium tier: /premium route + the gateway AuthPolicy (06) enforces a JIT
+  # capability JWT on /premium IN ADDITION to the SVID. 08-premium-authpolicy.yaml
+  # is NOT included — Authorino allows one AuthConfig per host, so both tiers live
+  # in 06; the route-level premium AuthPolicy collides ("host already taken").
+  - 07-premium-route.yaml
+  # Real model backend (OVMS ServingRuntime + style-onnx InferenceService). Both
+  # the standard (05) and premium (07) routes backend onto style-onnx-predictor.
+  - 09-real-model.yaml

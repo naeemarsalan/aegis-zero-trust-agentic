@@ -1,0 +1,95 @@
+# Real model — a genuine KServe InferenceService (NOT the mock). OpenVINO Model
+# Server (OVMS) ServingRuntime serving the ONNX "style" model pulled from the
+# public KServe examples bucket. RawDeployment, CPU-only — proves the SPIFFE
+# auth plane in front of a REAL inference backend on a GPU-less cluster.
+#
+# The predictor exposes the KServe v2 REST shape on Service
+# style-onnx-predictor:80 — e.g. GET /v2/models/style-onnx returns the model's
+# real metadata (platform=OpenVINO, FP32 [1,3,224,224] tensors). Both the
+# standard HTTPRoute (05) and the premium HTTPRoute (07) backend onto this.
+#
+# Large-LLM serving (vLLM on GPU) remains the hardware follow-up; OVMS/ONNX here
+# is a real model that runs on CPU so the auth plane is proven against real
+# inference, not a stand-in.
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: kserve-ovms
+  namespace: maas
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v2025.2.1
+    openshift.io/display-name: OpenVINO Model Server
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: ovms
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8888"
+  containers:
+  - args:
+    - --model_name={{.Name}}
+    - --port=8001
+    - --rest_port=8888
+    - --model_path=/mnt/models
+    - --file_system_poll_wait_seconds=0
+    - --grpc_bind_address=0.0.0.0
+    - --rest_bind_address=0.0.0.0
+    - --target_device=AUTO
+    - --metrics_enable
+    image: registry.redhat.io/rhoai/odh-openvino-model-server-rhel9@sha256:15ea6a15523d5cc48057b3604c9c3332bc2be78f08925380ab084dd84eac9f07
+    name: kserve-container
+    ports:
+    - containerPort: 8888
+      protocol: TCP
+  multiModel: false
+  protocolVersions:
+  - v2
+  - grpc-v2
+  supportedModelFormats:
+  - autoSelect: true
+    name: openvino_ir
+    version: opset13
+  - name: onnx
+    version: "1"
+  - autoSelect: true
+    name: tensorflow
+    version: "1"
+  - autoSelect: true
+    name: tensorflow
+    version: "2"
+  - autoSelect: true
+    name: paddle
+    version: "2"
+  - autoSelect: true
+    name: pytorch
+    version: "2"
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: style-onnx
+  namespace: maas
+  labels:
+    app: style-onnx
+  annotations:
+    serving.knative.openshift.io/disable-route: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    minReplicas: 1
+    model:
+      modelFormat:
+        name: onnx
+      protocolVersion: v2
+      runtime: kserve-ovms
+      storageUri: gs://kfserving-examples/models/onnx/style
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
