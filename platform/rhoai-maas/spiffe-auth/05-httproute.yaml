@@ -1,0 +1,21 @@
+# HTTPRoute — routes all paths on the MaaS gateway to the mock model Service.
+# The AuthPolicy targets the parent Gateway, so every route under it is protected.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-model-route
+  namespace: maas
+  labels:
+    app: mock-model
+spec:
+  parentRefs:
+    - name: maas-gateway
+      namespace: maas
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: mock-model
+          port: 80

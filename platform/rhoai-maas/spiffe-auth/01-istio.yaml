@@ -1,0 +1,22 @@
+# Istio control plane (Sail operator / OSSM 3) — provides GatewayClass `istio`
+# (controller istio.io/gateway-controller) that Authorino/Kuadrant can enforce
+# ext-authz against. NOT agentgateway (Authorino cannot enforce there).
+#
+# The extensionProvider wires Envoy ext-authz to Authorino so the AuthPolicy is
+# actually enforced at the MaaS gateway.
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  version: v1.28-latest
+  updateStrategy:
+    type: InPlace
+  values:
+    meshConfig:
+      extensionProviders:
+        - name: kuadrant-authorization
+          envoyExtAuthzGrpc:
+            port: 50051
+            service: authorino-authorino-authorization.kuadrant-system.svc.cluster.local

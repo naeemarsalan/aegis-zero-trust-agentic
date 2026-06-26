@@ -1,0 +1,20 @@
+# SPIFFE-auth MaaS — the JWT-SVID IS the model credential (no tokens).
+# Apply order matters: Istio (GatewayClass) -> Kuadrant (Authorino) -> model ->
+# Gateway -> HTTPRoute -> AuthPolicy. The maas namespace itself is created by the
+# parent platform/rhoai-maas overlay; these manifests carry explicit namespaces.
+#
+# e2e proof (from the agent-sandbox e2e-harness, in-cluster):
+#   no token        -> 401
+#   garbage JWT     -> 401
+#   valid JWT-SVID  -> 200  (sub=spiffe://.../ns/agent-sandbox/sandbox/..., model responds)
+#
+# Design: docs/design/maas-spiffe-auth.md
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 01-istio.yaml
+  - 02-kuadrant.yaml
+  - 03-mock-model.yaml
+  - 04-gateway.yaml
+  - 05-httproute.yaml
+  - 06-authpolicy.yaml

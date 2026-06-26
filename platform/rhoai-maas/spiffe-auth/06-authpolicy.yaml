@@ -1,0 +1,38 @@
+# AuthPolicy (Kuadrant/Authorino) — THE keystone. The agent's SPIFFE JWT-SVID is
+# the ONLY model credential. No per-agent model bearer token to mint/store/rotate.
+#
+# authentication: validate a JWT whose issuer is the SPIRE OIDC discovery endpoint
+#   (signature checked against its JWKS). Audience is NOT required — the agent's
+#   existing aud="mcp-gateway" SVID is accepted; a model-scoped aud is optional later.
+# authorization: OPA/Rego allows ONLY subjects whose SPIFFE ID is an openshell or
+#   agent-sandbox sandbox workload. Any other (or no) identity is denied.
+#
+# Kuadrant compiles this into an Authorino AuthConfig automatically
+# (authconfig/ap-maas-maas-spiffe-auth) — that derived object is NOT committed.
+apiVersion: kuadrant.io/v1beta2
+kind: AuthPolicy
+metadata:
+  name: maas-spiffe-auth
+  namespace: maas
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-gateway
+  rules:
+    authentication:
+      spiffe-svid:
+        credentials:
+          authorizationHeader:
+            prefix: Bearer
+        jwt:
+          issuerUrl: https://spire-oidc.apps.ocp-dev.na-launch.com
+          ttl: 300
+    authorization:
+      allowed-sub:
+        opa:
+          rego: |
+            sub := input.auth.identity.sub
+            allow {
+              regex.match(`^spiffe://anaeem\.na-launch\.com/ns/(openshell|agent-sandbox)/sandbox/.+$`, sub)
+            }

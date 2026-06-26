@@ -1,0 +1,8 @@
+# Kuadrant CR — activates Authorino (and Limitador) in the cluster. Empty spec is
+# the default install; the AuthPolicy below is what actually configures auth.
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec: {}
