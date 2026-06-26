@@ -148,16 +148,22 @@ spec:
             - --provider=oidc
             - --oidc-issuer-url=https://keycloak.apps.ocp-dev.na-launch.com/realms/agentic
             - --client-id=approval-console-oauth2
-            - --redirect-url=https://approval-console.apps.ocp-dev.na-launch.com/oauth2/callback
+            - --redirect-url=https://console.apps.ocp-dev.na-launch.com/oauth2/callback
             - --upstream=http://127.0.0.1:8090
             - --http-address=0.0.0.0:4180
             - --email-domain=*
             - --scope=openid email profile
             - --set-xauthrequest=true
             - --pass-user-headers=true
+            - --prefer-email-to-user=false
             - --pass-access-token=false
             - --cookie-secure=true
+            - --cookie-refresh=2m
             - --skip-provider-button=true
+            # The Keycloak OIDC issuer is served behind the OpenShift router's
+            # default (self-signed) ingress cert, which is not in the proxy's
+            # trust store. Skip TLS verification for discovery/JWKS/token calls.
+            - --ssl-insecure-skip-verify
           env:
             - name: OAUTH2_PROXY_CLIENT_SECRET
               valueFrom:

@@ -151,9 +151,13 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # Keycloak Route VIP lives in the apps ingress range. The exact VIP drifts
+    # across cluster rebuilds (observed 172.16.2.52 then 172.16.2.59); allow the
+    # whole 172.16.2.48/28 apps-ingress block (.48-.63) so OIDC discovery, JWKS,
+    # and the auth-code/token exchange survive VIP reassignment.
     - to:
         - ipBlock:
-            cidr: 172.16.2.52/32
+            cidr: 172.16.2.48/28
       ports:
         - port: 443
           protocol: TCP

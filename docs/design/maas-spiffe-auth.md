@@ -174,11 +174,16 @@ as the MCP path), rewrites `/v1/messages` → MaaS `/openrouter/messages`
   agent's placeholder token sent straight at MaaS → **401**; only the proxy's SVID
   turns it into **200**.
 
-Wiring (takes effect on the next agent-harness image build):
+Wiring (LIVE — `agent-harness:maas-brain` image is the default boot):
 `services/agent-sandbox/agent-harness/src/agent_harness/maas_brain_proxy.py`,
 `bin/brain-entrypoint` (starts proxy, points CLI at it; `MAAS_BRAIN=1` default),
-`Dockerfile`/`Dockerfile.native-brain`. The live deployment still runs `sleep
-infinity`; runtime proof used a foreground run in the live pod.
+`Dockerfile`/`Dockerfile.native-brain`. The e2e-harness Deployment
+(`services/agent-sandbox/e2e-harness/deployment.yaml`) no longer runs `sleep
+infinity` — it auto-starts `agent_harness.maas_brain_proxy` on boot and keeps the
+pod alive, so the standing brain serves every reasoning call. Verified live: boot
+log `maas_brain_proxy started (credential-less MaaS brain)`; `agent_runner`
+goal "17 times 3" → answer `51`, `status: success`; the only key in the pod env is
+the placeholder `ANTHROPIC_API_KEY=svid-injected-by-local-proxy` (no real `sk-`).
 
 ## Constraints on ocp-dev
 - No GPU → serve a CPU model (real OVMS/ONNX above, or the mock) to prove auth;

@@ -1,0 +1,27 @@
+# Control-plane relief for the saturated ocp-dev cluster (3 masters that were
+# ALSO acting as workers). Co-tenant workload churn on the masters was starving
+# the apiserver<->etcd lease writes, which manifested as kube-controller-manager
+# and kube-scheduler crash-loops (hundreds of restarts over ~9h) and transient
+# TLS/"context deadline" API flaps.
+#
+# Setting mastersSchedulable=false taints the three control-plane nodes
+# (node-role.kubernetes.io/master:NoSchedule) so they run ONLY the control
+# plane. The movable platform Deployments were rolled so they relanded on the
+# two dedicated, idle workers (ocp-dev-worker-0/1, 16 vCPU / 64 GB each).
+#
+# RESULT (verified): kcm/scheduler restart counts froze (no new restarts across
+# multiple readings, ~10h container uptime), all ClusterOperators Available=True
+# and none Degraded, no Pending pods. Workers sit at ~5-13% CPU.
+#
+# NOTE: spire-server-0 (StatefulSet) uses a local-path PV pinned to master-0, so
+# it cannot move to a worker. A master toleration was added to the SpireServer
+# CR (spec.tolerations, operator-durable) so it keeps running on master-0 where
+# its data lives. See platform/spire/ for that CR.
+#
+# This is cluster-scoped OpenShift config; `oc apply` the singleton below.
+apiVersion: config.openshift.io/v1
+kind: Scheduler
+metadata:
+  name: cluster
+spec:
+  mastersSchedulable: false

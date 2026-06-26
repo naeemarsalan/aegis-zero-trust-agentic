@@ -46,9 +46,26 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: agent
-          image: oci.arsalan.io/nvidia-ida/agent-harness:self-escalate
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "-c", "sleep infinity"]
+          image: oci.arsalan.io/nvidia-ida/agent-harness:maas-brain
+          imagePullPolicy: Always
+          # DEFAULT BOOT = credential-less MaaS brain. brain-entrypoint starts the
+          # in-pod SVID-injecting maas_brain_proxy (127.0.0.1:8787), points the
+          # claude CLI at it (ANTHROPIC_BASE_URL=loopback, throw-away token), then
+          # keeps the pod alive so the brain is the standing default. Reasoning is
+          # proven by `oc exec ... agent_runner '<goal>'` which inherits the same
+          # loopback ANTHROPIC_BASE_URL -> every inference is SVID-auth'd at MaaS.
+          # NO model key is held (see env: only placeholder tokens).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export ANTHROPIC_BASE_URL="http://127.0.0.1:${MAAS_BRAIN_LISTEN_PORT:-8787}"
+              export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-svid-injected-by-local-proxy}"
+              export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-svid-injected-by-local-proxy}"
+              python3 -m agent_harness.maas_brain_proxy &
+              echo "default-boot: maas_brain_proxy started (credential-less MaaS brain)"
+              # Keep the pod alive; the standing brain proxy serves every reasoning call.
+              wait
           env:
             # Prepend the ConfigMap-mounted helper dir so `mcp-call` is on PATH.
             - name: PATH

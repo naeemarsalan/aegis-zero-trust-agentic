@@ -108,10 +108,13 @@ approver is a different identity than the requester. Approval mints a capability
 scoped to exactly this action that expires on its own."*
 
 > Console deployment note (PoC, ocp-dev): the console is live at
-> `console.apps.ocp-dev.na-launch.com` (ns `mcp-gateway`). It has **no
-> oauth2-proxy/Keycloak** wired here, so the approver identity resolves to
-> `anonymous` — real per-human SoD needs the Keycloak client + cookie secret. The
-> SoD *mechanism* (approver ≠ requester) is still proven negatively.
+> `console.apps.ocp-dev.na-launch.com` (ns `mcp-gateway`) **with the
+> oauth2-proxy + Keycloak gate wired** (realm `agentic`, confidential client
+> `approval-console-oauth2`). Unauth GET `/` 302-redirects to Keycloak; the
+> approver identity is the server-trusted `X-Forwarded-Preferred-Username` from
+> the OIDC session — never a user-supplied field. Real per-human SoD is PROVEN:
+> approver `approver-alice` (≠ requester `agent-e2e`) mints → **200 / issued**;
+> self-approve (approver == requester) → **403** "self-approval denied".
 
 ### Beat 5 — Elevated WRITE → 200 (a real change)
 ```bash
@@ -244,10 +247,11 @@ check.
 **Say:** *"An operator can watch and drive the exact pod — but the shell is locked to
 that one sandbox, resolved server-side, never from the browser."*
 
-> PoC notes (ocp-dev): no oauth2-proxy, so actor/owner are `anonymous` (no real
-> per-human SoD on the shell); the Agent record is seeded via ConfigMap and pinned
-> to the current pod hash (update it if the pod is recreated). Exec RBAC is
-> namespaced to `agent-sandbox`.
+> PoC notes (ocp-dev): the oauth2-proxy + Keycloak gate is now wired (realm
+> `agentic`), so actor/owner resolve to the authenticated human (e.g.
+> `approver-alice`) from the OIDC session, not `anonymous`. The Agent record is
+> seeded via ConfigMap and pinned to the current pod hash (update it if the pod is
+> recreated). Exec RBAC is namespaced to `agent-sandbox`.
 
 ---
 
