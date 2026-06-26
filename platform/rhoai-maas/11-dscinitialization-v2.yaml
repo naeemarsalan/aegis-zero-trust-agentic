@@ -1,0 +1,14 @@
+# DSCInitialization v2 (RHOAI 3.4). Auto-created by the 3.4.1 operator; captured
+# here for GitOps. v1 -> v2 is one of the breaking 2->3 changes. Ready=Ready live.
+apiVersion: dscinitialization.opendatahub.io/v2
+kind: DSCInitialization
+metadata:
+  name: default-dsci
+spec:
+  applicationsNamespace: redhat-ods-applications
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+  trustedCABundle:
+    customCABundle: ""
+    managementState: Managed

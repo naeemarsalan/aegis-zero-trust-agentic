@@ -1,0 +1,64 @@
+# DataScienceCluster v2 (RHOAI 3.4).
+#
+# Breaking 2->3 changes reflected here:
+#   - apiVersion datasciencecluster.opendatahub.io/v1 -> /v2
+#   - datasciencepipelines -> aipipelines
+#   - ModelMesh removed; KServe Serverless -> RawDeployment (rawDeploymentServiceConfig)
+#   - kueue MUST be Removed (else reconcile blocks)
+#
+# MaaS enablement: kserve.modelsAsService.managementState=Managed. IMPORTANT ORDER:
+# the MaaS gateway (data-science-gateway) and kserve must be up BEFORE flipping
+# modelsAsService to Managed, or it cannot provision. We honored that order live.
+#
+# llamastackoperator=Managed wires Gen AI Studio playground/RAG (ships INSIDE
+# rhods-operator 3.4 — there is no standalone llama operator/subscription).
+#
+# KNOWN BLOCKER (human-gated, see docs/design/maas-spiffe-auth.md): with this DSC,
+# ModelsAsServiceReady stays False because maas-controller needs Kuadrant CRDs
+# AuthConfig authorino.kuadrant.io/v1beta3 + kuadrant.io/v1alpha1 TokenRateLimitPolicy
+# (RHCL/Kuadrant 1.x). The cluster's community Authorino v0.13 serves only
+# v1beta1/v1beta2, so maas-api does not deploy. This is the deliberate single-plane
+# decision: we did NOT install RHCL in parallel (it would fight the community
+# Kuadrant control plane our live SPIFFE/Istio MaaS depends on). All other DSC
+# components are Ready. The SPIFFE-auth model plane lives on the Istio maas-gateway
+# (platform/rhoai-maas/spiffe-auth/) and is fully proven independently.
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+spec:
+  components:
+    aipipelines:
+      managementState: Managed
+    dashboard:
+      managementState: Managed
+    kserve:
+      managementState: Managed
+      rawDeploymentServiceConfig: Headless
+      modelsAsService:
+        managementState: Managed
+    kueue:
+      managementState: Removed
+    llamastackoperator:
+      managementState: Managed
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+    # Explicitly off for this PoC.
+    feastoperator:
+      managementState: Removed
+    mlflowoperator:
+      managementState: Removed
+    ray:
+      managementState: Removed
+    sparkoperator:
+      managementState: Removed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
+    trustyai:
+      managementState: Removed

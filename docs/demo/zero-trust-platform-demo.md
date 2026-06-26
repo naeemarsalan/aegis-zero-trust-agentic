@@ -131,8 +131,17 @@ tamper-evident audit trail — who asked, who approved, exact scope, TTL."*
 
 ## Act 2 — Models: the SAME identity is the credential (MaaS, no tokens)
 
+> **Platform note (RHOAI 3.4 GA):** the cluster runs a fresh **Red Hat OpenShift AI 3.4**
+> install — native Models-as-a-Service is enabled on the DataScienceCluster
+> (`kserve.modelsAsService=Managed`) and **Gen AI Studio** is on in the dashboard
+> (`rh-ai.apps.ocp-dev.na-launch.com`). The native maas-api / "AI asset endpoints"
+> page is **gated on a community→RHCL Kuadrant single-plane cutover** (RHOAI 3.4 needs
+> AuthConfig `v1beta3`; the cluster serves only v1beta1/2) — see
+> `docs/design/maas-spiffe-auth.md`. The **SPIFFE-SVID auth proven below runs on our
+> Kuadrant-enforced Istio `maas-gateway`**, which is the live model plane today.
+
 Set up a shell inside the agent that fetches its JWT-SVID (the *same* identity), then call a model
-served by OpenShift AI through the SPIFFE-auth gateway.
+served through the SPIFFE-auth gateway.
 
 ```bash
 # Helper: run a curl from inside the agent, fetching its own SVID first
@@ -148,7 +157,7 @@ modelcall() {  # $1 = extra curl args (path etc.)
 ```bash
 oc -n agent-sandbox exec "$HPOD" -c agent -- \
   curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: maas.apps.ocp-dev.na-launch.com' \
-  http://maas-gateway-istio.maas.svc.cluster.local/v2/models/style-onnx
+  http://maas-gateway-istio.maas.svc.cluster.local/openrouter/models
 ```
 → **401**. **Say:** *"No anonymous model access. The gateway demands a verifiable identity."*
 
@@ -157,10 +166,9 @@ oc -n agent-sandbox exec "$HPOD" -c agent -- \
 oc -n agent-sandbox exec "$HPOD" -c agent -- sh -c '
   SVID=$(PYTHONPATH=/app/src python3 -c "from agent_harness.svid_bearer import fetch_agent_svid; print(fetch_agent_svid())")
   curl -s -H "Host: maas.apps.ocp-dev.na-launch.com" -H "Authorization: Bearer $SVID" \
-    http://maas-gateway-istio.maas.svc.cluster.local/v2/models/style-onnx'
+    http://maas-gateway-istio.maas.svc.cluster.local/openrouter/models'
 ```
-→ **200**, real OpenVINO model metadata (FP32 `[1,3,224,224]`). (Optional: POST to `/v2/models/style-onnx/infer`
-for a live forward pass.)
+→ **200**, a real OpenRouter model catalog (server-side key injected from Vault by `llm-proxy`).
 **Say:** *"That's the exact same SPIFFE identity it used for the firewall — now authenticating to an
 AI model. There is no model API key anywhere. Authorino validated the SVID against SPIRE's OIDC and
 authorized on the identity itself."*
@@ -195,7 +203,7 @@ as the firewall write.
 oc -n agent-sandbox exec "$HPOD" -c agent -- sh -c '
   SVID=$(PYTHONPATH=/app/src python3 -c "from agent_harness.svid_bearer import fetch_agent_svid; print(fetch_agent_svid())")
   curl -s -o /dev/null -w "%{http_code}\n" -H "Host: maas.apps.ocp-dev.na-launch.com" \
-    -H "Authorization: Bearer $SVID" http://maas-gateway-istio.maas.svc.cluster.local/premium/v2/models/style-onnx'
+    -H "Authorization: Bearer $SVID" http://maas-gateway-istio.maas.svc.cluster.local/premium/openrouter/models'
 ```
 → **403**. **Say:** *"Standard model: identity is enough. Premium model: identity isn't — it needs a
 human-approved capability."*
@@ -207,11 +215,10 @@ oc -n agent-sandbox exec "$HPOD" -c agent -- sh -c '
   SVID=$(PYTHONPATH=/app/src python3 -c "from agent_harness.svid_bearer import fetch_agent_svid; print(fetch_agent_svid())")
   curl -s -H "Host: maas.apps.ocp-dev.na-launch.com" -H "Authorization: Bearer $SVID" \
     -H "X-JIT-Capability: '"$SJWT"'" \
-    http://maas-gateway-istio.maas.svc.cluster.local/premium/v2/models/style-onnx'
+    http://maas-gateway-istio.maas.svc.cluster.local/premium/openrouter/models'
 ```
-→ **200**, real inference. (The same gate guards the **premium external LLM** too:
-`/premium/openrouter` with SVID only → **403**; with SVID **+** `X-JIT-Capability`
-→ **200**, `claude-opus-4`.) **Say (the closer):**
+→ **200**, real model body. (Proven 2026-06-26: `/premium/openrouter/models` with SVID only
+→ **403**; with SVID **+** `X-JIT-Capability` → **200**.) **Say (the closer):**
 > *"Tools and models, one control plane: your identity lets you read; a human-approved, short-lived
 > capability lets you do the expensive or dangerous thing. No standing credentials anywhere — for
 > tools or for AI. That's what makes it safe to put an autonomous agent near production."*

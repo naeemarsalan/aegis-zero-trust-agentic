@@ -185,6 +185,67 @@ log `maas_brain_proxy started (credential-less MaaS brain)`; `agent_runner`
 goal "17 times 3" → answer `51`, `status: success`; the only key in the pod env is
 the placeholder `ANTHROPIC_API_KEY=svid-injected-by-local-proxy` (no real `sk-`).
 
+## RHOAI 3.4 GA — native MaaS + Gen AI Studio (2026-06-26)
+
+We did a **fresh install** of Red Hat OpenShift AI 3.4 (2.25 → 3.4 is not a
+supported in-place upgrade): Subscription `rhods-operator` channel **stable-3.x**
+from the standard **redhat-operators** catalog → CSV **rhods-operator.3.4.1
+Succeeded**. The operator auto-created **DSCInitialization v2** (`default-dsci`,
+Ready) and the native MaaS gateway **`data-science-gateway`** (GatewayClass
+`data-science-gateway-class`, controller `openshift.io/gateway-controller`,
+Programmed=True, fronting the dashboard at `rh-ai.apps.ocp-dev.na-launch.com`).
+
+**DataScienceCluster v2** (`default-dsc`) created with the breaking-change shape
+(`/v2`; `datasciencepipelines`→`aipipelines`; ModelMesh removed; KServe
+RawDeployment; `kueue: Removed`). `kserve.modelsAsService=Managed` was flipped
+**after** gateway+kserve were up. All components Ready **except**
+`ModelsAsServiceReady`. **LlamaStack** ships inside rhods-operator 3.4 (DSC
+`llamastackoperator=Managed`, Ready) — no separate subscription.
+
+**Gen AI Studio** enabled via `OdhDashboardConfig.spec.dashboardConfig`:
+`genAiStudio=true`, `modelAsService=true`, `aiAssetCustomEndpoints=true` (live).
+Dashboard reachable (rhods-dashboard 9/9, `rh-ai…` 302→OIDC login).
+
+### The Kuadrant single-plane blocker (human-gated)
+`ModelsAsServiceReady=False` — maas-controller CrashLoops needing Kuadrant 1.x
+CRDs the cluster does not serve: **AuthConfig `authorino.kuadrant.io/v1beta3`**
+and **`kuadrant.io/v1alpha1` TokenRateLimitPolicy** (RHCL). The cluster runs the
+**community** Authorino v0.13 (AuthConfig v1beta1/v1beta2 only). So **maas-api
+never deploys** and **no `InferenceService` exists** → the Gen AI Studio "AI asset
+endpoints" page is empty and nothing can carry the `opendatahub.io/genai-asset=true`
+label yet. We deliberately did **NOT** install RHCL in parallel: both planes own the
+cluster-scoped `kuadrant.io`/`authorino.kuadrant.io` CRDs and a second control plane
+would fight the community Kuadrant our live SPIFFE/Istio MaaS depends on. The fix is
+a deliberate **single-plane cutover** (uninstall community → install RHCL adopting
+the same CRDs), migrating `maas-spiffe-auth` in lockstep — not a parallel install.
+
+### Which auth path: neither `defaults` nor `overrides`
+There is **no RHOAI-native AuthPolicy to reconcile with** — maas-controller never
+generated one (maas-api never deployed), and the native `data-science-gateway`
+(controller `openshift.io/gateway-controller`) is **not Kuadrant-enforced** anyway.
+Our SPIFFE auth therefore lives on the **Istio `maas-gateway` (ns `maas`)**, which
+Kuadrant *does* enforce, via a single gateway-attached `AuthPolicy/maas-spiffe-auth`
+(Kuadrant **v1beta2**, plain `spec.rules` — gateway-default semantics, route-level
+override permitted; not `overrides`). When the RHCL cutover lands, this same SPIFFE
+AuthPolicy pattern re-attaches to whichever Kuadrant-enforced gateway hosts the
+labeled AI-asset model.
+
+### Native-endpoint SPIFFE proof — PASS (2026-06-26), e2e-harness pod
+SVID-only (fresh `aud=maas` JWT-SVID via the workload API; sub
+`…/ns/agent-sandbox/sandbox/e2e0a1b2-…`), against
+`maas-gateway-istio.maas.svc` with `Host: maas.apps.ocp-dev.na-launch.com`:
+- `/openrouter/models` **no token → 401**
+- `/openrouter/models` **SVID → 200** (real OpenRouter model list, server-side key)
+- `/premium/openrouter/models` **SVID only → 403** (`is_premium`, no cap)
+- `/premium/openrouter/models` **SVID + JIT capability → 200** (real model body)
+
+The capability was minted by the **live** `jit-approver` signing key
+(`signing.mint_session_jwt`, kid `jit-approver-key-1`, iss
+`https://jit-approver.mcp-gateway.svc.cluster.local:8080`, aud `kyverno-authz`); its
+`/jwks` matches the rego-embedded JWKS exactly, so OPA `cap_ok` is genuinely
+exercised. etcd healthy throughout (3/3, ~280 MB balanced, no MaaS-induced growth).
+Manifests: `platform/rhoai-maas/{10-rhods-operator-3.4-subscription,11-dscinitialization-v2,12-datasciencecluster-v2,13-odhdashboardconfig-genai-studio}.yaml`.
+
 ## Constraints on ocp-dev
 - No GPU → serve a CPU model (real OVMS/ONNX above, or the mock) to prove auth;
   large-LLM (vLLM/GPU) serving is the hardware follow-up.

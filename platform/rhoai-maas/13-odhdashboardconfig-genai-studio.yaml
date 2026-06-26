@@ -1,0 +1,20 @@
+# Gen AI Studio enablement (RHOAI 3.4) via OdhDashboardConfig.
+#   genAiStudio            -> the Gen AI Studio nav section (playground/RAG, wired by
+#                             llamastackoperator=Managed in the DSC)
+#   modelAsService         -> the "AI asset endpoints" / Models-as-a-Service surface
+#   aiAssetCustomEndpoints -> allow custom (non-KServe) endpoints to appear as AI assets
+#
+# This is a strategic-merge patch onto the operator-managed odh-dashboard-config
+# (only the dashboardConfig flags we set are shown). Apply with:
+#   oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+#     --type merge --patch-file 13-odhdashboardconfig-genai-studio.yaml
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+spec:
+  dashboardConfig:
+    genAiStudio: true
+    modelAsService: true
+    aiAssetCustomEndpoints: true

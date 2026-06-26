@@ -1,0 +1,18 @@
+# RHOAI 3.4 (Red Hat OpenShift AI) — GA install.
+# Channel stable-3.x (== stable-3.4) from the STANDARD redhat-operators catalog
+# (NOT the EA catalog). 2.25 -> 3.4 is NOT a supported in-place upgrade: this is a
+# FRESH install (the 2.25.8 operator + DSC/DSCI v1 were removed first).
+# The reused AllNamespaces OperatorGroup in redhat-ods-operator was correct; not
+# re-created here. Installing this Subscription produced CSV rhods-operator.3.4.1
+# (Succeeded) and auto-created default-dsci + default-gateway (GatewayConfig).
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhods-operator
+  namespace: redhat-ods-operator
+spec:
+  channel: stable-3.x
+  installPlanApproval: Automatic
+  name: rhods-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
