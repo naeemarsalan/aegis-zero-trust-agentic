@@ -1,0 +1,18 @@
+# Native MaaS AI ASSET — a kustomize PATCH (not a new resource) that labels the
+# existing style-onnx OVMS InferenceService (declared in 09-real-model.yaml) so the
+# RHOAI 3.4 dashboard surfaces it on the Gen AI Studio "AI asset endpoints" page:
+#   opendatahub.io/genai-asset=true  -> list as a consumable AI asset endpoint
+#   opendatahub.io/dashboard=true    -> show in the dashboard
+# Also stamps a friendly display name. The model itself (runtime kserve-ovms,
+# storageUri, resources) stays defined once in 09-real-model.yaml. Applied via the
+# kustomization `patches:` stanza, targeting InferenceService/style-onnx.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: style-onnx
+  namespace: maas
+  labels:
+    opendatahub.io/dashboard: "true"
+    opendatahub.io/genai-asset: "true"
+  annotations:
+    openshift.io/display-name: "Style ONNX (OVMS)"

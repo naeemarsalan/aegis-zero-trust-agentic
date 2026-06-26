@@ -44,3 +44,25 @@ resources:
   - 12-egress-openrouter.yaml
   # Admit ns maas to the Vault ingress allowlist (llm-proxy Vault Agent -> :8200).
   - 13-vault-ingress-from-maas.yaml
+  # NATIVE MaaS (RHOAI ModelsAsService) AI-asset endpoint: the style-onnx OVMS
+  # model (defined once in 09) is LABELED opendatahub.io/genai-asset=true via the
+  # patch in 14 (see patches: below — it is NOT a duplicate resource), exposed
+  # through the NATIVE data-science gateway (openshift-ingress/maas-default-gateway)
+  # with a ROUTE-level SPIFFE AuthPolicy that OVERRIDES the controller's `defaults`
+  # gateway-default-auth (15), plus the harness egress NetworkPolicy to reach the
+  # native gateway (16).
+  # NOTE: the native path uses the SAME shared (now RHCL) Authorino; its listener TLS
+  # MUST stay DISABLED or the Kuadrant wasm-shim ext-authz (plaintext gRPC :50051)
+  # 500s on BOTH gateways. maas-controller only needs listener TLS as a one-time
+  # reconcile precondition — once maas-api is deployed it persists with TLS off.
+  - 15-native-asset-route-spiffe.yaml
+  - 16-egress-native-gateway-networkpolicy.yaml
+
+# AI-asset labels on the existing style-onnx InferenceService (from 09-real-model.yaml).
+patches:
+  - path: 14-genai-asset-model.yaml
+    target:
+      group: serving.kserve.io
+      version: v1beta1
+      kind: InferenceService
+      name: style-onnx

@@ -1,0 +1,28 @@
+# Allow the e2e-harness pod to reach the NATIVE MaaS data-science gateway pod
+# (openshift-ingress/maas-default-gateway) so the SPIFFE-authenticated native
+# AI-asset endpoint can be exercised. Mirrors allow-egress-maas-gateway (which
+# only opens the istio maas-gateway in ns maas).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-native-maas-gateway
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+    nvidia-ida/purpose: maas-spiffe-auth
+spec:
+  podSelector:
+    matchLabels:
+      nvidia-ida/e2e-harness: "true"
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 80
+      protocol: TCP
+    - port: 443
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-ingress

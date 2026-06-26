@@ -131,14 +131,18 @@ tamper-evident audit trail — who asked, who approved, exact scope, TTL."*
 
 ## Act 2 — Models: the SAME identity is the credential (MaaS, no tokens)
 
-> **Platform note (RHOAI 3.4 GA):** the cluster runs a fresh **Red Hat OpenShift AI 3.4**
-> install — native Models-as-a-Service is enabled on the DataScienceCluster
+> **Platform note (RHOAI 3.4 GA, RHCL live):** the cluster runs a fresh **Red Hat OpenShift
+> AI 3.4** install — native Models-as-a-Service is enabled on the DataScienceCluster
 > (`kserve.modelsAsService=Managed`) and **Gen AI Studio** is on in the dashboard
-> (`rh-ai.apps.ocp-dev.na-launch.com`). The native maas-api / "AI asset endpoints"
-> page is **gated on a community→RHCL Kuadrant single-plane cutover** (RHOAI 3.4 needs
-> AuthConfig `v1beta3`; the cluster serves only v1beta1/2) — see
-> `docs/design/maas-spiffe-auth.md`. The **SPIFFE-SVID auth proven below runs on our
-> Kuadrant-enforced Istio `maas-gateway`**, which is the live model plane today.
+> (`rh-ai.apps.ocp-dev.na-launch.com`). The community→**RHCL** (Red Hat Connectivity Link
+> v1.4.0) Kuadrant single-plane **cutover is DONE**: `ModelsAsServiceReady=True`,
+> `maas-api` 1/1, and a real **style-onnx OVMS `InferenceService`** labeled
+> `opendatahub.io/genai-asset=true` now appears on the **AI asset endpoints** page. SPIFFE-SVID
+> auth runs on **both** model planes — our Kuadrant-enforced Istio `maas-gateway` (OpenRouter
+> standard + JIT-gated premium, proven below) **and** the **native** `maas-default-gateway`
+> AI-asset endpoint (`/native-asset` → no-token 401 / SVID 200, real OpenVINO metadata).
+> RHCL ext-authz is the **wasm-shim** (not the Istio extensionProvider); the shared Authorino
+> listener TLS must stay disabled. See `docs/design/maas-spiffe-auth.md`.
 
 Set up a shell inside the agent that fetches its JWT-SVID (the *same* identity), then call a model
 served through the SPIFFE-auth gateway.

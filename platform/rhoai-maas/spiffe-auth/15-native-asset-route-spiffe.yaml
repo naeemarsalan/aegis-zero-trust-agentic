@@ -1,0 +1,75 @@
+# NATIVE MaaS AI-asset endpoint with SPIFFE auth.
+#
+# The style-onnx OVMS model (an AI asset, opendatahub.io/genai-asset=true) is
+# exposed through the NATIVE data-science MaaS gateway
+# (openshift-ingress/maas-default-gateway). The controller-generated
+# gateway-default-auth AuthPolicy uses the `defaults` strategy, so a ROUTE-level
+# AuthPolicy here OVERRIDES it for this route — making the native AI-asset
+# endpoint authenticate the agent's SPIFFE JWT-SVID (no per-model bearer token).
+#
+# authentication: JWT whose issuer is the SPIRE OIDC discovery endpoint.
+# authorization (OPA): the SVID sub must be an openshell/agent-sandbox sandbox
+#   workload (same regex as the istio-gateway SPIFFE path, ADR-aligned).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-native-asset-route
+  namespace: maas
+  labels:
+    app: style-onnx
+    opendatahub.io/genai-asset: "true"
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+    namespace: openshift-ingress
+  hostnames:
+  - maas.apps.ocp-dev.na-launch.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /native-asset
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: ""
+    backendRefs:
+    - group: ""
+      kind: Service
+      name: style-onnx-predictor
+      port: 80
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: maas-native-asset-spiffe-auth
+  namespace: maas
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: maas-native-asset-route
+  rules:
+    authentication:
+      spiffe-svid:
+        credentials:
+          authorizationHeader:
+            prefix: Bearer
+        jwt:
+          issuerUrl: https://spire-oidc.apps.ocp-dev.na-launch.com
+          ttl: 300
+    authorization:
+      allowed-sub:
+        opa:
+          rego: |
+            import future.keywords.if
+            sub := input.auth.identity.sub
+            svid_ok if {
+              regex.match(`^spiffe://anaeem\.na-launch\.com/ns/(openshell|agent-sandbox)/sandbox/.+$`, sub)
+            }
+            allow if { svid_ok }

@@ -11,8 +11,16 @@
 #   - leader-worker-set : OwnNamespace install mode ONLY  -> OperatorGroup targeting its own namespace.
 # (Two OperatorGroups in one namespace is NOT allowed, so LWS gets its own namespace too.)
 #
-# kuadrant-operator (community stable = v0.11.1) brings authorino-operator + limitador-operator
-# as OLM dependencies.
+# CUTOVER (2026-06-26): community kuadrant-operator -> Red Hat Connectivity Link (RHCL).
+# We bootstrapped on the COMMUNITY kuadrant-operator (community-operators, stable = v0.11.1,
+# Kuadrant/Authorino/Limitador 0.x) to get an early SPIFFE-SVID auth path. We have since cut
+# over to the SUPPORTED RHCL operator (rhcl-operator, redhat-operators, channel stable =
+# v1.4.0), which brings authorino-operator + limitador-operator v1.4.0 as OLM dependencies and
+# serves AuthConfig v1beta3 + AuthPolicy kuadrant.io/v1. The migrated AuthPolicy is
+# spiffe-auth/06-authpolicy.yaml (apiVersion bumped v1beta2 -> v1). RHCL 1.4.0 does ext-authz
+# via the wasm-shim (EnvoyFilter), NOT the Istio meshConfig extensionProvider, so the Istio CR
+# needed no rewiring. CRITICAL: the shared Authorino listener TLS must stay DISABLED — the
+# wasm-shim calls Authorino over PLAINTEXT gRPC :50051; enabling TLS 500s both gateways.
 ---
 apiVersion: v1
 kind: Namespace
@@ -26,15 +34,18 @@ metadata:
   namespace: kuadrant-system
 spec: {}  # no targetNamespaces / no selector == AllNamespaces (global) scope
 ---
+# RHCL operator (Red Hat Connectivity Link) — the SUPPORTED replacement for the community
+# kuadrant-operator. CSV rhcl-operator.v1.4.0 -> authorino-operator.v1.4.0 + limitador-operator.v1.4.0.
+# (Historical: this was `name: kuadrant-operator`, `source: community-operators` until 2026-06-26.)
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: kuadrant-operator
+  name: rhcl-operator
   namespace: kuadrant-system
 spec:
   channel: stable
-  name: kuadrant-operator
-  source: community-operators
+  name: rhcl-operator
+  source: redhat-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
 ---

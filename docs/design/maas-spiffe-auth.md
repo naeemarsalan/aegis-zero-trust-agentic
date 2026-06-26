@@ -206,7 +206,7 @@ RawDeployment; `kueue: Removed`). `kserve.modelsAsService=Managed` was flipped
 `genAiStudio=true`, `modelAsService=true`, `aiAssetCustomEndpoints=true` (live).
 Dashboard reachable (rhods-dashboard 9/9, `rh-ai…` 302→OIDC login).
 
-### The Kuadrant single-plane blocker (human-gated)
+### The Kuadrant single-plane blocker (human-gated) — RESOLVED 2026-06-26 (see "RHCL cutover" below)
 `ModelsAsServiceReady=False` — maas-controller CrashLoops needing Kuadrant 1.x
 CRDs the cluster does not serve: **AuthConfig `authorino.kuadrant.io/v1beta3`**
 and **`kuadrant.io/v1alpha1` TokenRateLimitPolicy** (RHCL). The cluster runs the
@@ -245,6 +245,59 @@ The capability was minted by the **live** `jit-approver` signing key
 `/jwks` matches the rego-embedded JWKS exactly, so OPA `cap_ok` is genuinely
 exercised. etcd healthy throughout (3/3, ~280 MB balanced, no MaaS-induced growth).
 Manifests: `platform/rhoai-maas/{10-rhods-operator-3.4-subscription,11-dscinitialization-v2,12-datasciencecluster-v2,13-odhdashboardconfig-genai-studio}.yaml`.
+
+## RHCL cutover + native AI Asset Endpoints — DONE (2026-06-26)
+The single-plane cutover above is **complete and live**. State now:
+
+**Community → RHCL cutover (no parallel install).** The cluster now runs **Red Hat
+Connectivity Link** (`rhcl-operator` v1.4.0, redhat-operators) bringing
+authorino-operator + limitador-operator **v1.4.0**, adopting the same
+`kuadrant.io`/`authorino.kuadrant.io` CRDs (now serving **AuthConfig v1beta3** +
+**AuthPolicy kuadrant.io/v1**). The Subscription change is in
+`platform/rhoai-maas/01-operators-subscriptions.yaml` (kuadrant-operator/community →
+rhcl-operator/redhat-operators). `maas-spiffe-auth` was migrated in lockstep:
+`06-authpolicy.yaml` apiVersion **v1beta2 → v1** (rego/OPA byte-for-byte unchanged).
+
+**Ext-authz wiring = wasm-shim, NOT the Istio extensionProvider.** RHCL 1.4.0 does
+ext-authz via the **wasm-shim** (`EnvoyFilter kuadrant-maas-gateway`, scope-based),
+so the Istio CR meshConfig `extensionProviders[kuadrant-authorization]` needed **no
+change** (already correct/unused). The cutover blocker was a leftover community-era
+**Istio CUSTOM `AuthorizationPolicy maas/on-maas-gateway`** that injected a raw
+host-based ext_authz filter, shadowing the wasm-shim → Authorino 404 "Service not
+found" (AuthConfig hosts are scope-hashes). **Deleted** it (not recreated); GitOps
+must NOT re-create a CUSTOM AuthorizationPolicy for the maas gateway.
+**CRITICAL durable gotcha:** the shared Authorino **listener TLS must stay DISABLED**
+— the wasm-shim calls Authorino over **plaintext gRPC :50051** and the operator never
+adds TLS there; enabling it 500s BOTH gateways. maas-controller needs listener TLS
+only as a one-time reconcile precondition; revert it once maas-api is up.
+
+**Native MaaS up.** `maas-controller` was unblocked by two prereqs (NOT an AuthConfig
+version block — RHCL serves v1beta3): Secret `maas-db-config` (`DB_CONNECTION_URL`
+from the CNPG `maas-db-app` secret) in `redhat-ods-applications`, and a one-time
+Authorino listener serving cert. **`ModelsAsServiceReady=True`, `maas-api` 1/1**
+(DB connected, schema applied).
+
+**AI Asset Endpoints + Gen AI Studio.** A real **style-onnx OVMS `InferenceService`**
+(ns `maas`, ServingRuntime `kserve-ovms`, OpenVINO backend, READY=True) labeled
+`opendatahub.io/genai-asset=true` + `opendatahub.io/dashboard=true` now surfaces on the
+**Gen AI Studio → AI asset endpoints** page (`genAiStudio` + `aiAssetCustomEndpoints`
+true on OdhDashboardConfig). Manifest: `spiffe-auth/14-genai-asset-model.yaml`.
+
+**SPIFFE on the NATIVE endpoint — PASS.** The maas-controller gateway AuthPolicy uses
+the `defaults` strategy, so we attached a **ROUTE-level** SPIFFE `AuthPolicy`
+(`maas-native-asset-spiffe-auth`, SPIRE-OIDC issuer + the same sub regex) to a new
+`HTTPRoute` (`/native-asset` → `style-onnx-predictor`, prefix-rewritten) on the native
+`maas-default-gateway` (ns `openshift-ingress`), plus a harness egress NetworkPolicy.
+Manifests: `spiffe-auth/{15-native-asset-route-spiffe,16-egress-native-gateway-networkpolicy}.yaml`.
+Proof from the e2e-harness pod (JWT-SVID only), via
+`maas-default-gateway-data-science-gateway-class.openshift-ingress.svc`,
+`Host: maas.apps.ocp-dev.na-launch.com`:
+- `/native-asset/v2/health/ready` **no token → 401**
+- `/native-asset/v2/models/style-onnx` **SVID → 200** — real OpenVINO metadata
+  (`platform:OpenVINO`, FP32 `[1,3,224,224]`).
+
+**Re-verified green after cutover (same run):** the istio SPIFFE matrix still holds
+401 / 200 / 403 / 200 (the last with a freshly minted live `jit-approver` capability).
 
 ## Constraints on ocp-dev
 - No GPU → serve a CPU model (real OVMS/ONNX above, or the mock) to prove auth;

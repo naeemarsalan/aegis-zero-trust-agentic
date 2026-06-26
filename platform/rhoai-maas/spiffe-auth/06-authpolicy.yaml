@@ -26,7 +26,7 @@
 #
 # Kuadrant compiles this into an Authorino AuthConfig automatically
 # (authconfig/ap-maas-maas-spiffe-auth) — that derived object is NOT committed.
-apiVersion: kuadrant.io/v1beta2
+apiVersion: kuadrant.io/v1
 kind: AuthPolicy
 metadata:
   name: maas-spiffe-auth
