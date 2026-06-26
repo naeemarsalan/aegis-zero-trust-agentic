@@ -81,6 +81,14 @@ RUN env -i PATH=/usr/bin PYTHONPATH=/app/src /usr/bin/python3.11 -S -c \
 COPY bin/mcp-call /usr/local/bin/mcp-call
 RUN chmod 0755 /usr/local/bin/mcp-call
 
+# Credential-less MaaS brain entrypoint wrapper: starts the local SVID-injecting
+# maas_brain_proxy (src/agent_harness/maas_brain_proxy.py, already copied via the
+# venv-into-/app/src step + COPY src/), points the claude CLI at it, then execs
+# the runner — so the agent reaches its reasoning LLM through the SPIFFE-auth
+# MaaS gateway with its OWN SVID and holds NO model key. Active when MAAS_BRAIN=1.
+COPY bin/brain-entrypoint /usr/local/bin/brain-entrypoint
+RUN chmod 0755 /usr/local/bin/brain-entrypoint
+
 # System Claude Code CLI (honours ANTHROPIC_BASE_URL; the bundled SDK binary ignores it).
 RUN export HOME=/root \
  && curl -fsSL https://claude.ai/install.sh | bash \

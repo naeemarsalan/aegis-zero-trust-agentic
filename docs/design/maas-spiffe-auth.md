@@ -121,6 +121,65 @@ JWT-SVID (`sub=spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/…`,
 No model bearer token exists anywhere; the SVID is the only standing credential,
 and premium access requires a short-lived, approver-signed capability on top.
 
+## OpenRouter (external LLM) behind MaaS — key injected server-side
+The same SPIFFE-auth gateway now fronts a **real external LLM** (OpenRouter,
+`anthropic/claude-sonnet-4` / `claude-opus-4`), not just the CPU ONNX model. The
+agent still presents **only** its JWT-SVID; the **upstream OpenRouter API key
+never exists in the agent** — it is injected **server-side** by the MaaS
+`llm-proxy` from Vault (`secret/data/mcp-tools/openrouter`, key `token`).
+
+- `llm-proxy` forwards **directly** to `https://openrouter.ai/api/v1/chat/completions`
+  (LiteLLM removed from the path); `UPSTREAM_BASE_URL=https://openrouter.ai/api`
+  with OpenRouter attribution headers.
+- Routes: `/openrouter` (STANDARD) and `/premium/openrouter` (PREMIUM) — the same
+  two-tier model as the CPU model, discriminated in OPA.
+- Two infra seams fixed: the `maas` ns was missing from Vault's default-deny
+  ingress allowlist (Vault Agent init timed out → added NetworkPolicy
+  `vault/allow-ingress-from-maas` on `:8200`); plus an Istio `ServiceEntry`
+  +`DestinationRule` for `openrouter.ai` (mesh-correctness / future injection).
+
+### e2e result — PROVEN (2026-06-26), from the e2e-harness pod (SVID only)
+| Case | Result |
+|---|---|
+| `/openrouter` no token | **401** |
+| `/openrouter` + SVID | **200** — `claude-sonnet-4`: "HELLO" |
+| `/premium/openrouter` + SVID only | **403** |
+| `/premium/openrouter` + SVID + JIT capability | **200** — `claude-opus-4`: "PREMIUM" |
+| `/premium/openrouter` + SVID + garbage capability | **403** |
+
+Regression unchanged: style-onnx STANDARD 200 / PREMIUM SVID-only 403 / SVID+cap 200.
+Manifests: `platform/rhoai-maas/spiffe-auth/{10-llm-proxy.yaml,11-llm-route.yaml,12-egress-openrouter.yaml,13-vault-ingress-from-maas.yaml}`.
+
+## Agent brain calls models via MaaS (SVID auth)
+The OpenShell agent's **Claude brain itself** now reasons credential-less through
+the MaaS gateway, authenticating with its own JWT-SVID. The agent holds **no model
+key**.
+
+The system `claude` CLI speaks Anthropic `/v1/messages` with a *static* bearer, but
+the SVID is short-lived and must be fresh per call. A tiny stdlib **SVID-injecting
+loopback proxy** (`maas_brain_proxy.py`) sits in front: the CLI points at
+`ANTHROPIC_BASE_URL=http://127.0.0.1:8787`, and per request the proxy strips the
+CLI's throwaway token, fetches a **fresh SVID** via `svid_bearer` (same shape-guard
+as the MCP path), rewrites `/v1/messages` → MaaS `/openrouter/messages`
+(gateway URLRewrite `/openrouter`→`/v1` → OpenRouter's Anthropic-native
+`/api/v1/messages`), and forwards with `Authorization: Bearer <SVID>`.
+
+### Evidence — PROVEN (2026-06-26), e2e-harness pod
+- Agent run output: `{"type":"assistant","text":"hello from the SVID-authed brain"}`
+  → `{"type":"result","status":"success",...}` (EXIT=0) — the real `claude` CLI via
+  the SDK, `max_turns=2`.
+- llm-proxy log: `"POST /v1/messages?beta=true HTTP/1.1" 200` (the `?beta=true` is
+  the SDK/CLI signature) — reached only **after** Authorino validated the SVID.
+- No-key proof: `env | grep ANTHROPIC_API_KEY|sk-or|sk-ant` in the pod → none. The
+  agent's placeholder token sent straight at MaaS → **401**; only the proxy's SVID
+  turns it into **200**.
+
+Wiring (takes effect on the next agent-harness image build):
+`services/agent-sandbox/agent-harness/src/agent_harness/maas_brain_proxy.py`,
+`bin/brain-entrypoint` (starts proxy, points CLI at it; `MAAS_BRAIN=1` default),
+`Dockerfile`/`Dockerfile.native-brain`. The live deployment still runs `sleep
+infinity`; runtime proof used a foreground run in the live pod.
+
 ## Constraints on ocp-dev
 - No GPU → serve a CPU model (real OVMS/ONNX above, or the mock) to prove auth;
   large-LLM (vLLM/GPU) serving is the hardware follow-up.

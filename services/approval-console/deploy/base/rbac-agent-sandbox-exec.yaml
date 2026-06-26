@@ -1,0 +1,40 @@
+# RBAC for approval-console webshell to exec into the agent-sandbox e2e-harness
+# pod on the ocp-dev cluster.
+#
+# The shipped rbac-openshell-exec.yaml targets the `openshell` namespace (the
+# native-OpenShell Phase-C model). On ocp-dev the living agent runs in the
+# `agent-sandbox` namespace (the e2e-harness pod), so the webshell PTY bridge
+# needs the same minimal verbs there: pods (get/list, to resolve+confirm the pod
+# is Running) + pods/exec (create, to open the bash PTY).
+#
+# The approval-console ServiceAccount lives in mcp-gateway; a Role + RoleBinding
+# in agent-sandbox grants the minimum required verbs there. Pod/namespace are
+# resolved SERVER-SIDE from the Agent record — never client-supplied — and the
+# owner/admin check gates the WebSocket upgrade.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: approval-console-sandbox-exec
+  namespace: agent-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: approval-console-sandbox-exec
+  namespace: agent-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: approval-console
+    namespace: mcp-gateway
+roleRef:
+  kind: Role
+  name: approval-console-sandbox-exec
+  apiGroup: rbac.authorization.k8s.io

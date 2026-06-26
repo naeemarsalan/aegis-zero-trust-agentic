@@ -1,0 +1,47 @@
+# Mesh egress for the credential-injecting llm-proxy -> openrouter.ai.
+#
+# The maas namespace is NOT sidecar/ambient-meshed today (only the gateway pod
+# carries istio-proxy), so the llm-proxy reaches OpenRouter over plain pod egress
+# and terminates TLS itself in Python. These two objects make the egress
+# FIRST-CLASS in the mesh so the behaviour is identical if/when sidecar injection
+# is enabled on this namespace (and they document the intended egress):
+#
+#   ServiceEntry    registers openrouter.ai as a known external host on :443
+#                   (and :80) so the mesh permits the egress instead of treating
+#                   it as an unknown/blocked destination.
+#   DestinationRule originates TLS to openrouter.ai:443 — if the proxy were to
+#                   send cleartext :80 through the sidecar, the mesh upgrades it
+#                   to HTTPS. (The proxy already speaks HTTPS directly, so this is
+#                   belt-and-suspenders / future-proofing.)
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: openrouter-egress
+  namespace: maas
+spec:
+  hosts:
+    - openrouter.ai
+  location: MESH_EXTERNAL
+  resolution: DNS
+  ports:
+    - number: 443
+      name: https
+      protocol: TLS
+    - number: 80
+      name: http
+      protocol: HTTP
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: openrouter-tls-origination
+  namespace: maas
+spec:
+  host: openrouter.ai
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: 80
+        tls:
+          mode: SIMPLE
+          sni: openrouter.ai

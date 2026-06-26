@@ -41,8 +41,17 @@ RUN pip install --no-cache-dir --upgrade pip \
  && python3 -c "import claude_agent_sdk, httpx; print('deps import OK')"
 
 # Harness source + on-disk skills (SDK resolves skills relative to cwd /app).
+# src/ includes agent_harness/maas_brain_proxy.py — the local SVID-injecting
+# brain-auth proxy that lets the credential-less agent reach its reasoning LLM
+# THROUGH the SPIFFE-auth MaaS gateway (no model key held by the agent).
 COPY src/ ./src/
 COPY .claude/ ./.claude/
+
+# Credential-less MaaS brain entrypoint wrapper: starts maas_brain_proxy on
+# 127.0.0.1, points the claude CLI at it, then execs the runner. Active when
+# MAAS_BRAIN=1 (default); set MAAS_BRAIN=0 for legacy direct-LLM behaviour.
+COPY bin/brain-entrypoint /usr/local/bin/brain-entrypoint
+RUN chmod 0755 /usr/local/bin/brain-entrypoint
 
 # System Claude Code CLI via the native standalone installer (NOT npm/Node: this
 # UBI image's dnf repos point at an unreachable Satellite, and we don't need

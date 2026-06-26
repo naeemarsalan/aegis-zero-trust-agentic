@@ -1,0 +1,69 @@
+= UC3 -- Models on the same identity plane (MaaS, no tokens)
+:navtitle: UC3 MaaS model plane
+
+[.lead]
+The agent calls AI models authenticating with the *same SPIFFE JWT-SVID* it uses
+for tools -- no model API key anywhere. Standard models need only the identity;
+premium models need the identity *plus* a human-approved capability. The agent's
+own *brain* runs on this plane too.
+
+== How model access works
+
+[mermaid,target=uc3-maas-sequence,format=svg]
+....
+sequenceDiagram
+  autonumber
+  participant Agent as "AI agent / Claude brain<br/>(SVID only, no model key)"
+  participant Proxy as "SVID-injecting<br/>loopback proxy"
+  participant Gateway as "Istio MaaS Gateway<br/>+ Authorino"
+  participant JIT as "JIT mint-gate<br/>(capability JWT)"
+  participant LLM as "llm-proxy<br/>(Vault-held key)"
+  participant Up as "OpenRouter / KServe<br/>model"
+
+  Agent->>Proxy: model call (throwaway token)
+  Proxy->>Proxy: fetch FRESH JWT-SVID
+  Proxy->>Gateway: Bearer SVID
+  Note over Gateway: Authorino verifies SPIRE-OIDC<br/>+ SPIFFE-sub regex — fail closed
+  Gateway->>LLM: STANDARD authorized
+  LLM->>Up: inject upstream key (server-side)
+  Up-->>Agent: model response
+
+  Agent->>Gateway: PREMIUM + SVID only
+  Gateway-->>Agent: 403 (no capability)
+  Agent->>JIT: request -> human approves
+  JIT-->>Agent: short-lived capability
+  Agent->>Gateway: PREMIUM + SVID + X-JIT-Capability
+  Gateway->>LLM: 200 — premium model
+....
+
+== What this proves
+
+* *The SVID is the model credential.* No per-agent model bearer token to mint,
+  store, rotate, or leak -- the agent reuses the identity it already holds for MCP.
+* *Two tiers, one gate.* STANDARD (`/openrouter`, `/`) needs a valid JWT-SVID;
+  PREMIUM (`/premium/…`) needs the SVID *and* a jit-approver capability JWT -- the
+  same approve-to-elevate mint-gate as a tool write.
+* *The upstream key stays server-side.* For the external LLM (OpenRouter
+  `claude-sonnet-4` / `claude-opus-4`), the vendor API key lives only in Vault and
+  is injected by `llm-proxy` for one request -- it never reaches the agent.
+* *Even the brain obeys it.* The agent's Claude brain reasons through MaaS with a
+  fresh SVID per call (loopback `maas_brain_proxy.py`); `env` in the pod shows no
+  model key.
+
+== Proven results (e2e-harness pod, SVID only)
+
+[cols="2,1",options="header"]
+|===
+| Case | Result
+
+| `/openrouter` no token | *401*
+| `/openrouter` + SVID | *200* — `claude-sonnet-4`
+| `/premium/openrouter` + SVID only | *403*
+| `/premium/openrouter` + SVID + JIT capability | *200* — `claude-opus-4`
+| `/premium/openrouter` + SVID + garbage capability | *403*
+| style-onnx STANDARD + SVID | *200* (real OpenVINO metadata)
+|===
+
+See xref:04-uc1-credential-delegation.adoc[UC1] for delegated reads and
+xref:05-uc2-jit-sub-identity.adoc[UC2] for the human-approval mint-gate that the
+premium tier reuses.

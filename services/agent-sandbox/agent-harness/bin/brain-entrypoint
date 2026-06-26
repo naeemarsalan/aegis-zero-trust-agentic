@@ -1,0 +1,45 @@
+#!/bin/sh
+# Credential-less brain entrypoint.
+#
+# Starts the local SVID-injecting MaaS brain-auth proxy (maas_brain_proxy) on
+# 127.0.0.1, then execs the agent runner. The runner spawns the system `claude`
+# CLI, which is pointed at the local proxy via ANTHROPIC_BASE_URL — so every
+# inference call is authenticated by the agent's FRESH SPIFFE JWT-SVID, injected
+# server-side-of-the-loopback by the proxy. The agent holds NO model key.
+#
+# Enable by setting MAAS_BRAIN=1 (the runner image defaults it on). When unset
+# the proxy is skipped and the runner uses whatever ANTHROPIC_BASE_URL the env
+# provides (legacy direct-LLM behaviour), so this wrapper is backwards-safe.
+#
+# Env consumed (see maas_brain_proxy.py): MAAS_BRAIN_LISTEN_PORT (8787),
+# MAAS_GATEWAY_URL, MAAS_GATEWAY_HOST, MAAS_ROUTE_PREFIX.
+set -e
+
+PORT="${MAAS_BRAIN_LISTEN_PORT:-8787}"
+
+if [ "${MAAS_BRAIN:-1}" = "1" ]; then
+  # Launch the proxy in the background; it fetches a fresh SVID per request.
+  python3 -m agent_harness.maas_brain_proxy &
+  PROXY_PID=$!
+
+  # Wait (bounded) for the loopback listener to accept connections.
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)" 2>/dev/null; then
+      break
+    fi
+    i=$((i+1)); sleep 0.5
+  done
+
+  # Point the claude CLI at the local proxy. The token value is a throw-away:
+  # the proxy STRIPS it and injects the SVID. The CLI requires *some* token to
+  # be set, so we set a non-secret placeholder. The agent holds NO real key.
+  export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
+  export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-svid-injected-by-local-proxy}"
+  export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-svid-injected-by-local-proxy}"
+
+  # Reap the proxy when the runner exits.
+  trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT INT TERM
+fi
+
+exec python3 -m agent_harness.agent_runner "$@"

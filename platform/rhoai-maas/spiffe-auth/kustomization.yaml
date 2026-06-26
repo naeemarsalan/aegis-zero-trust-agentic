@@ -33,3 +33,14 @@ resources:
   # Real model backend (OVMS ServingRuntime + style-onnx InferenceService). Both
   # the standard (05) and premium (07) routes backend onto style-onnx-predictor.
   - 09-real-model.yaml
+  # LLM (chat) backend behind the SAME SPIFFE-auth gateway: a credential-
+  # injecting proxy (Vault-sourced upstream key, NEVER in image/git) fronting the
+  # OpenRouter chat endpoint DIRECTLY (LiteLLM is cut out), plus its routes:
+  #   /openrouter           STANDARD (any SVID)
+  #   /premium/openrouter   PREMIUM  (SVID + JIT capability, gated by 06)
+  - 10-llm-proxy.yaml
+  - 11-llm-route.yaml
+  # Mesh egress to openrouter.ai (ServiceEntry + DestinationRule TLS origination).
+  - 12-egress-openrouter.yaml
+  # Admit ns maas to the Vault ingress allowlist (llm-proxy Vault Agent -> :8200).
+  - 13-vault-ingress-from-maas.yaml

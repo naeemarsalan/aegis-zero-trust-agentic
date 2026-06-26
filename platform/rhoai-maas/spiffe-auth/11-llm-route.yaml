@@ -1,0 +1,69 @@
+# HTTPRoutes that expose the credential-injecting llm-proxy (10-llm-proxy.yaml)
+# behind the SPIFFE-auth MaaS gateway. The gateway-level AuthPolicy (06) governs
+# ALL routes on maas-gateway, so:
+#
+#   /openrouter/*          STANDARD tier — any valid SVID (06 svid_ok).
+#   /premium/openrouter/*  PREMIUM  tier — SVID + JIT capability (06 is_premium
+#                          matches startswith(path,"/premium") -> cap_ok required).
+#
+# Gateway API uses longest-matching-prefix, so /openrouter beats the catch-all
+# "/" model route (05) and /premium/openrouter beats /premium (07). Each route
+# URLRewrites its prefix to /v1 so the proxy (and upstream LiteLLM) sees the
+# native OpenAI-compatible path (/v1/chat/completions).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-openrouter-route
+  namespace: maas
+  labels:
+    app: llm-proxy
+    tier: standard
+spec:
+  parentRefs:
+    - name: maas-gateway
+      namespace: maas
+  hostnames:
+    - maas.apps.ocp-dev.na-launch.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openrouter
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /v1
+      backendRefs:
+        - name: llm-proxy
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: maas-premium-openrouter-route
+  namespace: maas
+  labels:
+    app: llm-proxy
+    tier: premium
+spec:
+  parentRefs:
+    - name: maas-gateway
+      namespace: maas
+  hostnames:
+    - maas.apps.ocp-dev.na-launch.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /premium/openrouter
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /v1
+      backendRefs:
+        - name: llm-proxy
+          port: 80

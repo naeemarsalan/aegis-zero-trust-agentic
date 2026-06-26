@@ -8,7 +8,7 @@ control plane**: identity to read, a human-approved short-lived capability to el
 Audience: works for SA / presales / managers (lead with the beats + the "say this" lines) and for
 engineers (the commands + the audit evidence are real).
 
-Total run time: ~10–12 min for all three acts. Each act stands alone.
+Total run time: ~12–15 min for all four acts. Each act stands alone.
 
 ---
 
@@ -78,7 +78,10 @@ oc -n agent-sandbox exec "$HPOD" -c agent -- mcp-call create_firewall_rule_advan
 **Say:** *"A change is blocked by default. Not policy-by-convention — the agent physically cannot
 elevate itself."*
 
-### Beat 4 — A human approves (four-eyes)
+### Beat 4 — A human approves *in the console UI* (four-eyes)
+The approval is done **in the web console**, not the raw API — that's what a real
+approver uses.
+
 ```bash
 # The agent files a scoped, time-boxed request...
 RID=$(curl -sS -X POST https://jit-approver-api.apps.ocp-dev.na-launch.com/requests \
@@ -86,15 +89,29 @@ RID=$(curl -sS -X POST https://jit-approver-api.apps.ocp-dev.na-launch.com/reque
     "agent_spiffe_id":"spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/e2e0a1b2-c3d4-4e5f-8a9b-000000000001",
     "requester_sub":"agent-e2e","namespace":"agentic-mcp","verbs":["create"],"resources":["firewall"],
     "duration_minutes":10,"justification":"demo: create one firewall rule"}' | jq -r .id)
+```
 
-# ...a DIFFERENT human approves (separation of duties enforced at the mint layer)
-CTOK=$(oc create token approval-console -n mcp-gateway --duration=10m)
-curl -sS -X POST https://jit-approver-api.apps.ocp-dev.na-launch.com/requests/$RID/mint \
-  -H "X-Console-SA-Token: $CTOK" -H 'Content-Type: application/json' -d '{"approver_sub":"arsalan-approver"}'
+Now open the **JIT Approval Console** and approve it by clicking:
+
+> **https://console.apps.ocp-dev.na-launch.com** — the pending request shows scope,
+> justification, requester, and TTL. Click **Approve**. The console calls
+> jit-approver `/mint` (authenticated by the console SA via TokenReview), which
+> mints the capability. Separation of duties is enforced at the mint layer:
+> **approver ≠ requester** — a self-approval returns `403 self-approval denied`.
+
+```bash
+# Pull the minted capability for the agent to use
 SJWT=$(curl -sS https://jit-approver-api.apps.ocp-dev.na-launch.com/requests/$RID/status | jq -r .session_jwt)
 ```
-**Say:** *"The approver is a different identity than the requester — the console enforces four-eyes.
-Approval mints a capability that's scoped to exactly this action and expires on its own."*
+**Say:** *"A human approved this in the console — and the platform enforces that the
+approver is a different identity than the requester. Approval mints a capability
+scoped to exactly this action that expires on its own."*
+
+> Console deployment note (PoC, ocp-dev): the console is live at
+> `console.apps.ocp-dev.na-launch.com` (ns `mcp-gateway`). It has **no
+> oauth2-proxy/Keycloak** wired here, so the approver identity resolves to
+> `anonymous` — real per-human SoD needs the Keycloak client + cookie secret. The
+> SoD *mechanism* (approver ≠ requester) is still proven negatively.
 
 ### Beat 5 — Elevated WRITE → 200 (a real change)
 ```bash
@@ -145,6 +162,24 @@ for a live forward pass.)
 AI model. There is no model API key anywhere. Authorino validated the SVID against SPIRE's OIDC and
 authorized on the identity itself."*
 
+### Beat 3 — A real external LLM (OpenRouter / Claude) through the same gateway
+The gateway also fronts a **real external LLM** — OpenRouter's `claude-sonnet-4`.
+The OpenRouter API key lives **only in Vault** and is injected **server-side** by
+the MaaS `llm-proxy`; the agent never sees it.
+
+```bash
+oc -n agent-sandbox exec "$HPOD" -c agent -- sh -c '
+  SVID=$(PYTHONPATH=/app/src python3 -c "from agent_harness.svid_bearer import fetch_agent_svid; print(fetch_agent_svid())")
+  curl -s -H "Host: maas.apps.ocp-dev.na-launch.com" -H "Authorization: Bearer $SVID" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"anthropic/claude-sonnet-4\",\"messages\":[{\"role\":\"user\",\"content\":\"say HELLO\"}]}" \
+    http://maas-gateway-istio.maas.svc.cluster.local/openrouter/chat/completions'
+```
+→ **200**, Claude replies "HELLO". No token → **401**.
+**Say:** *"A frontier LLM, reached with nothing but the agent's identity. The model
+vendor's API key never touches the agent — the platform injects it server-side from
+Vault, for this one request."*
+
 ---
 
 ## Act 3 — Premium models = approve-to-elevate (the unifying finale)
@@ -171,10 +206,48 @@ oc -n agent-sandbox exec "$HPOD" -c agent -- sh -c '
     -H "X-JIT-Capability: '"$SJWT"'" \
     http://maas-gateway-istio.maas.svc.cluster.local/premium/v2/models/style-onnx'
 ```
-→ **200**, real inference. **Say (the closer):**
+→ **200**, real inference. (The same gate guards the **premium external LLM** too:
+`/premium/openrouter` with SVID only → **403**; with SVID **+** `X-JIT-Capability`
+→ **200**, `claude-opus-4`.) **Say (the closer):**
 > *"Tools and models, one control plane: your identity lets you read; a human-approved, short-lived
 > capability lets you do the expensive or dangerous thing. No standing credentials anywhere — for
 > tools or for AI. That's what makes it safe to put an autonomous agent near production."*
+
+---
+
+## Act 4 — The agent's *brain* runs on MaaS, and you can watch it (operator view)
+
+### Beat 1 — The brain itself reasons credential-less through MaaS
+The agent's Claude **brain** authenticates to the model with its own SVID — no model
+key in the pod. A tiny loopback proxy injects a fresh SVID per request and rewrites
+the Anthropic call onto the MaaS `/openrouter` route.
+
+```bash
+# The brain run emits an assistant turn proxied through MaaS (SVID-authed)
+oc -n agent-sandbox exec "$HPOD" -c agent -- env MAAS_BRAIN=1 \
+  PYTHONPATH=/app/src python3 -m agent_harness.runner --prompt 'reply: hello from the SVID-authed brain' --max-turns 2
+# llm-proxy log: "POST /v1/messages?beta=true HTTP/1.1" 200   (reached only after Authorino validated the SVID)
+```
+**Say:** *"It's not just tool calls — the model that *drives* the agent is itself
+behind the same identity wall. The agent has nothing to steal, not even for its own
+reasoning."*
+
+### Beat 2 — Watch / drive the agent live (webshell)
+The console embeds a same-origin xterm.js **webshell** that `oc exec`s into the
+agent pod — scope-locked to one pod, resolved server-side, gated by an owner/admin
+check.
+
+> Open **https://console.apps.ocp-dev.na-launch.com**, click **Webshell** on the
+> *"e2e-harness (agent-sandbox PoC)"* card (direct:
+> `…/api/agents/e2eharness/webshell/ui`). You get a live terminal in the agent pod.
+
+**Say:** *"An operator can watch and drive the exact pod — but the shell is locked to
+that one sandbox, resolved server-side, never from the browser."*
+
+> PoC notes (ocp-dev): no oauth2-proxy, so actor/owner are `anonymous` (no real
+> per-human SoD on the shell); the Agent record is seeded via ConfigMap and pinned
+> to the current pod hash (update it if the pod is recreated). Exec RBAC is
+> namespaced to `agent-sandbox`.
 
 ---
 

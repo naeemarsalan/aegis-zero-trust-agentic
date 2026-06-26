@@ -31,3 +31,7 @@ charts/
 node_modules/
 dist-dynamic/
 dist-scalprum/
+
+# Cluster secrets (Vault unseal/root) — never commit
+environment/.env.ocp-dev
+environment/.env*

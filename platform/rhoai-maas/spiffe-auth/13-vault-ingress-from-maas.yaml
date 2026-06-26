@@ -1,0 +1,27 @@
+# The Vault namespace runs default-deny ingress and only admits specific consumer
+# namespaces on :8200 (see vault/allow-ingress-from-injector-consumers). The
+# llm-proxy's Vault Agent sidecar (in ns maas) must reach Vault to render the
+# OpenRouter key, so this policy adds maas to the Vault ingress allowlist WITHOUT
+# mutating the existing (multi-consumer) policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-maas
+  namespace: vault
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - maas
+      ports:
+        - port: 8200
+          protocol: TCP

@@ -9,6 +9,7 @@
 * Use-case walkthroughs
 ** xref:04-uc1-credential-delegation.adoc[UC1 -- Delegated MCP tool call]
 ** xref:05-uc2-jit-sub-identity.adoc[UC2 -- JIT sub-identity]
+** xref:06-uc3-maas-model-plane.adoc[UC3 -- MaaS model plane]
 
 * Architecture
 ** xref:09-platform-overview.adoc[Platform overview]
