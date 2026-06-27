@@ -1,0 +1,21 @@
+# Showroom route on the ocp-dev ingress domain (the deployment runs on ocp-dev).
+# The original `showroom` route pins the virt-hub hostname (aegis.apps.virt.…),
+# which does not resolve to this cluster; this route makes the docs site reachable
+# at the ocp-dev wildcard ingress (VIP 172.16.2.59).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: showroom-ocp-dev
+  namespace: rhoai-agentic
+  labels:
+    app: showroom
+spec:
+  host: showroom.apps.ocp-dev.na-launch.com
+  to:
+    kind: Service
+    name: showroom
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
