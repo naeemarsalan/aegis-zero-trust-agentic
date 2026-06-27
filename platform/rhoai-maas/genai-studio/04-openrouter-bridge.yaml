@@ -1,0 +1,114 @@
+# openrouter-bridge — the SPIFFE execution backend for the registered Gen AI Studio
+# "OpenRouter Claude Sonnet 4 (SPIFFE-gated)" AI Asset Endpoint.
+#
+# It is the proven in-sandbox maas_brain_proxy.Handler run as a STANDALONE service
+# (same agent-harness image, NO code change, NO Kyverno, NO LlamaStack operator): it
+# binds 0.0.0.0:8321, fetches a FRESH JWT-SVID per request from its own SPIRE CSI
+# Workload-API socket, STRIPS any inbound throwaway credential, rewrites /v1/* ->
+# /openrouter/* and forwards to the maas-gateway with Host: maas.apps.ocp-dev... where
+# Authorino (maas-spiffe-auth) validates the SVID. The OpenRouter key is injected
+# server-side by the MaaS llm-proxy from Vault — it NEVER reaches this pod. The pod
+# holds NO stored credential; its only identity is the SA-shaped SVID
+# spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge (issued by the CSID in
+# 05-...; allowed by the maas-spiffe-auth OPA equality branch in 06-...).
+#
+# This is what makes the registered asset SVID-callable in-cluster (base_url
+# http://openrouter-bridge.maas.svc.cluster.local:8321/v1 in 02-...).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openrouter-bridge
+  namespace: maas
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openrouter-bridge
+  namespace: maas
+  labels:
+    app: openrouter-bridge
+    app.kubernetes.io/part-of: rhoai-maas-spiffe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openrouter-bridge
+  template:
+    metadata:
+      labels:
+        app: openrouter-bridge
+    spec:
+      serviceAccountName: openrouter-bridge
+      automountServiceAccountToken: false
+      containers:
+        - name: bridge
+          image: oci.arsalan.io/nvidia-ida/agent-harness:maas-brain
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-c"]
+          args:
+            - |
+              import os, sys
+              from http.server import ThreadingHTTPServer
+              import agent_harness.maas_brain_proxy as m
+              port = int(os.environ.get("MAAS_BRAIN_LISTEN_PORT", "8321"))
+              srv = ThreadingHTTPServer(("0.0.0.0", port), m.Handler)
+              sys.stderr.write("openrouter-bridge listening 0.0.0.0:%d -> %s%s (Host: %s)\n"
+                               % (port, m.GATEWAY_URL, m.ROUTE_PREFIX, m.GATEWAY_HOST))
+              srv.serve_forever()
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: MAAS_BRAIN_LISTEN_PORT
+              value: "8321"
+            - name: MAAS_GATEWAY_URL
+              value: http://maas-gateway-istio.maas.svc:80
+            - name: MAAS_GATEWAY_HOST
+              value: maas.apps.ocp-dev.na-launch.com
+            - name: MAAS_ROUTE_PREFIX
+              value: /openrouter
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: unix:///spiffe-workload-api/spire-agent.sock
+            # SA-shaped SVID (no /sandbox/) — do not require the sandbox path substring.
+            - name: SVID_REQUIRE_PATH_SUBSTR
+              value: ""
+          ports:
+            - containerPort: 8321
+              name: http
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8321
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openrouter-bridge
+  namespace: maas
+  labels:
+    app: openrouter-bridge
+spec:
+  selector:
+    app: openrouter-bridge
+  ports:
+    - name: http
+      port: 8321
+      targetPort: 8321

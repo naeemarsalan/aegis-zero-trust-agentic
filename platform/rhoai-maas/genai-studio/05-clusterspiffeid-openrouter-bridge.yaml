@@ -1,0 +1,19 @@
+# ClusterSPIFFEID for the openrouter-bridge — issues the SA-shaped SVID
+# spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge to the bridge pod.
+#
+# CLUSTER-SCOPED: apply per-doc (harness DENIES oc delete of cluster-scoped resources).
+# className is REQUIRED — the spire-controller-manager only reconciles CSIDs whose
+# className == zero-trust-workload-identity-manager-spire (the live ZTWIM class).
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: maas-openrouter-bridge
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://anaeem.na-launch.com/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app: openrouter-bridge
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: maas

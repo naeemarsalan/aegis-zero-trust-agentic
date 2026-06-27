@@ -1,0 +1,54 @@
+# Gen AI Studio "MCP Servers" tab registration for our zero-trust MCP gateway.
+#
+# The gen-ai dashboard BFF (binary /bff, opendatahub-io/odh-dashboard packages/gen-ai)
+# reads a ConfigMap named EXACTLY `gen-ai-aa-mcp-servers` from app.dashboardNamespace
+# (= redhat-ods-applications, the dashboard pod's own namespace — NOT the project ns).
+# Each .data key is the server's display label; the value is a JSON string matching the
+# BFF MCPServerConfig schema {url, transport(sse|streamable-http), description, logo}.
+# There is NO auth field — listing is auth-neutral; the BFF makes NO live call (status is
+# "healthy" iff url is non-empty). The real SVID-authed tool EXECUTION path is the living
+# agent -> mcp-gateway -> ext-proc-delegation (UUID /sandbox/<uuid> SVID + Vault grant);
+# the browser playground cannot mint an SVID (documented gap).
+#
+# RBAC: the BFF SA must be able to read this ConfigMap. The upstream ships an all-users
+# (system:authenticated) reader Role; we mirror it scoped to this single ConfigMap.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gen-ai-aa-mcp-servers-reader
+  namespace: redhat-ods-applications
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["gen-ai-aa-mcp-servers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gen-ai-aa-mcp-servers-reader-rolebinding
+  namespace: redhat-ods-applications
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gen-ai-aa-mcp-servers-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:authenticated
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: rhoai-maas-spiffe
+data:
+  pfsense-k8s-tools: |
+    {
+      "url": "https://mcp-gateway.apps.ocp-dev.na-launch.com/mcp",
+      "transport": "streamable-http",
+      "description": "Zero-trust MCP gateway: pfSense firewall + k8s tools. SPIFFE-SVID auth at ext-proc-delegation; reads are delegated-as-user, writes require human JIT approval in the console."
+    }

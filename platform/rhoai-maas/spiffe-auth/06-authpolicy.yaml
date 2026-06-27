@@ -59,6 +59,13 @@ spec:
               regex.match(`^spiffe://anaeem\.na-launch\.com/ns/(openshell|agent-sandbox)/sandbox/.+$`, sub)
             }
 
+            # openrouter-bridge: the SPIFFE execution backend for the registered Gen AI
+            # Studio OpenRouter AI-asset (platform/rhoai-maas/genai-studio/04-...). Its SA
+            # SVID is not sandbox-shaped, so allow it by exact equality (least-privilege).
+            svid_ok if {
+              sub == "spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge"
+            }
+
             is_premium if { startswith(path, "/premium") }
 
             # jit-approver capability JWT (premium only), from X-JIT-Capability.

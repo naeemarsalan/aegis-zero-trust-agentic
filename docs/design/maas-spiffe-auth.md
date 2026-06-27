@@ -299,6 +299,69 @@ Proof from the e2e-harness pod (JWT-SVID only), via
 **Re-verified green after cutover (same run):** the istio SPIFFE matrix still holds
 401 / 200 / 403 / 200 (the last with a freshly minted live `jit-approver` capability).
 
+## Gen AI Studio native asset registration + openrouter-bridge (2026-06-27)
+Both the **frontier OpenRouter Claude model** and the **MCP gateway (real tools)**
+are now registered as **native OpenShift AI 3.4.1 GA Gen AI Studio assets**, with
+the agent's **SPIFFE JWT-SVID as the only credential** for both — no stored model
+key exists anywhere.
+
+**Catalog registration is two ConfigMaps the gen-ai BFF reads by EXACT name.** The
+gen-ai dashboard BFF is a compiled Go binary (`/bff`, container `gen-ai-ui` in the
+rhods-dashboard pod) that reads ConfigMaps by literal name; its **GET endpoints make
+no live call** to the backend (only `POST …/models/external/verify` calls the model
+base_url), so the catalog can be hand-authored safely.
+- **MCP Servers** — ConfigMap **`gen-ai-aa-mcp-servers`** in **`redhat-ods-applications`**
+  (the dashboardNamespace, not the project ns) + an all-users (`system:authenticated`)
+  reader Role/RoleBinding. Each `.data` key = the server label; value = JSON
+  `{url, transport, description}` with **no auth field**.
+- **AI Asset Endpoints (models)** — ConfigMap **`gen-ai-aa-custom-model-endpoints`** in
+  the PROJECT ns **`maas`** (labeled `opendatahub.io/dashboard=true` to be a selectable
+  DS project). Single data key `config.yaml`; schema = `providers.inference[]`
+  (`provider_type: remote::openai` for the LLM) + `registered_resources.models[]`. The
+  `custom_gen_ai.api_key.secretRef` is left **EMPTY** — the SVID is the credential, so
+  the invariant stays clean.
+
+**openrouter-bridge = the SPIFFE execution backend that makes the asset SVID-callable.**
+The registered OpenRouter asset's `base_url` points at
+`http://openrouter-bridge.maas.svc.cluster.local:8321/v1`. The bridge is the proven
+in-sandbox `maas_brain_proxy.Handler` run as a **standalone Deployment** in ns `maas`,
+**reusing the existing `agent-harness:maas-brain` image** (container command overridden
+to bind `0.0.0.0:8321`) — so **no code change, no image rebuild, no Kyverno, no
+LlamaStack operator**. It mounts its own SPIRE CSI Workload-API volume, receives the
+SA-shaped SVID `spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge`, and per
+request fetches a fresh SVID, strips any inbound throwaway credential, rewrites
+`/v1/*`→`/openrouter/*`, sets `Host: maas.apps.ocp-dev.na-launch.com`, and forwards to
+`maas-gateway-istio.maas.svc:80` where Authorino validates the SVID. The OpenRouter API
+key is injected **server-side** by the MaaS llm-proxy from Vault — it never reaches the
+bridge.
+
+**Keystone OPA edit (least-privilege).** AuthPolicy `maas-spiffe-auth` (the model
+gateway) gained a **second** equality branch
+`svid_ok if { sub == "spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge" }`
+— an **exact match**, not a regex widening; the existing sandbox-regex branch is
+untouched. AuthPolicy `Enforced=True`.
+
+| Case | Result |
+|---|---|
+| bridge → maas-gateway with its SA SVID (after OPA edit) | **200** — real OpenRouter completion (`anthropic/claude-4-sonnet`) |
+| same call, BEFORE the OPA edit | **403** (fail-closed) |
+| no token | **401** |
+| garbage token | **401** |
+| existing sandbox SVID | **200** (regression clean) |
+| living agent brain in-pod (`maas_brain_proxy` → `/openrouter`) | **200**, content `BRAIN-OK` (pod holds no model key) |
+
+**LlamaStackDistribution stretch — authored, NOT applied.** A
+`LlamaStackDistribution` registering OpenRouter as a remote model provider + the MCP
+gateway as an MCP toolgroup was authored but deliberately **not** wired into the
+kustomization: it is redundant with the proven direct agent path, and the browser
+playground cannot mint an SVID (structural gap), so it would not be browser-usable.
+
+Manifests: `platform/rhoai-maas/genai-studio/{01-gen-ai-mcp-servers.yaml,
+02-gen-ai-custom-endpoint-openrouter.yaml, 04-openrouter-bridge.yaml,
+05-clusterspiffeid-openrouter-bridge.yaml, 06-llamastackdistribution.yaml}` (the last
+authored-not-applied). The durable copy of the OPA edit lives in
+`platform/rhoai-maas/spiffe-auth/06-authpolicy.yaml`.
+
 ## Constraints on ocp-dev
 - No GPU → serve a CPU model (real OVMS/ONNX above, or the mock) to prove auth;
   large-LLM (vLLM/GPU) serving is the hardware follow-up.

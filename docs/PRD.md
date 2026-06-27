@@ -1,6 +1,6 @@
 # PRD — Zero-Trust Agentic AI Platform (ocp-dev)
 
-**Status:** Living document · last updated 2026-06-26 · cluster **ocp-dev** (OCP 4.20.25, 3 control-plane + 2 worker)
+**Status:** Living document · last updated 2026-06-27 · cluster **ocp-dev** (OCP 4.20.25, 3 control-plane + 2 worker)
 **One-liner:** An AI agent that holds **no stored credential — only a SPIFFE identity** — can *read/act as the human*,
 can only *change anything (tools) or use premium models after a human approves it*, and uses that **same identity to
 call AI models** (no model token). Tools and models share **one control plane**: identity to read, a human-approved
@@ -76,6 +76,8 @@ you've validated yourself.
 | M4 | Premium model = **approve-to-elevate** (JIT capability) | ✅ | `/premium` SVID-only → 403; +capability → 200 (`claude-opus-4`) | — (please confirm) |
 | M5 | Agent **brain** calls models via MaaS (credential-less reasoning, default boot) | ✅ | agent reasoned "51" via MaaS proxy; `env` shows no model key; no-SVID → 401 | — (please confirm) |
 | M6 | Native **RHOAI 3.4 AI Asset Endpoints** + **Gen AI Studio**, SPIFFE-authed | ✅ | `ModelsAsServiceReady=True`; `style-onnx` labeled `genai-asset`; native endpoint no-token 401 / SVID 200 | — (please confirm) |
+| M9 | **Gen AI Studio catalog registration** of OpenRouter (AI Asset Endpoint) + the MCP gateway (MCP Servers tab), native ConfigMap-driven | ✅ | dashboard BFF API: `GET /aaa/mcps?namespace=maas` → `pfsense-k8s-tools` `healthy`; `GET /aaa/models?sources=custom_endpoint` → `OpenRouter Claude Sonnet 4 (SPIFFE-gated)` `custom_endpoint`; empty `secretRef` (SVID is the credential) — `platform/rhoai-maas/genai-studio/{01-gen-ai-mcp-servers.yaml,02-gen-ai-custom-endpoint-openrouter.yaml}` | — (please confirm) |
+| M10 | **openrouter-bridge** makes the registered OpenRouter asset **SVID-callable** (SPIFFE execution backend) | ✅ | standalone Deployment in `maas` (reuses `agent-harness:maas-brain`, no rebuild) with SA SVID `…/ns/maas/sa/openrouter-bridge`; bridge → maas-gateway → **200** real OpenRouter completion (`claude-4-sonnet`); pre-OPA-edit 403 (fail-closed); AuthPolicy `maas-spiffe-auth` exact-match branch, `Enforced=True`, regression clean (no-token 401 / garbage 401 / sandbox SVID 200) — `platform/rhoai-maas/genai-studio/{04-openrouter-bridge.yaml,05-clusterspiffeid-openrouter-bridge.yaml}`, `platform/rhoai-maas/spiffe-auth/06-authpolicy.yaml` | — (please confirm) |
 | M7 | Large-LLM (vLLM) served in-cluster (kills external egress) | 🔵 | needs a **GPU** node | — |
 | M8 | mTLS-SPIFFE for model calls (Istio⇄SPIRE X.509) | 🔵 | flavor-A hardening; flavor-B (JWT-SVID) is M1 | — |
 
@@ -94,8 +96,12 @@ you've validated yourself.
 ## 6. Current deployment (ocp-dev)
 RHOAI **3.4.1 GA** (fresh install; 2.25 removed). **RHCL v1.4.0** (community Kuadrant cut over). Native MaaS up
 (`maas-api`, `ModelsAsServiceReady=True`). Gen AI Studio enabled. Our SPIFFE/Istio model plane + OpenRouter + premium
-all live. Tool plane (SPIRE/Keycloak/Vault/Kyverno/ext-proc/jit-approver/console/webshell) live. Latest commit on
-`fix/jit-approver-mint-route` (PR #54).
+all live. Tool plane (SPIRE/Keycloak/Vault/Kyverno/ext-proc/jit-approver/console/webshell) live. **OpenRouter (the
+frontier Claude model) and the MCP gateway (real tools) are registered as native Gen AI Studio assets driven by the
+SPIFFE SVID** (no stored model key — empty `secretRef`; OpenRouter asset is SVID-callable via `openrouter-bridge`).
+Fixed an ext-proc→Vault regression: `ext-proc-delegation`'s `VAULT_ADDR` was repointed from the degraded external
+Vault route to in-cluster `http://vault.vault.svc:8200`, restoring the delegated read (200) and the fail-closed write
+(403 `grant_scope_denied`). Latest commit on `fix/jit-approver-mint-route` (PR #54).
 
 ## 7. Known issues / incidents
 - **🔴 INCIDENT (open): `master-1` is `NotReady` (`KubeletNotReady`)** → etcd 2/3 (quorum OK, fragile), API flapping,
@@ -103,6 +109,12 @@ all live. Tool plane (SPIRE/Keycloak/Vault/Kyverno/ext-proc/jit-approver/console
   a node failure. **Fix = recover the `ocp-dev-master-1` VM (reboot via hub).** Break-glass cert kubeconfig:
   `~/.kube/ocp-dev-admin.kubeconfig` (bypasses OAuth). Do **not** reboot another master until master-1 is back.
 - master saturation (root of earlier flaps) — addressed via `mastersSchedulable=false`.
+- **Tool-journey mint → elevated-write is infra-gated, not code-gated.** The model plane is fully green this session
+  (401/200 + the bridge real completion + the agent brain). The tool journey's read-200 and write-403 were re-proven
+  this session, but the mint → elevated-write legs are blocked **only** by active control-plane flakiness
+  (master/etcd/apiserver/Vault-route intermittent timeouts); last proven green 2026-06-25. Two test-script blockers are
+  fixed in `hack/test-pfsense-jit-ocp-dev.sh`: `curl -k` (the `*.apps.ocp-dev` edge cert is self-signed) and the
+  jit-approver mint API now requires a canonical `scope_hash` (L1 scope-gate). Re-run the anchor in a stable window.
 
 ## 8. Roadmap (prioritized)
 1. **Recover master-1** + durable control-plane health (etcd on the fragile master).
@@ -112,6 +124,12 @@ all live. Tool plane (SPIRE/Keycloak/Vault/Kyverno/ext-proc/jit-approver/console
 4. **GPU → in-cluster large-LLM** (M7) → point the brain at it (no external egress).
 5. **mTLS-SPIFFE** model auth (M8); **`vault-config-operator`** (P6).
 6. **Living-agent e2e demo** tying tools + models + console + brain into one continuous proof.
+7. **Re-run the tool-journey anchor** (`hack/test-pfsense-jit-ocp-dev.sh`) in a stable control-plane window to re-prove
+   mint → elevated-write (currently infra-gated, not code-gated — see §7).
+8. **Optional stretch — LlamaStackDistribution** (`platform/rhoai-maas/genai-studio/06-llamastackdistribution.yaml`,
+   authored, **not applied / not wired into kustomization**): registers OpenRouter as a remote provider + the MCP
+   gateway as an MCP toolgroup. Redundant with the proven direct agent path, and the browser playground can't mint an
+   SVID (structural gap), so it would not be browser-usable. `userConfig` `run.yaml` key still **unverified**.
 
 ## 9. Acceptance / proof points (this build)
 - Tool journey: read 200 → write 403 → console-approve (SoD) → write 200 (real pfSense rule). ✓ (auto)

@@ -1,0 +1,101 @@
+# OPTIONAL STRETCH — NOT applied by the kustomization, NOT yet verified live.
+#
+# A LlamaStackDistribution that registers OpenRouter as a remote model provider and the
+# mcp-gateway as an MCP toolgroup, so a LlamaStack-based agent (or the Gen AI Studio
+# playground, modulo the browser-SVID gap) can use both under one RHOAI-native server.
+#
+# WHY OPTIONAL: the zero-trust property is already proven without it —
+#   * the living agent reasons via OpenRouter with its SVID (in-pod maas_brain_proxy), and
+#   * the registered AI-asset is SVID-callable via openrouter-bridge (04-...).
+#   * the browser playground cannot mint an SVID, so playground->MCP tool execution stays
+#     a structural gap regardless of this resource.
+# It is therefore additive RHOAI integration, deliberately kept off the fragile cluster's
+# default apply path. Apply by hand and watch the operator logs for the userConfig key.
+#
+# RESOLVED FACTS (live 2026-06-27):
+#   * Distribution image (operator RELATED_IMAGE_RH_DISTRIBUTION):
+#       registry.redhat.io/rhoai/odh-llama-stack-core-rhel9@sha256:d0375eb3cb815b9e750efaee4809715b3ebf64a126ca179dc3da8b9b1f36443a
+#   * userConfig = {configMapName, configMapNamespace}. The run-config ConfigMap data KEY
+#     is UNVERIFIED for this operator lineage — start with `run.yaml`; if the operator
+#     ignores it, check its logs/events and rename (candidates: run.yaml | config.yaml).
+#   * podOverrides supports volumes/volumeMounts but NOT extra containers, so the SVID
+#     sidecar cannot be added via the CR — point inference at openrouter-bridge.svc
+#     (which already injects the SVID) instead of a loopback sidecar. This keeps LlamaStack
+#     itself credential-less (it holds no model key; the bridge presents the SVID).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llama-stack-run-config
+  namespace: maas
+data:
+  run.yaml: |
+    version: '2'
+    image_name: openrouter-bridge
+    apis:
+      - inference
+      - tool_runtime
+    providers:
+      inference:
+        - provider_id: openrouter
+          provider_type: remote::openai
+          config:
+            # Route model calls through the SVID-injecting bridge (NOT a stored key).
+            base_url: http://openrouter-bridge.maas.svc.cluster.local:8321/v1
+            api_key: not-used-svid-injected-by-bridge
+      tool_runtime:
+        - provider_id: model-context-protocol
+          provider_type: remote::model-context-protocol
+          config: {}
+    models:
+      - model_id: anthropic/claude-sonnet-4
+        provider_id: openrouter
+        model_type: llm
+    tool_groups: []
+    server:
+      port: 8321
+---
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: openrouter-bridge
+  namespace: maas
+spec:
+  replicas: 1
+  server:
+    distribution:
+      image: registry.redhat.io/rhoai/odh-llama-stack-core-rhel9@sha256:d0375eb3cb815b9e750efaee4809715b3ebf64a126ca179dc3da8b9b1f36443a
+    containerSpec:
+      port: 8321
+    userConfig:
+      configMapName: llama-stack-run-config
+      configMapNamespace: maas
+    storage:
+      size: 2Gi
+      mountPath: /.llama
+---
+# After the pod is Ready, register the MCP toolgroup at runtime (static tool_groups are
+# deprecated in llama-stack; must be POSTed and persisted in the server's sqlite). The
+# living agent then calls POST /v1/responses with its OWN SVID, which LlamaStack relays as
+# Authorization: Bearer to mcp-gateway (ext-proc validates the UUID /sandbox/<uuid> SVID).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-mcp-gateway-toolgroup
+  namespace: maas
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              microdnf -y install curl >/dev/null 2>&1 || true
+              curl -sf -X POST http://openrouter-bridge-service.maas.svc.cluster.local:8321/v1/toolgroups \
+                -H 'Content-Type: application/json' \
+                -d '{"provider_id":"model-context-protocol","toolgroup_id":"mcp::pfsense-k8s","mcp_endpoint":{"uri":"http://mcp-gateway.mcp-gateway.svc:8080/mcp"}}'
+              echo "toolgroup registration attempted"

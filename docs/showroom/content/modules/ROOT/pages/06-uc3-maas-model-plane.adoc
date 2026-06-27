@@ -64,6 +64,62 @@ sequenceDiagram
 | style-onnx STANDARD + SVID | *200* (real OpenVINO metadata)
 |===
 
+== Native in OpenShift AI -- Gen AI Studio assets
+
+The model plane is not a side-car bolted onto the dashboard: OpenRouter and the
+MCP gateway are registered as *first-class OpenShift AI (RHOAI 3.4.1 GA) Gen AI
+Studio assets*, and SPIFFE is the only credential on both.
+
+* *OpenRouter as an AI Asset Endpoint.* The frontier Claude model
+  (`anthropic/claude-4-sonnet`) shows up on the *AI Asset Endpoints* page as
+  _OpenRouter Claude Sonnet 4 (SPIFFE-gated)_ -- a `custom_endpoint` source backed
+  by the `gen-ai-aa-custom-model-endpoints` ConfigMap (key `config.yaml`,
+  `provider_type: remote::openai`) in the `maas` project. The asset's
+  `api_key.secretRef` is deliberately *empty* -- there is no model key to point at,
+  because the SVID is the credential.
+* *The MCP gateway in the MCP Servers tab.* The real-tools gateway is registered
+  via the `gen-ai-aa-mcp-servers` ConfigMap in the dashboard namespace
+  (`redhat-ods-applications`) as `pfsense-k8s-tools`, with no auth field -- the
+  catalog reports it `healthy`.
+* *Authored as GitOps, verified by the dashboard's own API.* Both assets are plain
+  ConfigMaps (`platform/rhoai-maas/genai-studio/01-gen-ai-mcp-servers.yaml`,
+  `02-gen-ai-custom-endpoint-openrouter.yaml`); the Gen AI dashboard BFF reads them
+  by exact name, and the registration was confirmed through the BFF's own
+  `GET /gen-ai/api/v1/aaa/...` endpoints.
+
+=== openrouter-bridge -- the SPIFFE execution backend
+
+A registered asset is only useful if it is actually callable. The
+*openrouter-bridge* is the piece that makes the OpenRouter AI Asset Endpoint
+reachable with *nothing but an SVID*: a standalone Deployment in the `maas`
+namespace that reuses the proven in-sandbox `maas_brain_proxy` handler (no new
+image, no code change). It carries its own SA-shaped SVID
+(`spiffe://anaeem.na-launch.com/ns/maas/sa/openrouter-bridge`) from a SPIRE CSI
+Workload-API volume, and per request it:
+
+* fetches a *fresh* JWT-SVID and strips any inbound throwaway credential,
+* rewrites `/v1/*` -> `/openrouter/*` and forwards to the Istio MaaS Gateway,
+* lets Authorino validate the SVID before `llm-proxy` injects the Vault-held
+  OpenRouter key server-side.
+
+The asset's `base_url` therefore points at
+`http://openrouter-bridge.maas.svc.cluster.local:8321/v1`, and the bridge -> gateway
+call is *proven 200 with a real OpenRouter completion* -- fail-closed `403` before
+the gateway's authorization branch was in place. The keystone authorization edit is
+a *least-privilege exact match* on the `maas-spiffe-auth` AuthPolicy (an added
+equality branch for the bridge's SVID -- not a regex widening; the existing sandbox
+branch is untouched). Files:
+`platform/rhoai-maas/genai-studio/04-openrouter-bridge.yaml`,
+`05-clusterspiffeid-openrouter-bridge.yaml`, and the durable AuthPolicy copy in
+`platform/rhoai-maas/spiffe-auth/06-authpolicy.yaml`.
+
+[NOTE]
+====
+*Demo:* the canonical step-by-step (Acts 1--4 + Troubleshooting) for the Gen AI
+Studio zero-trust model plane lives in the repo runbook
+`docs/demo/genai-studio-spiffe-zerotrust-runbook.md`.
+====
+
 See xref:04-uc1-credential-delegation.adoc[UC1] for delegated reads and
 xref:05-uc2-jit-sub-identity.adoc[UC2] for the human-approval mint-gate that the
 premium tier reuses.

@@ -10,6 +10,17 @@ engineers (the commands + the audit evidence are real).
 
 Total run time: ~12–15 min for all four acts. Each act stands alone.
 
+> **Companion runbook (Gen AI Studio + SPIFFE):**
+> `docs/demo/genai-studio-spiffe-zerotrust-runbook.md` is the canonical step-by-step
+> for the **native Gen AI Studio** angle of the model plane — it registers **OpenRouter
+> (a frontier Claude model)** and the **MCP gateway (real tools)** as native **OpenShift AI
+> (RHOAI 3.4.1 GA) Gen AI Studio** assets, then proves the agent's **SPIFFE JWT-SVID is the
+> only credential** for both (no stored model key anywhere). Acts 1–4 there cover: register
+> OpenRouter + MCP in Gen AI Studio → SVID-as-model-credential → the read/403/approve/write
+> tool journey. This doc and that runbook are complementary — this one is the dramatic
+> four-act walkthrough; the runbook adds the native catalog-registration proof. Don't
+> duplicate; cross-reference.
+
 ---
 
 ## 0. Pre-flight (do this before the audience is watching)
@@ -282,6 +293,9 @@ that one sandbox, resolved server-side, never from the browser."*
 - Tool plane (read-delegated / write-approved): `docs/showroom` (UC1, UC2), `docs/reviews/phaseA-*`.
 - Model plane (SVID-auth MaaS + premium tier): `docs/design/maas-spiffe-auth.md`,
   `platform/rhoai-maas/spiffe-auth/`.
+- Native Gen AI Studio registration (OpenRouter + MCP as RHOAI assets, SVID-as-credential):
+  `docs/demo/genai-studio-spiffe-zerotrust-runbook.md`,
+  `platform/rhoai-maas/genai-studio/`.
 - Deterministic regression for Act 1: `hack/test-pfsense-jit-ocp-dev.sh`.
 
 ## Troubleshooting (live demo)

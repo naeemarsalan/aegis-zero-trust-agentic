@@ -74,7 +74,9 @@ R2=$(mcpc create_firewall_rule_advanced "$WJSON")
 echo "$R2" | grep -qiE 'grant_scope_denied|403|denied' && ok "WRITE 403 grant_scope_denied (fail-closed)" || bad "WRITE was NOT denied (gate broken!): $(echo "$R2" | tail -1 | head -c 160)"
 
 step "STEP 3 — request + mint capability (approver != requester)"
-REQ=$(curl -sS -w '\n%{http_code}' -H 'Content-Type: application/json' -X POST "$JIT_API/requests" -d "{
+# NOTE: curl uses -k — the *.apps.ocp-dev route edge cert is self-signed (regenerated during
+# cluster churn); without -k curl exits 0/http=000 (SSL verify failure, NOT a route outage).
+REQ=$(curl -sSk -w '\n%{http_code}' -H 'Content-Type: application/json' -X POST "$JIT_API/requests" -d "{
   \"agent_spiffe_id\":\"${AGENT_SPIFFE}\",\"requester_sub\":\"agent-e2e\",
   \"namespace\":\"agentic-mcp\",\"verbs\":[\"create\"],\"resources\":[\"firewall\"],
   \"duration_minutes\":10,\"justification\":\"regression anchor pfSense write elevation\"}" 2>/dev/null)
@@ -82,10 +84,14 @@ RCODE=$(echo "$REQ" | tail -1); RBODY=$(echo "$REQ" | sed '$d')
 RID=$(echo "$RBODY" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
 [ -n "$RID" ] && ok "request filed: id=$RID (http $RCODE)" || bad "POST /requests http=$RCODE body=$(echo "$RBODY" | head -c 160)"
 CTOK=$(oc create token approval-console -n mcp-gateway --duration=10m 2>/dev/null)
-MC=$(curl -sS -w '\n%{http_code}' -H 'Content-Type: application/json' -H "X-Console-SA-Token: ${CTOK}" \
-  -X POST "$JIT_API/requests/${RID}/mint" -d '{"approver_sub":"arsalan-approver"}' 2>/dev/null)
-echo "$MC" | tail -1 | grep -qE '^20' && ok "minted (approver=arsalan-approver != requester=agent-e2e — SoD)" || bad "POST /mint http=$(echo "$MC" | tail -1) (console SA / allowlist?)"
-SJWT=$(curl -sS "$JIT_API/requests/${RID}/status" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("session_jwt",""))' 2>/dev/null)
+# mint requires scope_hash (L1 scope-gate): the canonical SHA-256 over the reviewed scope
+# fields (jit_approver.models.canonical_scope_hash). The approver presents it to prove they
+# minted the EXACT scope they reviewed. Must match the filed request's fields verbatim.
+SCOPE_HASH=$(python3 -c 'import json,hashlib;c={"namespace":"agentic-mcp","verbs":sorted(["create"]),"resources":sorted(["firewall"]),"duration_minutes":10,"sandbox":None,"policy_delta":[]};print(hashlib.sha256(json.dumps(c,sort_keys=True,separators=(",",":")).encode()).hexdigest())')
+MC=$(curl -sSk -w '\n%{http_code}' -H 'Content-Type: application/json' -H "X-Console-SA-Token: ${CTOK}" \
+  -X POST "$JIT_API/requests/${RID}/mint" -d "{\"approver_sub\":\"arsalan-approver\",\"scope_hash\":\"${SCOPE_HASH}\"}" 2>/dev/null)
+echo "$MC" | tail -1 | grep -qE '^20' && ok "minted (approver=arsalan-approver != requester=agent-e2e — SoD)" || bad "POST /mint http=$(echo "$MC" | tail -1) body=$(echo "$MC" | sed '$d' | head -c 160)"
+SJWT=$(curl -sSk "$JIT_API/requests/${RID}/status" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("session_jwt",""))' 2>/dev/null)
 [ -n "$SJWT" ] && ok "capability JWT issued" || bad "no session_jwt from /status"
 
 step "STEP 4 — elevated WRITE with capability (expect 200, real rule)"

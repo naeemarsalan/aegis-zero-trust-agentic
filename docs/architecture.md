@@ -38,6 +38,20 @@ for models. The agent's **brain** also reasons through this plane (a loopback SV
 is credential-less. Models are published as **AI Asset Endpoints** (label `opendatahub.io/genai-asset=true`) and surface
 in **Gen AI Studio** (RHOAI 3.4).
 
+The model plane also registers as **native OpenShift AI Gen AI Studio assets**, with the SVID still the only credential:
+- **AI Asset Endpoints page** — OpenRouter (Claude Sonnet 4) via ConfigMap `gen-ai-aa-custom-model-endpoints` in the
+  `maas` project (labeled `opendatahub.io/dashboard=true`). Its `api_key.secretRef` is left **empty** — no stored model
+  key; the SVID is the credential.
+- **MCP Servers tab** — the MCP gateway (real tools) via ConfigMap `gen-ai-aa-mcp-servers` in `redhat-ods-applications`
+  (the dashboard namespace) + an all-users reader RBAC.
+
+The registered OpenRouter asset is made **SVID-callable** by the standalone **openrouter-bridge** (ns `maas`): it reuses
+the agent-harness image, carries its **own SA-shaped SVID** (`…/ns/maas/sa/openrouter-bridge`), and per request fetches
+a fresh SVID and forwards `/v1/*` → the MaaS model gateway, where Authorino validates it. An **OPA equality branch** on
+`AuthPolicy maas-spiffe-auth` (exact-match, alongside the sandbox-regex branch) admits the bridge's SVID. The OpenRouter
+key stays in Vault, injected server-side — it never reaches the bridge (proven: bridge → gateway = HTTP 200 real
+completion; 403 fail-closed before the OPA edit).
+
 ## 3. Components (current)
 | Layer | Component | Role |
 |---|---|---|
@@ -49,7 +63,8 @@ in **Gen AI Studio** (RHOAI 3.4).
 | JIT / approval | **jit-approver** + **approval-console** | capability minting; browser mint-gate UI (four-eyes) + webshell |
 | Mesh / gateway | **OSSM / Istio**, **data-science-gateway** | Gateway API data planes |
 | AI authn/z + rate-limit | **RHCL** (Kuadrant 1.x: Authorino + Limitador) | SPIFFE JWT validation, OPA authz, token-rate limits |
-| Model serving / MaaS | **OpenShift AI 3.4** (KServe, modelsAsService, Gen AI Studio) | serves models; native AI Asset Endpoints |
+| Model serving / MaaS | **OpenShift AI 3.4** (KServe, modelsAsService, Gen AI Studio) | serves models; native AI Asset Endpoints + MCP Servers tab |
+| Model SVID bridge | **openrouter-bridge** (reuses agent-harness image; own SA SVID) | makes the registered OpenRouter asset SVID-callable (fresh-SVID forward → MaaS gateway) |
 | External model | **OpenRouter** (direct) | external LLM backend; key stays server-side |
 | GitOps | **OpenShift GitOps** (ArgoCD) | app-of-apps deploy |
 | Runtime | **OpenShell** sandbox (Kata/CoCo = hardening roadmap) | per-agent sandbox; SVID via SPIRE Workload API |

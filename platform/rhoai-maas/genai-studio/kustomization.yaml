@@ -1,0 +1,27 @@
+# Gen AI Studio integration overlay — registers OpenRouter (model) and the MCP
+# gateway (tools) as native RHOAI 3.4 Gen AI Studio surfaces, driven by SPIFFE/SVID.
+#
+# What each piece does (all verified live 2026-06-27):
+#   01  gen-ai-aa-mcp-servers CM + RBAC (redhat-ods-applications) -> MCP Servers tab.
+#   02  gen-ai-aa-custom-model-endpoints CM (maas) -> AI Asset Endpoints page (OpenRouter).
+#   04  openrouter-bridge (SA+Deploy+Svc) -> SPIFFE execution backend that makes the
+#       registered OpenRouter asset SVID-callable (fresh SVID/req -> maas-gateway).
+#   05  ClusterSPIFFEID for the bridge SA (cluster-scoped; apply per-doc).
+#
+# NOT included here (managed elsewhere / opt-in):
+#   - The maas-spiffe-auth OPA equality branch for the bridge SA lives with the auth
+#     policy: platform/rhoai-maas/spiffe-auth/06-authpolicy.yaml (durable copy of the
+#     live edit). Keep it there so the model-gateway policy stays in one place.
+#   - 06-llamastackdistribution.yaml is an OPTIONAL stretch (see its header) — not wired
+#     in by default because it is redundant with the proven direct agent path and the
+#     browser-playground MCP path is blocked by the SVID-from-browser gap.
+#
+# Also requires (one-time, not a manifest): namespace `maas` labeled
+#   opendatahub.io/dashboard=true   (makes it selectable as a DS Project).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 01-gen-ai-mcp-servers.yaml
+  - 02-gen-ai-custom-endpoint-openrouter.yaml
+  - 04-openrouter-bridge.yaml
+  - 05-clusterspiffeid-openrouter-bridge.yaml

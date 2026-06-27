@@ -1,0 +1,48 @@
+# Gen AI Studio "AI Asset Endpoints" registration for OpenRouter (frontier Claude),
+# SPIFFE/SVID-gated. No stored model credential lives anywhere in OpenShift AI.
+#
+# The gen-ai BFF reads a ConfigMap named EXACTLY `gen-ai-aa-custom-model-endpoints`
+# from the SELECTED PROJECT namespace (the ?namespace= query param) — so it must live in
+# `maas`, and `maas` must carry opendatahub.io/dashboard=true to be selectable as a DS
+# project. Single data key is literally `config.yaml`. provider_type must be exactly
+# `remote::openai` (LLM) or `remote::passthrough` (embedding). GET /aaa/models makes NO
+# live connectivity call, so an SVID-gated base_url is safe to register.
+#
+# INVARIANT: custom_gen_ai.api_key.secretRef is left empty — there is NO usable model key
+# stored. The agent's JWT-SVID is the only credential, validated by Authorino at the
+# maas-gateway. base_url points at the in-cluster LlamaStack bridge (openrouter-bridge,
+# created in Track B), whose Kyverno-injected maas_brain_proxy sidecar fetches a FRESH SVID
+# per call and forwards to maas-gateway /openrouter with the required Host header. Until the
+# bridge is up the asset is catalog-visible but not yet playground-callable (the proven agent
+# inference path is the in-sandbox maas_brain_proxy -> /openrouter, unaffected).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gen-ai-aa-custom-model-endpoints
+  namespace: maas
+  labels:
+    app.kubernetes.io/part-of: rhoai-maas-spiffe
+data:
+  config.yaml: |
+    providers:
+      inference:
+        - provider_id: openrouter-spiffe
+          provider_type: remote::openai
+          config:
+            base_url: http://openrouter-bridge.maas.svc.cluster.local:8321/v1
+            allowed_models:
+              - anthropic/claude-sonnet-4
+            custom_gen_ai:
+              api_key:
+                secretRef:
+                  name: ""
+                  key: ""
+    registered_resources:
+      models:
+        - provider_id: openrouter-spiffe
+          model_id: anthropic/claude-sonnet-4
+          model_type: llm
+          metadata:
+            display_name: "OpenRouter Claude Sonnet 4 (SPIFFE-gated)"
+            custom_gen_ai:
+              use_cases: "Zero-trust agent reasoning — the SPIFFE SVID is the model credential"
