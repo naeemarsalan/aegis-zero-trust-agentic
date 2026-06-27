@@ -1,0 +1,21 @@
+# Dedicated ClusterSPIFFEID for the openshell SVID proof — issues an openshell
+# SANDBOX-SHAPED SVID (matches the model-gateway OPA regex …/ns/openshell/sandbox/.+)
+# to the proof pod by `app` label, WITHOUT the sandbox-name-hash label that would
+# trigger the syschroot mutation. className is REQUIRED (ZTWIM reconciler), and the
+# mcp-gateway hint matches what svid_bearer requests for the model/tool plane.
+#
+# CLUSTER-SCOPED — apply on its own (per-doc), harness DENIES delete of cluster-scoped.
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: openshell-maas-svid-proof
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  hint: mcp-gateway
+  spiffeIDTemplate: "spiffe://anaeem.na-launch.com/ns/openshell/sandbox/maas-svid-proof"
+  podSelector:
+    matchLabels:
+      app: openshell-maas-svid-proof
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: openshell

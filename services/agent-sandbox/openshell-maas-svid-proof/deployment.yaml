@@ -1,0 +1,91 @@
+# openshell-maas-svid-proof — proves a native-OpenShell-shaped identity consumes
+# OpenShift AI models with ONLY its SPIFFE SVID.
+#
+# WHAT THIS IS: a restricted-v2 Deployment in ns `openshell` that receives an
+# openshell SANDBOX-SHAPED SVID — spiffe://anaeem.na-launch.com/ns/openshell/sandbox/maas-svid-proof
+# — via a dedicated ClusterSPIFFEID (clusterspiffeid.yaml). That sub matches the EXACT OPA
+# regex the model gateway authorizes for native sandboxes (^…/ns/(openshell|agent-sandbox)/sandbox/.+$).
+# It runs the SAME agent-harness:maas-brain image + maas_brain_proxy, SVID-only (MAAS_BRAIN=1,
+# NO model key), so its brain reasons through the OpenShift AI MaaS gateway authenticating with
+# that openshell SVID.
+#
+# WHY a dedicated CSID (not the real openshell-sandbox-extproc one): the real CSID keys on the
+# `agents.x-k8s.io/sandbox-name-hash` label, which also triggers the syschroot Kyverno mutation
+# (a native runc-confinement capability this simplified proof doesn't need). Using `app`-label
+# selection yields the identical SVID SHAPE that the OPA gate authorizes, without the full native
+# confinement admission stack.
+#
+# PROVES: the identity->model leg with the real openshell namespace + an openshell sandbox-shaped SVID.
+# DOES NOT PROVE (honest): the native Sandbox-CR lifecycle, the OpenShell gateway forward-proxy/
+# Landlock egress confinement, the runc setns/MCS + CAP_SYS_CHROOT isolation, or the per-sandbox
+# Vault consent grant. The MODEL path needs no Vault grant (the SVID alone authorizes at the gateway).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshell-maas-svid-proof
+  namespace: openshell
+  labels:
+    app: openshell-maas-svid-proof
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openshell-maas-svid-proof
+  template:
+    metadata:
+      labels:
+        app: openshell-maas-svid-proof
+    spec:
+      serviceAccountName: openshell-maas-svid-proof
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: oci.arsalan.io/nvidia-ida/agent-harness:maas-brain
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export ANTHROPIC_BASE_URL="http://127.0.0.1:${MAAS_BRAIN_LISTEN_PORT:-8787}"
+              python3 -m agent_harness.maas_brain_proxy &
+              echo "openshell-maas-svid-proof: maas_brain_proxy started (SVID-only MaaS brain)"
+              wait
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: MAAS_BRAIN
+              value: "1"
+            - name: MAAS_GATEWAY_URL
+              value: http://maas-gateway-istio.maas.svc:80
+            - name: MAAS_GATEWAY_HOST
+              value: maas.apps.ocp-dev.na-launch.com
+            - name: MAAS_ROUTE_PREFIX
+              value: /openrouter
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: unix:///spiffe-workload-api/spire-agent.sock
+            - name: SVID_REQUIRE_PATH_SUBSTR
+              value: /sandbox/
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true

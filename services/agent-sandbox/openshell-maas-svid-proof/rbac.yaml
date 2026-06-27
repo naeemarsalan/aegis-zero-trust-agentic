@@ -1,0 +1,54 @@
+# SCC + SA for the openshell SVID proof pod.
+#
+# Every pod in ns openshell carrying the sandbox-name-hash label is mutated by the
+# `mutate-openshell-sandbox-syschroot` Kyverno policy (ADR-0017) to add CAP_SYS_CHROOT
+# — the capability a native runc sandbox needs for the provider_spiffe setns-back. No
+# stock SCC permits adding SYS_CHROOT, so the pod is otherwise admission-rejected. This
+# is the SCC a real native OpenShell sandbox SA needs; here we scope it to one SA.
+#
+# It is restricted-v2-equivalent (non-root, MustRunAsRange, MCS-confined) PLUS the single
+# allowed capability SYS_CHROOT — least-privilege, not privileged.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openshell-maas-svid-proof
+  namespace: openshell
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: openshell-sandbox-syschroot
+  labels:
+    app.kubernetes.io/part-of: nvidia-ida
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities:
+  - SYS_CHROOT
+defaultAddCapabilities: []
+requiredDropCapabilities:
+  - ALL
+fsGroup:
+  type: MustRunAs
+runAsUser:
+  type: MustRunAsRange
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+readOnlyRootFilesystem: false
+volumes:
+  - configMap
+  - csi
+  - downwardAPI
+  - emptyDir
+  - ephemeral
+  - persistentVolumeClaim
+  - projected
+  - secret
+users:
+  - system:serviceaccount:openshell:openshell-maas-svid-proof
