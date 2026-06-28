@@ -17,7 +17,10 @@ spec:
             - name: GITEA_DEFAULT_BRANCH
               value: "main"
             - name: VAULT_ADDR
-              value: "https://vault.apps.ocp-dev.na-launch.com"
+              # In-cluster Vault — the external route is degraded (503 on
+              # /v1/auth/jwt/login -> mint 502). This overlay value was reverting
+              # the live base fix; keep both in-cluster.
+              value: "http://vault.vault.svc:8200"
             - name: JIT_ALLOWED_NAMESPACES
               value: "agent-sandbox,agentic-mcp"
             # LANE A threat-model decision: the control is human-gates-and-logs
