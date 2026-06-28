@@ -374,6 +374,27 @@ def _brain_boot_enabled() -> bool:
     )
 
 
+def _maas_svid_mode() -> bool:
+    """True (default) when the brain consumes models via its SPIFFE SVID through the
+    in-pod maas_brain_proxy -> MaaS gateway, instead of a stored LiteLLM key.
+
+    This is the platform invariant: the agent holds NO stored model credential — its
+    JWT-SVID is the only auth, validated by Authorino on the MaaS gateway against
+    SPIRE-OIDC; the model key is injected server-side from Vault by llm-proxy. The
+    proxy fetches a FRESH SVID per request (svid_bearer, reusing SVID_JWT_PATH +
+    SVID_REQUIRE_PATH_SUBSTR=/sandbox/ — the SAME UUID SVID the ext-proc tool plane uses).
+
+    Opt OUT (legacy stored-key LiteLLM path) by setting SANDBOX_BRAIN_MAAS_SVID to a
+    falsey value on the launcher pod.
+    """
+    return os.environ.get("SANDBOX_BRAIN_MAAS_SVID", "true").strip().lower() not in (
+        "false",
+        "0",
+        "no",
+        "off",
+    )
+
+
 def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
     """Build the brain env (goal + allowed-tools + ANTHROPIC_* inference creds).
 
@@ -401,35 +422,62 @@ def _brain_env(goal: str, allowed_tools: str) -> dict[str, str]:
     the caller can fall back to the legacy sleep-infinity sandbox rather than
     boot a brain that has no LLM to talk to.
     """
-    base_url = _read_env_or_file("ANTHROPIC_BASE_URL")
-    if not base_url:
-        logger.warning(
-            "brain_boot_skipped_no_inference",
-            extra={"reason": "ANTHROPIC_BASE_URL not set on launcher pod"},
-        )
-        return {}
-
     env: dict[str, str] = {
         "AGENT_GOAL": goal,
         "AGENT_ALLOWED_TOOLS": allowed_tools,
-        "ANTHROPIC_BASE_URL": base_url,
     }
 
-    # Inference credential: pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN /
-    # ANTHROPIC_API_KEY. Setting both makes the claude CLI warn "Both
-    # ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are set; auth may not work" and
-    # can authenticate with the wrong header. Prefer AUTH_TOKEN (the LiteLLM
-    # virtual-key shape); fall back to API_KEY only if AUTH_TOKEN is unset.
-    auth_token = _read_env_or_file("ANTHROPIC_AUTH_TOKEN")
-    api_key = _read_env_or_file("ANTHROPIC_API_KEY")
-    cred = auth_token or api_key
-    if cred:
-        env["ANTHROPIC_AUTH_TOKEN"] = cred
-    else:
-        logger.warning(
-            "brain_boot_no_inference_key",
-            extra={"reason": "neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN set"},
+    if _maas_svid_mode():
+        # SVID-ONLY model consumption (the invariant-correct default). The claude CLI
+        # is pointed at the in-pod maas_brain_proxy loopback; per request the proxy
+        # STRIPS this throwaway token, fetches a FRESH JWT-SVID (svid_bearer, via the
+        # SVID_JWT_PATH/SVID_REQUIRE_PATH_SUBSTR set below — the SAME UUID SVID the
+        # ext-proc tool plane uses), and forwards to the MaaS gateway, where Authorino
+        # validates the SVID. NO stored model credential is injected anywhere. The
+        # proxy itself is started by _brain_boot_command before the runner.
+        port = _read_env_or_file("MAAS_BRAIN_LISTEN_PORT") or "8787"
+        env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+        # The CLI requires a non-empty token; the proxy drops it and presents the SVID.
+        env["ANTHROPIC_AUTH_TOKEN"] = "svid-injected-by-local-proxy"
+        env["MAAS_BRAIN"] = "1"
+        env["MAAS_BRAIN_LISTEN_PORT"] = port
+        env["MAAS_GATEWAY_URL"] = (
+            _read_env_or_file("MAAS_GATEWAY_URL") or "http://maas-gateway-istio.maas.svc:80"
         )
+        env["MAAS_GATEWAY_HOST"] = (
+            _read_env_or_file("MAAS_GATEWAY_HOST") or "maas.apps.ocp-dev.na-launch.com"
+        )
+        env["MAAS_ROUTE_PREFIX"] = _read_env_or_file("MAAS_ROUTE_PREFIX") or "/openrouter"
+        logger.info(
+            "brain_boot_maas_svid",
+            extra={"reason": "SVID-only model consumption via MaaS gateway (no stored key)"},
+        )
+    else:
+        # LEGACY stored-key path (LiteLLM) — opt-in via SANDBOX_BRAIN_MAAS_SVID=false.
+        # Injects a STORED model credential into the sandbox; prefer the SVID path above.
+        base_url = _read_env_or_file("ANTHROPIC_BASE_URL")
+        if not base_url:
+            logger.warning(
+                "brain_boot_skipped_no_inference",
+                extra={"reason": "ANTHROPIC_BASE_URL not set on launcher pod"},
+            )
+            return {}
+        env["ANTHROPIC_BASE_URL"] = base_url
+        # Inference credential: pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN /
+        # ANTHROPIC_API_KEY. Setting both makes the claude CLI warn "Both
+        # ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are set; auth may not work" and
+        # can authenticate with the wrong header. Prefer AUTH_TOKEN (the LiteLLM
+        # virtual-key shape); fall back to API_KEY only if AUTH_TOKEN is unset.
+        auth_token = _read_env_or_file("ANTHROPIC_AUTH_TOKEN")
+        api_key = _read_env_or_file("ANTHROPIC_API_KEY")
+        cred = auth_token or api_key
+        if cred:
+            env["ANTHROPIC_AUTH_TOKEN"] = cred
+        else:
+            logger.warning(
+                "brain_boot_no_inference_key",
+                extra={"reason": "neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN set"},
+            )
 
     # Model ids — pass through whatever the launcher carries (optional).
     for var in (
@@ -587,9 +635,19 @@ def _brain_boot_command() -> list[str]:
     venv_site = os.environ.get(
         "SANDBOX_BRAIN_VENV_SITE", ""
     ).strip() or "/opt/app-root/lib/python3.11/site-packages"
+    # SVID-only model path: start the maas_brain_proxy DETACHED before the runner so the
+    # runner's claude CLI (ANTHROPIC_BASE_URL=127.0.0.1:<port>) has a listener that fetches
+    # a fresh SVID per call and forwards to the MaaS gateway. A short sleep lets the stdlib
+    # proxy bind before the runner's first model call. NO stored model key is involved.
+    maas_proxy_prefix = ""
+    if _maas_svid_mode():
+        maas_proxy_prefix = (
+            f"nohup setsid {brain_python} -m agent_harness.maas_brain_proxy "
+            ">/tmp/brain-proxy.log 2>&1 </dev/null & sleep 1; "
+        )
     cmd = override or (
         f"export PYTHONPATH=/app/src:{venv_site}${{PYTHONPATH:+:$PYTHONPATH}}; "
-        f"cd /app && nohup setsid {brain_python} -m agent_harness.agent_runner "
+        f"cd /app && {maas_proxy_prefix}nohup setsid {brain_python} -m agent_harness.agent_runner "
         ">/tmp/agent.log 2>&1 </dev/null & "
         'echo "brain pid $!"; exit 0'
     )

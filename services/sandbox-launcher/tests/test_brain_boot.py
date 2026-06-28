@@ -44,8 +44,22 @@ _BRAIN_ENV_KEYS = {
 
 
 def _clear_brain_env() -> dict[str, str]:
-    """Return an env-patch dict that clears every brain var so the test is hermetic."""
-    return {k: "" for k in _BRAIN_ENV_KEYS | {f"{k}_FILE" for k in _BRAIN_ENV_KEYS}}
+    """Return an env-patch dict that clears every brain var so the test is hermetic.
+
+    Defaults the existing tests to the LEGACY stored-key path (SANDBOX_BRAIN_MAAS_SVID
+    =false); the invariant-correct SVID-only default is exercised in TestBrainEnvMaasSvid.
+    """
+    env = {k: "" for k in _BRAIN_ENV_KEYS | {f"{k}_FILE" for k in _BRAIN_ENV_KEYS}}
+    env["SANDBOX_BRAIN_MAAS_SVID"] = "false"
+    for k in (
+        "MAAS_BRAIN",
+        "MAAS_BRAIN_LISTEN_PORT",
+        "MAAS_GATEWAY_URL",
+        "MAAS_GATEWAY_HOST",
+        "MAAS_ROUTE_PREFIX",
+    ):
+        env[k] = ""
+    return env
 
 
 class TestBrainBootEnabled:
@@ -220,6 +234,69 @@ class TestBrainEnv:
         assert env["SVID_JWT_PATH"] == "/custom/svid.jwt"
 
 
+class TestBrainEnvMaasSvid:
+    """The SVID-only model path (the invariant-correct DEFAULT): NO stored model
+    credential is injected; the brain reaches models via the in-pod maas_brain_proxy."""
+
+    def _maas_env(self, **extra) -> dict[str, str]:
+        env = _clear_brain_env()
+        env["SANDBOX_BRAIN_MAAS_SVID"] = "true"
+        env.update(extra)
+        return env
+
+    def test_mode_default_on_and_toggleable(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SANDBOX_BRAIN_MAAS_SVID", None)
+            assert openshell._maas_svid_mode() is True
+        for val in ("false", "0", "no", "off", "FALSE"):
+            with patch.dict(os.environ, {"SANDBOX_BRAIN_MAAS_SVID": val}):
+                assert openshell._maas_svid_mode() is False
+
+    def test_no_stored_key_even_when_present(self):
+        # A stored LiteLLM key sits in the launcher env, but SVID mode MUST NOT forward it.
+        env = self._maas_env(
+            ANTHROPIC_BASE_URL="http://172.16.2.251:4000",
+            ANTHROPIC_API_KEY="sk-litellm-SECRET",
+            ANTHROPIC_AUTH_TOKEN="sk-litellm-SECRET2",
+        )
+        with patch.dict(os.environ, env):
+            out = openshell._brain_env(goal="g", allowed_tools="Bash")
+        # the brain talks to the loopback SVID proxy, NOT LiteLLM, with a throwaway token
+        assert out["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
+        assert out["ANTHROPIC_AUTH_TOKEN"] == "svid-injected-by-local-proxy"
+        assert out["MAAS_BRAIN"] == "1"
+        assert out["MAAS_GATEWAY_URL"] == "http://maas-gateway-istio.maas.svc:80"
+        assert out["MAAS_GATEWAY_HOST"] == "maas.apps.ocp-dev.na-launch.com"
+        assert out["MAAS_ROUTE_PREFIX"] == "/openrouter"
+        assert "ANTHROPIC_API_KEY" not in out
+        # the stored key VALUE never appears anywhere in the env map
+        assert "sk-litellm-SECRET" not in repr(out)
+        # shared ext-proc SVID selection knobs still present
+        assert out["SVID_REQUIRE_PATH_SUBSTR"] == "/sandbox/"
+
+    def test_builds_env_without_launcher_base_url(self):
+        # SVID mode is self-contained — no launcher ANTHROPIC_BASE_URL is required.
+        with patch.dict(os.environ, self._maas_env()):
+            out = openshell._brain_env(goal="g", allowed_tools="Bash")
+        assert out != {}
+        assert out["MAAS_BRAIN"] == "1"
+        assert out["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
+
+    def test_boot_command_starts_proxy_before_runner(self):
+        env = self._maas_env(
+            SANDBOX_BRAIN_COMMAND="",
+            SANDBOX_BRAIN_PYTHON="",
+            SANDBOX_BRAIN_VENV_SITE="",
+        )
+        with patch.dict(os.environ, env):
+            body = openshell._brain_boot_command()[2]
+        assert "agent_harness.maas_brain_proxy" in body
+        # the SVID proxy is started BEFORE the runner
+        assert body.index("maas_brain_proxy") < body.index("agent_harness.agent_runner")
+        # and the detach (brain-survival) is preserved
+        assert "nohup setsid" in body
+
+
 class TestBrainBootCommand:
     """The native ExecSandbox boot command (NOT the reserved OPENSHELL_SANDBOX_COMMAND)."""
 
@@ -230,6 +307,8 @@ class TestBrainBootCommand:
                 "SANDBOX_BRAIN_COMMAND": "",
                 "SANDBOX_BRAIN_PYTHON": "",
                 "SANDBOX_BRAIN_VENV_SITE": "",
+                # legacy path: no maas_brain_proxy prefix (SVID default covered separately)
+                "SANDBOX_BRAIN_MAAS_SVID": "false",
             },
         ):
             cmd = openshell._brain_boot_command()

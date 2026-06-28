@@ -243,6 +243,22 @@ _NATIVE_BRAIN_FORWARD_ENV: tuple[str, ...] = (
 )
 
 
+def _maas_svid_mode() -> bool:
+    """True (default) when the brain consumes models via its SPIFFE SVID through the
+    in-pod maas_brain_proxy -> MaaS gateway, instead of a stored LiteLLM key. Mirrors
+    sandbox_launcher.openshell._maas_svid_mode. Opt out (legacy stored-key path) with
+    SANDBOX_BRAIN_MAAS_SVID set falsey on the console pod.
+    """
+    import os as _os
+
+    return _os.environ.get("SANDBOX_BRAIN_MAAS_SVID", "true").strip().lower() not in (
+        "false",
+        "0",
+        "no",
+        "off",
+    )
+
+
 def _native_brain_env(goal: str, actor: str, session_id: str) -> dict[str, str]:
     """Build the env dict for the native-sandbox brain exec.
 
@@ -287,11 +303,35 @@ def _native_brain_env(goal: str, actor: str, session_id: str) -> dict[str, str]:
         "CLAUDE_CLI_PATH": _os.environ.get("CLAUDE_CLI_PATH", "").strip()
         or "/usr/local/bin/claude",
     }
-    # Inference creds + model ids — forwarded from the console process env.
-    # Never logged. Pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY:
-    # setting both makes the claude CLI warn "auth may not work" and can pick the
-    # wrong header. Prefer AUTH_TOKEN (the LiteLLM virtual-key shape); fall back to
-    # API_KEY only if AUTH_TOKEN is unset.
+    if _maas_svid_mode():
+        # SVID-ONLY model consumption (invariant default): point the claude CLI at the
+        # in-pod maas_brain_proxy loopback. NO stored model credential is injected; the
+        # proxy strips this throwaway token, fetches a fresh JWT-SVID per call (reusing
+        # SVID_JWT_PATH/SVID_REQUIRE_PATH_SUBSTR above), and the MaaS gateway authorizes
+        # it. The proxy is started before the runner in _do_native_k8s_exec.
+        port = _os.environ.get("MAAS_BRAIN_LISTEN_PORT", "").strip() or "8787"
+        env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+        env["ANTHROPIC_AUTH_TOKEN"] = "svid-injected-by-local-proxy"
+        env["MAAS_BRAIN"] = "1"
+        env["MAAS_BRAIN_LISTEN_PORT"] = port
+        env["MAAS_GATEWAY_URL"] = (
+            _os.environ.get("MAAS_GATEWAY_URL", "").strip() or "http://maas-gateway-istio.maas.svc:80"
+        )
+        env["MAAS_GATEWAY_HOST"] = (
+            _os.environ.get("MAAS_GATEWAY_HOST", "").strip() or "maas.apps.ocp-dev.na-launch.com"
+        )
+        env["MAAS_ROUTE_PREFIX"] = _os.environ.get("MAAS_ROUTE_PREFIX", "").strip() or "/openrouter"
+        # Model-id passthrough only — never a credential or a base_url override.
+        for var in _NATIVE_BRAIN_FORWARD_ENV:
+            if var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+                continue
+            val = _os.environ.get(var, "").strip()
+            if val:
+                env[var] = val
+        return env
+
+    # LEGACY stored-key path (opt-in via SANDBOX_BRAIN_MAAS_SVID=false). Injects a STORED
+    # model credential. Never logged. Pass EXACTLY ONE of ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY.
     auth_token = _os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
     api_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
     cred = auth_token or api_key
@@ -345,7 +385,19 @@ def _do_native_k8s_exec(
     # Build the inline `KEY=value ` prefix; shlex.quote every value so a goal or
     # username with shell metacharacters cannot break the sh -c string.
     env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-    cmd = f"cd /app && PYTHONPATH=/app/src {env_prefix} python3 -m agent_harness.agent_runner"
+    # SVID-only model path: start the maas_brain_proxy (SVID injector) in the background
+    # before the runner so the runner's ANTHROPIC_BASE_URL=127.0.0.1:<port> has a listener.
+    # NO stored model key is involved. A short sleep lets the stdlib proxy bind.
+    maas_prefix = ""
+    if _maas_svid_mode():
+        maas_prefix = (
+            f"PYTHONPATH=/app/src {env_prefix} python3 -m agent_harness.maas_brain_proxy "
+            ">/tmp/brain-proxy.log 2>&1 & sleep 1; "
+        )
+    cmd = (
+        f"cd /app && {maas_prefix}PYTHONPATH=/app/src {env_prefix} "
+        "python3 -m agent_harness.agent_runner"
+    )
 
     # Audit (names only — never the secret VALUES).
     logger.info(
