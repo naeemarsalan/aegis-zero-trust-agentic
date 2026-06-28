@@ -69,7 +69,7 @@ you've validated yourself.
 | T6 | Browser **approval console** (mint-gate UI) | ✅ | `console.apps.ocp-dev…`; approve-via-UI → mint issued | — (please confirm) |
 | T7 | Per-human SoD via Keycloak (oauth2-proxy) | ✅ | real OIDC login as `approver-alice`; approver_sub = real human | — (please confirm) |
 | T8 | **Webshell** into the agent sandbox | ✅ | xterm.js-over-WebSocket PTY `oc exec` into the pod | — (please confirm) |
-| T9 | Tamper-evident WORM audit / attribution | 🟡 | **Substrate deployed + WORM-correct (2026-06-28), but the app data-path is not yet wired:** the CNPG `jit-approver-db` cluster is up with a tamper-evident hash-chain ledger (`jit_ledger`: `seq/prev_hash/entry_hash/sig`) and the WORM property is **enforced at the DB privilege level** (`app` can INSERT but **cannot UPDATE/DELETE** `jit_ledger` — verified). jit-approver runs `JIT_STORE_BACKEND=postgres`, connects, and passes `startup_check`. **BUT** the request/mint **handlers still use the in-memory `session_store` dict** (9 sites in `api.py`) — `get_store()` is used only for the startup health-check, so nothing actually persists to the tables yet (ledger = 0 rows after a successful mint). Remaining: rewire the 9 handler sites to the async `PostgresStore`. Found+fixed along the way: missing `app` GRANTs in the schema + the egress NetworkPolicy left out of the kustomization. | — |
+| T9 | Tamper-evident WORM audit / attribution | ✅ | **Implemented + deployed + proven (2026-06-28).** The WORM ledger had no writer at all (the hash-chain table existed but `read/advance_ledger_head` were never called and audit only logged). Implemented `Store.append_ledger` (canonical-JSON hash chain `entry_hash=sha256(prev_head+payload)`; postgres = one `SELECT … FOR UPDATE` + INSERT + head UPDATE), a cached store singleton, a fail-safe `ledger.record()`, and wired it adjacent to every `audit.emit_*` (jit_request/approved/issued/denied). Deployed on CNPG `jit-approver-db` (`jit-approver:worm-ledger-20260628`). **Verified live:** a mint wrote `jit_request`→`jit_approved` to `jit_ledger`; **`chain_ok=true`** (each `prev_hash` == prior `entry_hash`); rows **survived a pod restart** (durable); **`app_can_update_ledger=false`** (WORM at the DB privilege level). Justifications hashed, never stored raw. 56 ledger/persistence tests pass. *Caveat:* the `jit_issued` row in a single mint is currently gated by the **ACM-hub forcing the external Vault route** (503 → mint 502) — a hub-bound infra issue (see §7), not a ledger issue. | — (please confirm) |
 | T10 | **Real per-user OBO** (downstream sees a real per-user Keycloak token, not the static-token fallback) | 🟡 | proven viable in isolated realm; **NOT applied** — PoC uses static-token fallback | — (please confirm) |
 
 ### 5b. Model plane (MaaS)
@@ -118,6 +118,13 @@ reconciler — a durable fix then needs a hub-side edit (human).* Latest commit 
 - **🟡 Access: the `~/.kube/ocp-dev.kubeconfig` user token is expired** (`oc` → Unauthorized). Use the break-glass
   cert kubeconfig `~/.kube/ocp-dev-admin.kubeconfig` (system:admin) until OAuth re-issues a token. (This also blocks
   the Gen AI Studio BFF user-token check — M9 was verified via the underlying ConfigMaps instead.)
+- **🔴 ACM-hub reverts `VAULT_ADDR` to the degraded external route (hub-bound).** The `mcp-gateway`
+  deployments (`jit-approver`, `ext-proc-delegation`) are reconciled by an **ACM-hub ManifestWork** that
+  re-applies `VAULT_ADDR=https://vault.apps.ocp-dev…` within **seconds** of any live `oc set env`/`oc patch`
+  (confirmed). That external Vault route returns **503 on `/v1/auth/jwt/login`** → jit-approver's mint
+  credential-issuance **502s**. The repo manifests are now in-cluster (`http://vault.vault.svc:8200`), but the
+  live override needs a **hub-side edit** (no hub access from this cluster). Until then, the tool-journey
+  `mint → elevated-write` and the ledger's `jit_issued` row work only in the brief window after a manual fix.
 - master saturation (root of earlier flaps) — addressed via `mastersSchedulable=false`.
 - **Tool-journey mint → elevated-write is infra-gated, not code-gated.** The model plane is fully green this session
   (401/200 + the bridge real completion + the agent brain). The tool journey's read-200 and write-403 were re-proven
