@@ -81,6 +81,15 @@ BEGIN
     -- Only execute if the role exists (so this script is safe to run in dev
     -- environments without a CNPG cluster where the 'app' role may not exist).
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+        -- CNPG runs this schema as the superuser, so the tables are owned by
+        -- 'postgres' — the application role 'app' has NO access until granted.
+        -- Without these GRANTs the app's startup_check sees the tables as
+        -- "not found" (no privilege) and crashloops.
+        GRANT USAGE ON SCHEMA public TO app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app;
+        GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app;
+        -- WORM: the ledger is APPEND-ONLY for the application role (revoke AFTER
+        -- the blanket grant above so a compromised app can't rewrite history).
         REVOKE UPDATE, DELETE ON jit_ledger FROM app;
     END IF;
 END

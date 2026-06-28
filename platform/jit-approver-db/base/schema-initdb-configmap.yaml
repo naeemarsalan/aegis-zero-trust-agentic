@@ -60,6 +60,13 @@ data:
     DO $$
     BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+            -- CNPG runs this as the superuser (tables owned by 'postgres'); the
+            -- 'app' role needs explicit grants or startup_check sees them as
+            -- "not found" and crashloops.
+            GRANT USAGE ON SCHEMA public TO app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app;
+            GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app;
+            -- WORM: ledger is append-only for 'app' (revoke AFTER the grant).
             REVOKE UPDATE, DELETE ON jit_ledger FROM app;
         END IF;
     END

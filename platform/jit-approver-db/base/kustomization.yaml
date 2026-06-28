@@ -19,3 +19,6 @@ namespace: mcp-gateway
 resources:
   - schema-initdb-configmap.yaml
   - cnpg-cluster.yaml
+  # jit-approver <-> CNPG DB on :5432 (mcp-gateway is default-deny egress —
+  # without these the app's postgres connect hangs and it crashloops).
+  - networkpolicy-egress.yaml

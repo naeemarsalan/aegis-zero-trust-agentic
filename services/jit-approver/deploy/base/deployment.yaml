@@ -95,7 +95,10 @@ spec:
             - name: GITEA_DEFAULT_BRANCH
               value: "main"
             - name: VAULT_ADDR
-              value: "https://vault.apps.ocp-dev.na-launch.com"
+              # In-cluster Vault — the external route (vault.apps.ocp-dev…) is
+              # degraded (503/hang on /v1/auth/jwt/login -> mint credential-issuance
+              # failures). Same fix as ext-proc-delegation.
+              value: "http://vault.vault.svc:8200"
             - name: VAULT_JWT_ROLE
               value: "jit-approver"
             - name: VAULT_JWT_AUTH_PATH
@@ -126,19 +129,19 @@ spec:
             # L0: persistence backend (default memory = byte-for-byte live path unchanged).
             # Set to 'postgres' to enable the durable CNPG backend (requires .[durable]).
             - name: JIT_STORE_BACKEND
-              value: "memory"
+              value: "postgres"
             # L0: fail-closed key guard (default false = PoC ephemeral fallback preserved).
             # Set to 'true' in production to crashloop if the Vault-injected PEM is missing.
             - name: JIT_REQUIRE_STABLE_KEY
               value: "false"
-            # L0: DATABASE_URL — consumed ONLY when JIT_STORE_BACKEND=postgres.
-            # Sourced from CNPG-generated secret jit-approver-db-app (key 'uri').
-            # Commented out by default; uncomment + set JIT_STORE_BACKEND=postgres to enable.
-            # - name: DATABASE_URL
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: jit-approver-db-app
-            #       key: uri
+            # L0: DATABASE_URL — consumed when JIT_STORE_BACKEND=postgres (above).
+            # Sourced from the CNPG-generated secret jit-approver-db-app (key 'uri'),
+            # created by platform/jit-approver-db (the WORM ledger DB).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: jit-approver-db-app
+                  key: uri
             # ---------------------------------------------------------------------------
             # L1: console-side mint gate (ADR-0007)
             # ---------------------------------------------------------------------------
