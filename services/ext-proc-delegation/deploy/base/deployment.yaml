@@ -95,9 +95,12 @@ spec:
             - name: EXPECTED_AUDIENCE
               value: "mcp-gateway"
             - name: VAULT_ADDR
-              value: "https://vault.apps.ocp-dev.na-launch.com"
+              # In-cluster Vault service — the EXTERNAL route (vault.apps.ocp-dev…)
+              # is degraded/flaky (login timeouts -> grant_vault_error on delegated
+              # reads), so ext-proc talks to Vault in-cluster (same as jit-approver).
+              value: "http://vault.vault.svc:8200"
             - name: VAULT_SKIP_VERIFY
-              # Vault route cert is not in ext-proc's trust store (PoC).
+              # Harmless over http; retained for the optional https route fallback.
               value: "true"
             - name: VAULT_JWT_ROLE
               value: "ext-proc-delegation"
