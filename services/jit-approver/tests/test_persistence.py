@@ -231,6 +231,113 @@ class TestInMemoryStore:
         assert session["state"] == "pending"  # untouched
 
 
+
+# ===========================================================================
+# InMemoryStore.append_ledger — hash-chain integrity
+# ===========================================================================
+
+
+class TestInMemoryAppendLedger:
+    """Tamper-evident hash-chain tests for InMemoryStore.append_ledger."""
+
+    @pytest.fixture(autouse=True)
+    def store(self):
+        from jit_approver.persistence.memory import InMemoryStore
+        self._store = InMemoryStore()
+        return self._store
+
+    async def test_seq_numbers_1_2_3(self):
+        """Three consecutive appends yield seq 1, 2, 3 (1-based, monotone)."""
+        s1 = await self._store.append_ledger({"event": "a"})
+        s2 = await self._store.append_ledger({"event": "b"})
+        s3 = await self._store.append_ledger({"event": "c"})
+        assert s1 == 1
+        assert s2 == 2
+        assert s3 == 3
+
+    async def test_chain_prev_hash_links(self):
+        """Entry N's prev_hash equals entry N-1's entry_hash (chain linkage)."""
+        await self._store.append_ledger({"event": "first"})
+        await self._store.append_ledger({"event": "second"})
+        await self._store.append_ledger({"event": "third"})
+        entries = self._store._ledger_entries
+        assert len(entries) == 3
+        # First entry: prev_hash is "" (genesis)
+        assert entries[0]["prev_hash"] == ""
+        # Each subsequent entry's prev_hash == prior entry's entry_hash.
+        assert entries[1]["prev_hash"] == entries[0]["entry_hash"]
+        assert entries[2]["prev_hash"] == entries[1]["entry_hash"]
+
+    async def test_same_payload_yields_different_entry_hash(self):
+        """Identical payloads produce different entry_hash values (prev_hash differs).
+
+        This proves that the hash-chain property holds: replaying the same event
+        twice cannot produce colliding hashes, because each entry commits to its
+        position in the chain via prev_hash.
+        """
+        payload = {"event": "duplicate", "session_id": "abc"}
+        await self._store.append_ledger(payload)
+        await self._store.append_ledger(payload)
+        entries = self._store._ledger_entries
+        assert entries[0]["entry_hash"] != entries[1]["entry_hash"], (
+            "Same payload at different positions must produce different entry_hash "
+            "because prev_hash is different"
+        )
+
+    async def test_head_advances_after_append(self):
+        """read_ledger_head() returns the seq and entry_hash of the latest entry."""
+        seq_ret = await self._store.append_ledger({"event": "x"})
+        seq_head, hash_head = await self._store.read_ledger_head()
+        assert seq_head == 1
+        assert seq_ret == 1
+        assert hash_head == self._store._ledger_entries[0]["entry_hash"]
+
+    async def test_verifiable_chain_recomputation(self):
+        """Recomputing entry_hash from (prev_hash + payload_json) matches the stored value.
+
+        This is the tamper-detection property: an auditor can re-derive every
+        entry_hash independently and detect any in-place modification.
+        """
+        import hashlib
+        payloads = [
+            {"event": "jit_request", "session_id": "s1"},
+            {"event": "jit_approved", "session_id": "s1"},
+            {"event": "jit_issued", "session_id": "s1"},
+        ]
+        for p in payloads:
+            await self._store.append_ledger(p)
+
+        for entry in self._store._ledger_entries:
+            recomputed = hashlib.sha256(
+                (entry["prev_hash"] + entry["payload_json"]).encode()
+            ).hexdigest()
+            assert recomputed == entry["entry_hash"], (
+                f"Chain verification failed at seq={entry['seq']}: "
+                f"recomputed={recomputed!r} stored={entry['entry_hash']!r}"
+            )
+
+    async def test_genesis_entry_prev_hash_is_empty(self):
+        """First ledger entry has prev_hash == '' (no predecessor)."""
+        await self._store.append_ledger({"event": "genesis"})
+        assert self._store._ledger_entries[0]["prev_hash"] == ""
+
+    async def test_concurrent_appends_produce_consistent_chain(self):
+        """Concurrent appends under asyncio must still produce a consistent chain
+        (no lost updates, seq is contiguous, each prev_hash == prior entry_hash)."""
+        payloads = [{"event": "concurrent", "n": i} for i in range(10)]
+        await asyncio.gather(*[self._store.append_ledger(p) for p in payloads])
+
+        entries = sorted(self._store._ledger_entries, key=lambda e: e["seq"])
+        assert len(entries) == 10
+        # seq values are 1..10 (no gaps).
+        assert [e["seq"] for e in entries] == list(range(1, 11))
+        # Chain linkage holds for every adjacent pair.
+        for i in range(1, len(entries)):
+            assert entries[i]["prev_hash"] == entries[i - 1]["entry_hash"], (
+                f"Chain broken between seq={entries[i-1]['seq']} and seq={entries[i]['seq']}"
+            )
+
+
 # ===========================================================================
 # Compat shim tests (store.py module-level names)
 # ===========================================================================
@@ -418,6 +525,14 @@ class TestFailClosedSigningKey:
 
 
 class TestGetStoreFactory:
+    @pytest.fixture(autouse=True)
+    def _reset_singleton(self):
+        """Ensure each factory test starts and ends with a clean singleton."""
+        from jit_approver.persistence import reset_store_singleton
+        reset_store_singleton()
+        yield
+        reset_store_singleton()
+
     def test_unknown_backend_raises_value_error(self):
         with patch.dict(os.environ, {"JIT_STORE_BACKEND": "redis"}):
             from jit_approver.persistence import get_store

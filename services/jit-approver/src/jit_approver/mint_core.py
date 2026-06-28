@@ -38,11 +38,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from fastapi import HTTPException
 
-from jit_approver import audit
+from jit_approver import audit, ledger
 from jit_approver.models import EscalationRequest, SessionState, canonical_scope_hash
 from jit_approver.store import session_store, store_lock
 from jit_approver.vault import issue_credentials
@@ -208,6 +209,13 @@ async def _atomic_issue(
 
     # Outside the lock: audit then issue.
     audit.emit_approved(session_id, approver_sub, pr_number or 0)
+    await ledger.record({
+        "event": "jit_approved",
+        "session_id": session_id,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "approver_sub": approver_sub,
+        "pr_number": pr_number or 0,
+    })
     logger.info(
         "mint.issuing",
         extra={"session_id": session_id, "approver_sub": approver_sub, "pr_number": pr_number},
@@ -239,5 +247,13 @@ async def _atomic_issue(
         reviewed_req.duration_minutes,
         session_store[session_id].get("expires_at", ""),
     )
+    await ledger.record({
+        "event": "jit_issued",
+        "session_id": session_id,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "namespace": reviewed_req.namespace,
+        "duration_minutes": reviewed_req.duration_minutes,
+        "expires_at": session_store[session_id].get("expires_at", ""),
+    })
 
     return session_store[session_id]

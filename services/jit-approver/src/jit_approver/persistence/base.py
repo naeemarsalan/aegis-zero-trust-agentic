@@ -110,6 +110,24 @@ class Store(ABC):
         (lost a race; caller must re-read and retry).
         """
 
+    @abstractmethod
+    async def append_ledger(self, payload: dict[str, Any]) -> int:
+        """Append a WORM entry to the tamper-evident hash-chain ledger.
+
+        Algorithm:
+          1. Canonicalise payload as ``json.dumps(payload, sort_keys=True, separators=(",",":"))``.
+          2. Compute ``entry_hash = sha256((prev_head_hash + payload_json).encode()).hexdigest()``.
+          3. Insert the entry with ``prev_hash = prev_head_hash``.
+          4. Advance the ledger head to ``(new_seq, entry_hash)`` atomically.
+
+        The chain is append-only: entry N's ``prev_hash`` always equals entry
+        N-1's ``entry_hash``.  The postgres backend holds a ``FOR UPDATE`` lock
+        on ``jit_ledger_head`` for the duration of the transaction so concurrent
+        appends are serialised without a CAS retry loop.
+
+        Returns the new sequence number (1-based, monotonically increasing).
+        """
+
     # ------------------------------------------------------------------
     # Startup health check
     # ------------------------------------------------------------------

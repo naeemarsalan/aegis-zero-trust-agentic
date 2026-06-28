@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -28,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from jit_approver import audit
+from jit_approver import audit, ledger
 from jit_approver.gitea import create_approval_pr
 from jit_approver.mint_core import _atomic_issue, _enforce_dual_control, _verify_scope_hash
 from jit_approver.models import (
@@ -131,6 +132,12 @@ async def _on_validation_error(request: Request, exc: RequestValidationError) ->
 
     if request.url.path == "/requests":
         audit.emit_denied("pre-session", f"request rejected by scope ceiling: {exc.errors()}")
+        await ledger.record({
+            "event": "jit_denied",
+            "session_id": "pre-session",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "reason": "request rejected by scope ceiling",
+        })
     return JSONResponse(status_code=422, content=jsonable_encoder({"detail": exc.errors()}))
 
 
@@ -157,6 +164,16 @@ async def create_request(req: EscalationRequest) -> dict[str, str]:
         resources=req.resources,
         justification=req.justification,
     )
+    await ledger.record({
+        "event": "jit_request",
+        "session_id": session_id,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "requester_sub": req.requester_sub,
+        "namespace": req.namespace,
+        "verbs": req.verbs,
+        "resources": req.resources,
+        "justification_hash": audit._hash(req.justification),
+    })
 
     # Create Gitea PR
     try:
@@ -611,6 +628,12 @@ async def mint_session(session_id: str, body: MintRequest, request: Request) -> 
     session = session_store.get(session_id)
     if session is None:
         audit.emit_denied(session_id, "mint: session not found")
+        await ledger.record({
+            "event": "jit_denied",
+            "session_id": session_id,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "reason": "mint: session not found",
+        })
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     # Step 3: check state — only pending/approved may be minted.
@@ -643,6 +666,14 @@ async def mint_session(session_id: str, body: MintRequest, request: Request) -> 
             session_id,
             f"M5 self-approval denied: approver_sub={body.approver_sub!r} requester_sub={requester_sub!r}",
         )
+        await ledger.record({
+            "event": "jit_denied",
+            "session_id": session_id,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "approver_sub": body.approver_sub,
+            "requester_sub": requester_sub,
+            "reason": "M5 self-approval denied",
+        })
         raise
 
     # Step 6: atomic issuance.

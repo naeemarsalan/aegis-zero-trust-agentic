@@ -32,6 +32,7 @@ Fail-closed startup:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any
@@ -251,6 +252,41 @@ class PostgresStore(Store):
                 expected_seq,
             )
         return row is not None
+
+    async def append_ledger(self, payload: dict[str, Any]) -> int:
+        """Append a WORM entry in a single serialised transaction.
+
+        ``SELECT … FOR UPDATE`` on ``jit_ledger_head`` locks the singleton row
+        so concurrent appends are totally ordered without a CAS retry loop.
+        The INSERT uses the BIGSERIAL default so the DB assigns ``seq``.
+        The app role's REVOKE ensures no UPDATE/DELETE is possible on
+        ``jit_ledger`` even if a bug attempted it.
+        """
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                head = await conn.fetchrow(
+                    "SELECT seq, head_hash FROM jit_ledger_head WHERE id = 1 FOR UPDATE"
+                )
+                prev_hash = (head["head_hash"] or "") if head else ""
+                entry_hash = hashlib.sha256(
+                    (prev_hash + payload_json).encode()
+                ).hexdigest()
+                new_row = await conn.fetchrow(
+                    "INSERT INTO jit_ledger(prev_hash, entry_hash, payload_json) "
+                    "VALUES($1, $2, $3) RETURNING seq",
+                    prev_hash,
+                    entry_hash,
+                    payload_json,
+                )
+                new_seq: int = new_row["seq"]
+                await conn.execute(
+                    "UPDATE jit_ledger_head SET seq = $1, head_hash = $2 WHERE id = 1",
+                    new_seq,
+                    entry_hash,
+                )
+        return new_seq
 
     # ------------------------------------------------------------------
     # Async lock property (lightweight; DB UPDATE is the real guard)

@@ -10,6 +10,8 @@ is identical to the original asyncio.Lock-under-webhook pattern.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from typing import Any
 
 from jit_approver.persistence.base import Store
@@ -25,6 +27,8 @@ class InMemoryStore(Store):
         # Ledger head singleton: (seq, head_hash)
         self._ledger_seq: int = 0
         self._ledger_hash: str = ""
+        # Ordered list of ledger entries for chain verification.
+        self._ledger_entries: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -108,6 +112,27 @@ class InMemoryStore(Store):
             self._ledger_seq = new_seq
             self._ledger_hash = new_hash
             return True
+
+    async def append_ledger(self, payload: dict[str, Any]) -> int:
+        """Append a WORM entry; advance the hash-chain head atomically under _lock."""
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        async with self._lock:
+            prev_hash = self._ledger_hash
+            entry_hash = hashlib.sha256(
+                (prev_hash + payload_json).encode()
+            ).hexdigest()
+            new_seq = self._ledger_seq + 1
+            self._ledger_entries.append(
+                {
+                    "seq": new_seq,
+                    "prev_hash": prev_hash,
+                    "entry_hash": entry_hash,
+                    "payload_json": payload_json,
+                }
+            )
+            self._ledger_seq = new_seq
+            self._ledger_hash = entry_hash
+            return new_seq
 
     # ------------------------------------------------------------------
     # Startup check (no-op for in-memory)
