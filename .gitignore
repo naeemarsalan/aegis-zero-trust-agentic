@@ -35,3 +35,6 @@ dist-scalprum/
 # Cluster secrets (Vault unseal/root) — never commit
 environment/.env.ocp-dev
 environment/.env*
+
+# Compiled ida-cli binary — build artifact, never commit
+services/ida-cli/ida
