@@ -122,12 +122,13 @@ truth, and a hub-side reconciler that currently re-pins one Vault address. Where
 - The platform's whole point is that **the agent stores nothing** — its only credential is a
   short-lived SPIFFE SVID, and every elevation is human-approved, scoped, and auto-expiring.
 
-## Deploy (sketch)
+## Install
 
-GitOps-first: the app-of-apps under `gitops/` reconciles the `platform/` components; secret bootstrap
-(Vault init/unseal, Keycloak realm, per-service Vault policies) is documented under `platform/vault/`.
-The deterministic regression anchor `hack/test-pfsense-jit-ocp-dev.sh` proves the tool journey once the
-substrate is up.
+**→ [`docs/install-guide.md`](docs/install-guide.md)** — the detailed, step-by-step install guide
+(prerequisites → node/storage prep → GitOps app-of-apps → Vault/Keycloak secret bootstrap → model plane
+→ verify), including every known gotcha. GitOps-first (the app-of-apps under `gitops/` reconciles the
+supported components) with a few imperative secret-bootstrap steps; the deterministic anchor
+`hack/test-pfsense-jit-ocp-dev.sh` proves the tool journey once the substrate is up.
 
 ---
 
