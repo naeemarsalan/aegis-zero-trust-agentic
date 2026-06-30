@@ -8,3 +8,4 @@ resources:
   - zero-trust-workload-identity-manager
   - rhbk
   - sandboxed-containers
+  - openshift-gitops

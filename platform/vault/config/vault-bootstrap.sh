@@ -8,9 +8,23 @@
 #
 # USAGE:
 #   source environment/.env          # provides PFSENSE_API_URL, PFSENSE_API_KEY
+#                                     # (and optionally OPENROUTER_API_KEY,
+#                                     #  MCP_API_TOKENS_WRITE for the model plane)
 #   export VAULT_ADDR=https://vault.apps.ocp-dev.na-launch.com
 #   export VAULT_TOKEN=<root-token>  # from `vault operator init` output
 #   bash platform/vault/config/vault-bootstrap.sh
+#
+# NOTE ON VAULT_ADDR: this bootstrap talks to Vault directly (root token), so it
+# is run via `oc port-forward svc/vault -n vault 8200` (VAULT_ADDR=http://127.0.0.1:8200)
+# or by exec'ing inside the vault pod. The PLATFORM SERVICES, by contrast, reach
+# Vault on the IN-CLUSTER address http://vault.vault.svc:8200 (the external
+# vault.apps… route is degraded) — never bake the external route into a service.
+#
+# MODEL PLANE (MaaS): this script also seeds secret/mcp-tools/openrouter (the
+# OpenRouter key the llm-proxy reads server-side) + secret/mcp-tools/mcp-tokens-write
+# (the write-scoped token twin), and writes the llm-proxy policy + Kubernetes auth
+# role so the maas/llm-proxy SA can read that key. The agent SVID is the model
+# credential — the key never leaves Vault/llm-proxy.
 #
 # IDEMPOTENCY: Most `vault write` calls are idempotent (PUT semantics).
 #              `vault auth enable` and `vault secrets enable` will error if the
@@ -67,8 +81,11 @@ vault policy write ext-proc       "${SCRIPT_DIR}/ext-proc.hcl"
 vault policy write jit-approver   "${SCRIPT_DIR}/jit-approver.hcl"
 vault policy write agent-deny     "${SCRIPT_DIR}/agent-deny.hcl"
 vault policy write agent-sandbox  "${SCRIPT_DIR}/agent-sandbox.hcl"
+# MaaS model-plane: llm-proxy reads the OpenRouter key server-side (the SVID is
+# the model credential — the agent never holds the key).
+vault policy write llm-proxy      "${SCRIPT_DIR}/llm-proxy.hcl"
 
-log "Policies written: ext-proc, jit-approver, agent-deny, agent-sandbox"
+log "Policies written: ext-proc, jit-approver, agent-deny, agent-sandbox, llm-proxy"
 
 # ── 4. JWT/OIDC auth (SPIRE OIDC issuer) ─────────────────────────────────────
 log "Enabling JWT auth engine..."
@@ -249,6 +266,16 @@ vault write auth/kubernetes/role/sandbox-launcher \
   token_ttl="15m" \
   token_max_ttl="1h"
 
+# MaaS model-plane: the llm-proxy (ns maas) authenticates via Kubernetes auth to
+# read the OpenRouter key server-side (llm-proxy.hcl) — the agent SVID is the
+# model credential and never holds the key.
+vault write auth/kubernetes/role/llm-proxy \
+  bound_service_account_names="llm-proxy" \
+  bound_service_account_namespaces="maas" \
+  token_policies="llm-proxy" \
+  token_ttl="3600" \
+  token_max_ttl="0"
+
 # ── 6. KV secrets — MCP tool credentials ─────────────────────────────────────
 # Values come from environment/.env — NEVER committed to git.
 log "Writing pfsense MCP tool credentials to KV..."
@@ -273,6 +300,19 @@ vault kv put secret/mcp-tools/mcp-tokens \
   tokens="${MCP_API_TOKENS}" \
   "${DEMO_USER:-arsalan}=${MCP_API_TOKENS}"
 
+# mcp-tokens-write is the WRITE-scoped twin of mcp-tokens: ext-proc injects the
+# caller's elevated static token for the write path after a JIT mint. Same
+# {tokens, <user>} field schema; defaults to MCP_API_TOKENS when no separate
+# write-token list is supplied.
+vault kv put secret/mcp-tools/mcp-tokens-write \
+  tokens="${MCP_API_TOKENS_WRITE:-${MCP_API_TOKENS}}" \
+  "${DEMO_USER:-arsalan}=${MCP_API_TOKENS_WRITE:-${MCP_API_TOKENS}}"
+
+# MaaS model-plane: the OpenRouter API key the llm-proxy reads server-side
+# (single field `token`). The agent SVID is the model credential — never the key.
+vault kv put secret/mcp-tools/openrouter \
+  token="${OPENROUTER_API_KEY:-REPLACE-WITH-OPENROUTER-KEY}"
+
 # _default fallback: ext-proc fetches a per-tool secret on every MCP tool call;
 # tools that need no backend credential (echo-mcp's whoami/echo, or the MCP
 # session handshake which carries no tool) resolve to this path.
@@ -286,7 +326,7 @@ done
 # for the RFC 8693 exchange (Vault Agent injects it to ext-proc at field `secret`).
 # Fetched live from the Keycloak admin API so the bootstrap is self-contained.
 log "Fetching mcp-gateway client secret from Keycloak and storing in Vault..."
-OC="${OC:-oc --kubeconfig=$HOME/.kube/anaeem-kubeconfig --insecure-skip-tls-verify}"
+OC="${OC:-oc --insecure-skip-tls-verify}"
 KC_URL="${KEYCLOAK_URL:-https://keycloak.apps.ocp-dev.na-launch.com}"
 if KC_ADMIN_PW="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)" && [ -n "$KC_ADMIN_PW" ]; then
   KC_ADMIN_USER="$($OC get secret keycloak-initial-admin -n keycloak -o jsonpath='{.data.username}' | base64 -d)"
@@ -349,7 +389,7 @@ vault kv put secret/agent-sandbox/inference \
   oidc_client_id="${AGENT_OIDC_CLIENT_ID:-agent-runtime}" \
   oidc_client_secret="${AGENT_OIDC_CLIENT_SECRET:-REPLACE-WITH-AGENT-RUNTIME-CLIENT-SECRET}" >/dev/null
 
-log "Secrets written: mcp-tools/{pfsense,mcp-tokens,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*, agent-sandbox/inference"
+log "Secrets written: mcp-tools/{pfsense,mcp-tokens,mcp-tokens-write,openrouter,_default,whoami,echo}, pfsense/credentials, mcp-gateway/keycloak-client-secret, jit-approver/*, agent-sandbox/inference"
 
 # ── 7. Completion ─────────────────────────────────────────────────────────────
 log ""

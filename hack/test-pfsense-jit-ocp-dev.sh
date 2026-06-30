@@ -13,38 +13,61 @@
 # 2026-06-25 (rule id=52, ztp-e2e-test-rule). The six bring-up fixes it depends on
 # are asserted as preconditions so a regression surfaces clearly.
 #
-# Usage:   bash hack/test-pfsense-jit-ocp-dev.sh
-# Requires: oc logged in to ocp-dev; ~/.local/bin/vault; /etc/hosts for the
-#           *.apps.ocp-dev.na-launch.com routes -> ingress VIP 172.16.2.59.
+# Usage:   IDA_KUBECONFIG=~/.kube/ocp-dev-admin.kubeconfig bash hack/test-pfsense-jit-ocp-dev.sh
+# Requires: oc reachable via a NON-expired kubeconfig (the break-glass cert
+#           ~/.kube/ocp-dev-admin.kubeconfig — the user-token ocp-dev.kubeconfig is EXPIRED);
+#           /etc/hosts for the *.apps.ocp-dev.na-launch.com routes -> ingress VIP 172.16.2.59.
+# NOTE: all Vault reads/writes go via `oc exec vault-0` (NOT port-forward). port-forward drops on a
+#       flapping control plane and produced false 'missing'/connect failures; no local vault CLI needed.
 set -uo pipefail
 
-KC="${IDA_KUBECONFIG:-$HOME/.kube/ocp-dev.kubeconfig}"
+KC="${IDA_KUBECONFIG:-$HOME/.kube/ocp-dev-admin.kubeconfig}"
 TRUST_DOMAIN="${TRUST_DOMAIN:-anaeem.na-launch.com}"
 SB="${SB:-e2e0a1b2-c3d4-4e5f-8a9b-000000000001}"
 AGENT_SPIFFE="spiffe://${TRUST_DOMAIN}/ns/agent-sandbox/sandbox/${SB}"
 JIT_API="${JIT_API:-https://jit-approver-api.apps.ocp-dev.na-launch.com}"
-VPORT="${VAULT_LOCAL_PORT:-8209}"
 RULE_DESC="ztp-e2e-test-rule-$$"
-WJSON="{\"interface\":\"lan\",\"type\":\"pass\",\"ipprotocol\":\"inet\",\"protocol\":\"tcp\",\"source\":\"any\",\"destination\":\"any\",\"descr\":\"${RULE_DESC}\"}"
+# Payload MUST match the current create_firewall_rule_advanced tool schema:
+# required = interface, rule_type, protocol, source, destination ; description is optional.
+# (The old type/ipprotocol/descr keys are rejected by the tool's pydantic validation.)
+WJSON="{\"interface\":\"lan\",\"rule_type\":\"pass\",\"protocol\":\"tcp\",\"source\":\"any\",\"destination\":\"any\",\"description\":\"${RULE_DESC}\"}"
 PASS=0; FAIL=0
 oc() { command oc --kubeconfig "$KC" "$@"; }
 ok()  { echo "  ✅ $*"; PASS=$((PASS+1)); }
 bad() { echo "  ❌ $*"; FAIL=$((FAIL+1)); }
 step(){ echo; echo "== $* =="; }
 # mcp-call lives on PATH in the agent container (/opt/ztp/bin); pass args directly (no shell re-parse).
-mcpc() { oc -n agent-sandbox exec "$HPOD" -c agent -- mcp-call "$@" 2>&1; }
+# exec_retry: the ocp-dev control plane flaps; transient `oc exec` failures (command terminated /
+# unable to upgrade connection / error dialing backend) are retried up to 3x so a flake is not a FAIL.
+exec_retry() {
+  local n=0 out
+  while :; do
+    out="$(oc "$@" 2>&1)"
+    if echo "$out" | grep -qiE 'command terminated|unable to upgrade connection|error dialing backend|Timeout occurred|TLS handshake'; then
+      if [ "$n" -lt 3 ]; then n=$((n+1)); sleep 3; continue; fi
+    fi
+    printf '%s\n' "$out"; return 0
+  done
+}
+mcpc() { exec_retry -n agent-sandbox exec "$HPOD" -c agent -- mcp-call "$@"; }   # reads: safe to retry (idempotent)
+# Writes must NOT auto-retry: if the create succeeds server-side but `oc exec` drops, a retry would
+# create a DUPLICATE rule. Single attempt; STEP 4's read-back is the source of truth for "did it land".
 mcpc_jit() { oc -n agent-sandbox exec "$HPOD" -c agent -- env JIT_SESSION_JWT="$1" mcp-call "${@:2}" 2>&1; }
+# Vault via in-pod exec (NOT port-forward). $VT (root token) is resolved in Preconditions below.
+#   vault_exec CMD          — run a read-only vault CMD inside vault-0 (no stdin)
+#   vault_put  PATH-SUFFIX  — KV write at secret/<suffix>, data object read from stdin as JSON
+#                             (keeps numeric version/ttl as integers, which ext-proc requires)
+vault_exec() { oc -n vault exec vault-0 -- sh -c "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN='${VT}' $1" 2>/dev/null; }
+vault_put()  { oc -n vault exec -i vault-0 -- sh -c "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN='${VT}' vault kv put -mount=secret $1 -" 2>/dev/null; }
 
 step "Preconditions (the six bring-up fixes)"
 oc whoami >/dev/null 2>&1 && ok "cluster reachable ($(oc whoami))" || { bad "cannot reach ocp-dev (oc login first)"; exit 1; }
 [ "$(oc get clusterspiffeid agent-sandbox-e2e-harness -o jsonpath='{.spec.className}' 2>/dev/null)" = "zero-trust-workload-identity-manager-spire" ] \
   && ok "e2e-harness CSID className set (UUID SVID issues)" || bad "CSID className empty -> UUID /sandbox/ SVID won't issue (fix1)"
-pkill -f "port-forward.*vault.*${VPORT}" 2>/dev/null || true
-nohup oc port-forward -n vault svc/vault "${VPORT}:8200" >/tmp/vpf-anchor.log 2>&1 & PF_PID=$!; sleep 4
-VADDR="http://127.0.0.1:${VPORT}"
 VT="$(oc -n vault get secret vault-init -o jsonpath='{.data.root_token}' 2>/dev/null | base64 -d)"
 [ -n "$VT" ] && ok "vault-init root token resolved" || bad "no vault-init secret (Vault not bootstrapped?)"
-curl -fsS -H "X-Vault-Token: $VT" "$VADDR/v1/secret/data/mcp-tools/mcp-tokens-write" >/dev/null 2>&1 \
+# in-pod read (no port-forward): a present mcp-tokens-write proves the elevated-write token is seeded.
+vault_exec "vault kv get -mount=secret mcp-tools/mcp-tokens-write" >/dev/null 2>&1 \
   && ok "secret/mcp-tools/mcp-tokens-write present (elevated-write token, fix6)" || bad "mcp-tokens-write missing (fix6)"
 
 step "Ensure e2e-harness pod (the SVID-only caller)"
@@ -58,9 +81,9 @@ fi
 
 step "Write read-only consent grant (numeric typed + created, fix4)"
 NONCE=$(openssl rand -hex 16); NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-curl -fsS -H "X-Vault-Token: $VT" -H 'Content-Type: application/json' -X POST \
-  "$VADDR/v1/secret/data/sandbox-grants/${SB}" \
-  -d "{\"data\":{\"version\":1,\"sandbox_uid\":\"${SB}\",\"user\":\"arsalan\",\"scope\":\"read-only\",\"ttl\":3600,\"nonce\":\"${NONCE}\",\"created\":\"${NOW}\"}}" >/dev/null \
+# stdin JSON keeps numeric version/ttl as integers (ext-proc grant validation requires numeric types).
+printf '%s' "{\"version\":1,\"sandbox_uid\":\"${SB}\",\"user\":\"arsalan\",\"scope\":\"read-only\",\"ttl\":3600,\"nonce\":\"${NONCE}\",\"created\":\"${NOW}\"}" \
+  | vault_put "sandbox-grants/${SB}" | grep -q 'Secret Path' \
   && ok "grant written (user=arsalan, read-only)" || bad "grant write failed"
 
 step "STEP 1 — delegated READ (expect 200)"
@@ -94,14 +117,24 @@ echo "$MC" | tail -1 | grep -qE '^20' && ok "minted (approver=arsalan-approver !
 SJWT=$(curl -sSk "$JIT_API/requests/${RID}/status" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("session_jwt",""))' 2>/dev/null)
 [ -n "$SJWT" ] && ok "capability JWT issued" || bad "no session_jwt from /status"
 
-step "STEP 4 — elevated WRITE with capability (expect 200, real rule)"
+step "STEP 4 — elevated WRITE with capability (expect a REAL rule, not just HTTP 200)"
+# NB: the MCP transport returns 'HTTP 200' even when the TOOL CALL fails (isError:true) — so we must
+# inspect the tool RESULT, not the transport code. A real creation echoes the rule (tracker/id/descr);
+# a schema/permission failure carries isError:true / 'validation error' / a grant_* denial.
 if [ -n "$SJWT" ]; then
   R4=$(mcpc_jit "$SJWT" create_firewall_rule_advanced "$WJSON")
-  echo "$R4" | grep -qiE '"id"|"tracker"|created|200' && ok "ELEVATED WRITE 200 — real rule created (${RULE_DESC})" || bad "elevated write failed: $(echo "$R4" | tail -1 | head -c 160)"
+  if echo "$R4" | grep -qiE '"isError"[[:space:]]*:[[:space:]]*true|validation error|missing_argument|grant_[a-z_]+|denied|forbidden'; then
+    bad "elevated write reached the tool but was REJECTED: $(echo "$R4" | grep -oiE '[0-9]+ validation error[s]?|grant_[a-z_]+|isError[^,]*true' | head -1)"
+  # Source of truth = the rule is visible on the delegated read path (filtered, so pagination can't
+  # hide the high-tracker new rule). This holds even if the write's oc-exec dropped after creating it.
+  elif mcpc search_firewall_rules "{\"search_description\":\"${RULE_DESC}\",\"page_size\":200}" | grep -q "${RULE_DESC}"; then
+    ok "ELEVATED WRITE — real pfSense rule created AND visible on delegated read-back (${RULE_DESC})"
+  else
+    bad "elevated write produced no visible rule '${RULE_DESC}': $(echo "$R4" | tail -2 | head -c 200)"
+  fi
 else bad "skipped (no capability JWT)"; fi
 
 step "Cleanup"
 echo "  (remove test rule '${RULE_DESC}' via console-approved delete or pfSense UI if it persists)"
-kill "$PF_PID" 2>/dev/null || true
 echo; echo "================ RESULT: ${PASS} passed / ${FAIL} failed ================"
 [ "$FAIL" -eq 0 ] && { echo "E2E_RESULT: PASS"; exit 0; } || { echo "E2E_RESULT: FAIL"; exit 1; }

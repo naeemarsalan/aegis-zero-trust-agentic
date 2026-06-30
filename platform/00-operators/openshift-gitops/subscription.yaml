@@ -1,0 +1,15 @@
+# OpenShift GitOps (ArgoCD) operator.
+# Installs into the cluster-default `openshift-operators` namespace, which already
+# carries the global-operators OperatorGroup — so no namespace.yaml/operatorgroup.yaml
+# is created here (mirrors the live ocp-dev install exactly).
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-gitops-operator
+  namespace: openshift-operators
+spec:
+  channel: latest
+  installPlanApproval: Automatic
+  name: openshift-gitops-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

@@ -7,5 +7,11 @@ kind: Kustomization
 
 resources:
   - projects/nvidia-ida-appproject.yaml
-  - acm-registration
   - app-of-apps.yaml
+  # acm-registration/ emits GitOpsCluster + Placement + ManagedClusterSetBinding,
+  # whose ACM CRDs are ABSENT on a self-managed cluster — applying them there fails.
+  # The proven model on ocp-dev is self-managed (apps target https://kubernetes.default.svc),
+  # so it is OMITTED from the default build.
+  # ACM-hub deployers: uncomment the line below, or build it separately with
+  #   kustomize build gitops/acm-registration
+  # - acm-registration
