@@ -1,0 +1,31 @@
+apiVersion: jit.anaeem.na-launch.com/v1alpha1
+kind: JITGrant
+metadata:
+  name: jit-a2faf2c5-f235-4bea-b658-2695d3ba8e27
+  creationTimestamp: '2026-06-17T13:39:18.779550+00:00'
+spec:
+  sessionId: a2faf2c5-f235-4bea-b658-2695d3ba8e27
+  requesterSub: arsalan
+  agentSpiffeId: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/e2e0a1b2-c3d4-4e5f-8a9b-000000000001
+  justification: "E2E LEG-3: request create_firewall_rule_advanced privilege for sandbox\
+    \ e2e0a1b2-c3d4-4e5f-8a9b-000000000001 \u2014 denied by ext-proc, escalating via\
+    \ JIT for approver arsalan"
+  requestedScope:
+    namespace: agent-sandbox
+    durationMinutes: 30
+    rules:
+    - verbs:
+      - create
+      resources:
+      - firewall-rules
+  vaultRoleCaps:
+    role: jit-<sessionId> (ephemeral, created per approval)
+    allowedNamespaces:
+    - agent-sandbox
+    ttlMax: 30m
+    permissionsGranted: single-namespace SA token via kubernetes/creds/jit-<sessionId>;
+      generated_role_rules == the reviewed verbs/resources above
+    credentialDelivery: "stored in Vault KV secret/data/jit/<sessionId>; agent reads\
+      \ via injector template \u2014 never returned over HTTP"
+    cleanupBackstop: the expiry reaper MUST delete kubernetes/roles/jit-<sessionId>
+      in addition to revoking the lease and the KV entry

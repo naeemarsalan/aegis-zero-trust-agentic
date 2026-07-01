@@ -1,0 +1,30 @@
+apiVersion: jit.anaeem.na-launch.com/v1alpha1
+kind: JITGrant
+metadata:
+  name: jit-4fb16ef5-0385-49f5-babe-3c2fb236c503
+  creationTimestamp: '2026-06-23T12:55:57.711690+00:00'
+spec:
+  sessionId: 4fb16ef5-0385-49f5-babe-3c2fb236c503
+  requesterSub: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/e2e0a1b2-c3d4-4e5f-8a9b-000000000001
+  agentSpiffeId: spiffe://anaeem.na-launch.com/ns/agent-sandbox/sandbox/e2e0a1b2-c3d4-4e5f-8a9b-000000000001
+  justification: 'auto-escalation: agent needs resources_scale (denied under the read-only
+    baseline)'
+  requestedScope:
+    namespace: mcp-demo
+    durationMinutes: 30
+    rules:
+    - verbs:
+      - update
+      resources:
+      - deployments
+  vaultRoleCaps:
+    role: jit-<sessionId> (ephemeral, created per approval)
+    allowedNamespaces:
+    - mcp-demo
+    ttlMax: 30m
+    permissionsGranted: single-namespace SA token via kubernetes/creds/jit-<sessionId>;
+      generated_role_rules == the reviewed verbs/resources above
+    credentialDelivery: "stored in Vault KV secret/data/jit/<sessionId>; agent reads\
+      \ via injector template \u2014 never returned over HTTP"
+    cleanupBackstop: the expiry reaper MUST delete kubernetes/roles/jit-<sessionId>
+      in addition to revoking the lease and the KV entry

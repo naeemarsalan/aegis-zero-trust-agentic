@@ -1,0 +1,29 @@
+apiVersion: jit.anaeem.na-launch.com/v1alpha1
+kind: JITGrant
+metadata:
+  name: jit-86ae760b-7006-499b-9c20-faad791f5bbb
+  creationTimestamp: '2026-06-19T12:11:53.619140+00:00'
+spec:
+  sessionId: 86ae760b-7006-499b-9c20-faad791f5bbb
+  requesterSub: spiffe://anaeem.na-launch.com/ns/kagenti-test/sa/test-agent
+  agentSpiffeId: spiffe://anaeem.na-launch.com/ns/kagenti-test/sa/test-agent
+  justification: "kagenti JIT graft demo \u2014 gate echo tool"
+  requestedScope:
+    namespace: kagenti-test
+    durationMinutes: 30
+    rules:
+    - verbs:
+      - create
+      resources:
+      - firewall
+  vaultRoleCaps:
+    role: jit-<sessionId> (ephemeral, created per approval)
+    allowedNamespaces:
+    - kagenti-test
+    ttlMax: 30m
+    permissionsGranted: single-namespace SA token via kubernetes/creds/jit-<sessionId>;
+      generated_role_rules == the reviewed verbs/resources above
+    credentialDelivery: "stored in Vault KV secret/data/jit/<sessionId>; agent reads\
+      \ via injector template \u2014 never returned over HTTP"
+    cleanupBackstop: the expiry reaper MUST delete kubernetes/roles/jit-<sessionId>
+      in addition to revoking the lease and the KV entry

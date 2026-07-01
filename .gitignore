@@ -36,5 +36,5 @@ dist-scalprum/
 environment/.env.ocp-dev
 environment/.env*
 
-# Compiled ida-cli binary — build artifact, never commit
+# scrubbed from the public GitHub mirror (64 MB build artifact — kept in the private Gitea repo)
 services/ida-cli/ida
